@@ -1,0 +1,30 @@
+app:
+  name: "Huohuo Drama API"
+  version: "1.0.0"
+  debug: false
+  language: "zh" # 系统语言：zh(中文) 或 en(英文)
+
+server:
+  port: 18555
+  host: "0.0.0.0"
+  cors_origins:
+    - "http://localhost"
+    - "http://127.0.0.1"
+  read_timeout: 600
+  write_timeout: 600
+
+database:
+  type: "sqlite"
+  path: "./workbench-data/huohuo_drama.db"
+  max_idle: 10
+  max_open: 100
+
+storage:
+  type: "local"
+  local_path: "./workbench-data/storage"
+  base_url: "/static"
+
+ai:
+  default_text_provider: "openai"
+  default_image_provider: "openai"
+  default_video_provider: "doubao"

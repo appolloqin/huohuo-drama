@@ -1,0 +1,9 @@
+# Huohuo Drama Console — 工作台不收录，仅公开登录/注册页
+User-agent: *
+Disallow: /drama/
+Disallow: /settings
+Disallow: /
+Allow: /login
+Allow: /register
+
+Sitemap: /sitemap.xml

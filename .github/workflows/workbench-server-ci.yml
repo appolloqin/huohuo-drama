@@ -1,0 +1,120 @@
+name: Workbench Server CI
+
+on:
+  push:
+    branches: [main, master]
+    paths:
+      - 'workbench-server/**'
+      - '.github/workflows/workbench-server-ci.yml'
+  pull_request:
+    paths:
+      - 'workbench-server/**'
+      - '.github/workflows/workbench-server-ci.yml'
+
+jobs:
+  typecheck-and-layers:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: workbench-server
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: workbench-server/package-lock.json
+      - run: npm ci
+      - run: npm run typecheck
+      - run: npm run check:layers
+
+  smoke-sqlite:
+    runs-on: ubuntu-latest
+    needs: typecheck-and-layers
+    defaults:
+      run:
+        working-directory: workbench-server
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: workbench-server/package-lock.json
+      - run: npm ci
+      - name: API smoke (SQLite)
+        env:
+          DB_DRIVER: sqlite
+          DB_PATH: /tmp/huohuo_smoke_ci.db
+          DB_AUTO_INIT: 'true'
+          PORT: '18556'
+        run: |
+          npx tsx src/index.ts &
+          SERVER_PID=$!
+          cleanup() { kill "$SERVER_PID" 2>/dev/null || true; }
+          trap cleanup EXIT
+          for i in $(seq 1 45); do
+            if curl -sf "http://127.0.0.1:18556/api/v1/health" >/dev/null; then
+              break
+            fi
+            if ! kill -0 "$SERVER_PID" 2>/dev/null; then
+              echo "Server exited before health check"
+              exit 1
+            fi
+            sleep 1
+          done
+          curl -sf "http://127.0.0.1:18556/api/v1/health" || (echo "Health check timeout" && exit 1)
+          API_BASE=http://127.0.0.1:18556/api/v1 npm run smoke:flow
+
+  smoke-mysql:
+    runs-on: ubuntu-latest
+    needs: typecheck-and-layers
+    services:
+      mysql:
+        image: mysql:8.4
+        env:
+          MYSQL_ROOT_PASSWORD: root
+          MYSQL_DATABASE: huohuo_drama
+        ports:
+          - 3306:3306
+        options: >-
+          --health-cmd="mysqladmin ping -h 127.0.0.1 -u root -proot"
+          --health-interval=5s
+          --health-timeout=5s
+          --health-retries=15
+    defaults:
+      run:
+        working-directory: workbench-server
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: workbench-server/package-lock.json
+      - run: npm ci
+      - name: API smoke (MySQL)
+        env:
+          DB_DRIVER: mysql
+          DATABASE_URL: mysql://root:root@127.0.0.1:3306/huohuo_drama
+          DB_AUTO_INIT: 'true'
+          PORT: '18557'
+        run: |
+          npx tsx src/index.ts &
+          SERVER_PID=$!
+          cleanup() { kill "$SERVER_PID" 2>/dev/null || true; }
+          trap cleanup EXIT
+          for i in $(seq 1 60); do
+            if curl -sf "http://127.0.0.1:18557/api/v1/health" >/dev/null; then
+              break
+            fi
+            if ! kill -0 "$SERVER_PID" 2>/dev/null; then
+              echo "Server exited before health check"
+              exit 1
+            fi
+            sleep 1
+          done
+          HEALTH=$(curl -sf "http://127.0.0.1:18557/api/v1/health")
+          echo "$HEALTH"
+          echo "$HEALTH" | grep -q '"db_driver":"mysql"' || (echo "Expected db_driver=mysql" && exit 1)
+          API_BASE=http://127.0.0.1:18557/api/v1 npm run smoke:flow

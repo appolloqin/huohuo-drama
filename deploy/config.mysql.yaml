@@ -1,0 +1,35 @@
+app:
+  name: "Huohuo Drama API"
+  version: "1.0.0"
+  debug: false
+  language: "zh" # 系统语言：zh(中文) 或 en(英文)
+
+server:
+  port: 18555
+  host: "0.0.0.0"
+  cors_origins:
+    - "http://localhost"
+    - "http://127.0.0.1"
+  read_timeout: 600
+  write_timeout: 600
+
+database:
+  type: "mysql"
+  max_idle: 10
+  max_open: 100
+  mysql_host: "${MYSQL_HOST}"
+  mysql_port: ${MYSQL_PORT:-3306}
+  mysql_user: "${MYSQL_USER}"
+  mysql_password: "${MYSQL_PASSWORD}"
+  mysql_database: "${MYSQL_DATABASE:-huohuo_drama}"
+  database_url: "${DATABASE_URL}"
+
+storage:
+  type: "local"
+  local_path: "./workbench-data/storage"
+  base_url: "/static"
+
+ai:
+  default_text_provider: "openai"
+  default_image_provider: "openai"
+  default_video_provider: "doubao"
