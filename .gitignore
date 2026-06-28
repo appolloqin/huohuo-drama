@@ -1,0 +1,68 @@
+# Dependencies（任意层级，含根目录）
+node_modules
+**/node_modules/
+# Third-party / vendor（本地参考，不入库）
+third/
+workbench-site/
+.cursor/
+.dockerignore
+
+# Build output
+dist/
+workbench/.nuxt/
+workbench/.output/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# Environment（忽略所有 .env 变体；仅保留 *.env.example 模板）
+.env*
+!.env.example
+!**/.env.example
+
+# Logs
+*.log
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Docker build-time optional showcase DB (keep .gitkeep)
+docker-build-data/*
+!docker-build-data/.gitkeep
+
+# Data (database and uploaded files)
+workbench-data/drama_generator.db
+workbench-data/drama_generator.db-wal
+workbench-data/drama_generator.db-shm
+workbench-data/huohuo_drama.db
+workbench-data/huohuo_drama.db-wal
+workbench-data/huohuo_drama.db-shm
+workbench-data/public.sql
+workbench-data/*.bak*
+workbench-data/static/
+workbench-data/storage/
+workbench-data/novel-memory/*
+# Config (start.sh/start.full.sh auto-generates config.yaml from templates)
+deploy/config.yaml
+deploy/docker-compose.full.yml
+deploy/nginx.full.conf
+deploy/start.full.sh
+deploy/generate-sitemap.js
+
+# Desktop shell (Electron, optional — loads online console only)
+desktop/
+
+# Misc
+tmp/
+temp/
+.superpowers/
+/CLAUDE.md
+/AGENTS.md
+/Dockerfile.full
+/README.local.md
+/README.zh-CN.local.md

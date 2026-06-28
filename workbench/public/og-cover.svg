@@ -1,0 +1,15 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="630" viewBox="0 0 1200 630">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#1d4ed8"/>
+      <stop offset="100%" stop-color="#7c3aed"/>
+    </linearGradient>
+  </defs>
+  <rect width="1200" height="630" fill="url(#bg)"/>
+  <g fill="#ffffff" font-family="Arial, PingFang SC, Microsoft YaHei, sans-serif">
+    <text x="96" y="250" font-size="72" font-weight="700">kkíg</text>
+    <text x="96" y="330" font-size="44" font-weight="500">AI íg\sð</text>
+    <text x="96" y="390" font-size="30" opacity="0.9">g, · \ · þÏ · Æ‘ · </text>
+  </g>
+</svg>
+

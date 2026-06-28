@@ -1,0 +1,36 @@
+services:
+  huohuo-drama:
+    build:
+      context: ..
+      dockerfile: Dockerfile
+    image: huohuo/huohuo-drama:latest
+    ports:
+      - "${PUBLISH_PORT:-18088}:80"
+    volumes:
+      - ./workbench-data:/app/workbench-data
+    environment:
+      - NODE_ENV=production
+      - PORT=18555
+      - DB_DRIVER=${DB_DRIVER:-sqlite}
+      - DATABASE_URL=${DATABASE_URL:-}
+      - MYSQL_HOST=${MYSQL_HOST:-}
+      - MYSQL_PORT=${MYSQL_PORT:-3306}
+      - MYSQL_USER=${MYSQL_USER:-}
+      - MYSQL_PASSWORD=${MYSQL_PASSWORD:-}
+      - MYSQL_DATABASE=${MYSQL_DATABASE:-huohuo_drama}
+      - DB_POOL_SIZE=${DB_POOL_SIZE:-10}
+      - DB_AUTO_INIT=${DB_AUTO_INIT:-true}
+      - MYSQL_IMPORT_SQL=${MYSQL_IMPORT_SQL:-false}
+      - MYSQL_IMPORT_FILE=${MYSQL_IMPORT_FILE:-/app/workbench-data/huohuo_drama.sql}
+      - SITE_URL=${SITE_URL:-https://www.seeddrama.com}
+      - SITE_API_TOKEN=${SITE_API_TOKEN:-huohuo-dev-site-token-change-in-production}
+      - CONFIG_ENCRYPTION_KEY=${CONFIG_ENCRYPTION_KEY:-}
+      - BOOTSTRAP_ADMIN_USERNAME=${BOOTSTRAP_ADMIN_USERNAME:-}
+      - BOOTSTRAP_ADMIN_PASSWORD=${BOOTSTRAP_ADMIN_PASSWORD:-}
+      - BOOTSTRAP_ADMIN_OVERWRITE=${BOOTSTRAP_ADMIN_OVERWRITE:-false}
+    restart: unless-stopped
+
+# workbench + workbench-server；Nginx 已内置（deploy/nginx.conf），/ 跳转 /console/
+# 使用：cd deploy && docker compose up -d --build
+# 环境变量 DB_DRIVER / DATABASE_URL 见 .env.example（默认 sqlite）
+# 全栈（含 site）见 docker-compose.full.yml；MySQL 侧车见 docker-compose.mysql.yml
