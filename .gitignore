@@ -56,7 +56,6 @@ deploy/generate-sitemap.js
 
 # Desktop shell (Electron, optional — loads online console only)
 desktop/release/*
-desktop/package-lock.json
 
 # Misc
 tmp/
