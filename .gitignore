@@ -55,7 +55,8 @@ deploy/start.full.sh
 deploy/generate-sitemap.js
 
 # Desktop shell (Electron, optional — loads online console only)
-desktop/
+desktop/release/*
+desktop/package-lock.json
 
 # Misc
 tmp/

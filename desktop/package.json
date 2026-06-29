@@ -1,0 +1,46 @@
+{
+  "name": "huohuo-drama-desktop",
+  "version": "1.0.0",
+  "description": "Huohuo Drama desktop shell — loads the online console in a dedicated window",
+  "private": true,
+  "type": "module",
+  "main": "electron/main.mjs",
+  "scripts": {
+    "dev": "electron .",
+    "dist": "electron-builder",
+    "dist:win": "electron-builder --win",
+    "dist:mac": "electron-builder --mac",
+    "dist:linux": "electron-builder --linux"
+  },
+  "build": {
+    "appId": "com.seeddrama.console",
+    "productName": "火火短剧",
+    "directories": {
+      "output": "release",
+      "buildResources": "build"
+    },
+    "files": ["electron/**/*", "package.json"],
+    "win": {
+      "target": ["nsis"],
+      "artifactName": "Huohuo-Drama-${version}-win-${arch}.${ext}"
+    },
+    "mac": {
+      "target": ["dmg"],
+      "artifactName": "Huohuo-Drama-${version}-mac-${arch}.${ext}",
+      "category": "public.app-category.video"
+    },
+    "linux": {
+      "target": ["AppImage"],
+      "artifactName": "Huohuo-Drama-${version}-linux-${arch}.${ext}",
+      "category": "Network"
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true
+    }
+  },
+  "devDependencies": {
+    "electron": "^35.0.0",
+    "electron-builder": "^25.1.8"
+  }
+}
