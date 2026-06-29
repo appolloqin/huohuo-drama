@@ -272,7 +272,7 @@ cd ../workbench-server && npm start
 
 **生产环境 MySQL：** 配置 `DB_DRIVER=mysql` 与 `DATABASE_URL`；`workbench-data/static` 建议 volume 挂载。
 
-**API Key：** [模型聚合站](https://proxy-model.hcpzy.com/models)
+**API Key：** [模型聚合站](https://huo.hcpzy.com/)
 
 ---
 

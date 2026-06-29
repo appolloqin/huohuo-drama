@@ -272,7 +272,7 @@ cd ../workbench-server && npm start
 
 **本番 MySQL：** `DB_DRIVER=mysql` + `DATABASE_URL`；`workbench-data/static` はボリュームに保持。
 
-**API キー：** [モデル集約ポータル](https://proxy-model.hcpzy.com/models)
+**API キー：** [モデル集約ポータル](https://huo.hcpzy.com/)
 
 ---
 
