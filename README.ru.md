@@ -272,7 +272,7 @@ cd ../workbench-server && npm start
 
 **MySQL в production:** `DB_DRIVER=mysql` + `DATABASE_URL`; храните `workbench-data/static` на volume.
 
-**API-ключи:** [Портал агрегации моделей](https://proxy-model.hcpzy.com/models)
+**API-ключи:** [Портал агрегации моделей](https://huo.hcpzy.com/)
 
 ---
 

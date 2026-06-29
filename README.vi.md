@@ -272,7 +272,7 @@ Gắn `workbench-data/` cho DB và `workbench-data/static/` cho media. Mẫu Ngi
 
 **MySQL production:** `DB_DRIVER=mysql` + `DATABASE_URL`; giữ `workbench-data/static` trên volume.
 
-**API keys:** [Cổng tổng hợp mô hình](https://proxy-model.hcpzy.com/models)
+**API keys:** [Cổng tổng hợp mô hình](https://huo.hcpzy.com/)
 
 ---
 

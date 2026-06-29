@@ -272,7 +272,7 @@ Mount `workbench-data/` for DB and `workbench-data/static/` for media. Nginx sam
 
 **Production MySQL:** `DB_DRIVER=mysql` + `DATABASE_URL`; keep `workbench-data/static` on a volume.
 
-**API keys:** [Model aggregation portal](https://proxy-model.hcpzy.com/models)
+**API keys:** [Model aggregation portal](https://huo.hcpzy.com/)
 
 ---
 

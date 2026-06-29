@@ -272,7 +272,7 @@ cd ../workbench-server && npm start
 
 **MySQL production:** `DB_DRIVER=mysql` + `DATABASE_URL`; เก็บ `workbench-data/static` บน volume
 
-**API keys:** [Model aggregation portal](https://proxy-model.hcpzy.com/models)
+**API keys:** [Model aggregation portal](https://huo.hcpzy.com/)
 
 ---
 
