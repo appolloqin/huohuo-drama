@@ -1,5 +1,5 @@
 #!/bin/sh
-# Docker site-build 阶段：构建 Nuxt SSR 应用
+# Docker site-build 阶段：构建 Nuxt SSR
 # SSR 模式下不预渲染页面，详情页由 Nuxt server 在运行时实时渲染
 set -eu
 
