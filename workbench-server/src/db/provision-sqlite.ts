@@ -51,6 +51,8 @@ function applyLegacyColumnPatches(sqlite: Database.Database) {
   appendTableColumnIfAbsent(sqlite, 'dramas', 'template_summary', 'TEXT')
   appendTableColumnIfAbsent(sqlite, 'users', 'credits', 'INTEGER NOT NULL DEFAULT 0')
   appendTableColumnIfAbsent(sqlite, 'users', 'nav_modules_override', 'TEXT')
+  appendTableColumnIfAbsent(sqlite, 'users', 'wechat_mp_openid', 'TEXT')
+  appendTableColumnIfAbsent(sqlite, 'users', 'wechat_unionid', 'TEXT')
   appendTableColumnIfAbsent(sqlite, 'credit_logs', 'token_count', 'INTEGER')
   appendTableColumnIfAbsent(sqlite, 'credit_logs', 'tokens_estimated', 'INTEGER DEFAULT 0')
   appendTableColumnIfAbsent(sqlite, 'payment_orders', 'paypal_order_id', 'TEXT')

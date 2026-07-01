@@ -31,12 +31,15 @@
 | **數位導演** | 伺服端批量推進短劇集數：啟動時可選擇 **AI 視頻** 或 **靜幀動畫** 出片；劇本→分鏡→素材→合成→拼接可後台執行，刷新頁面仍可恢復進度 |
 | **AI 檢測** | 內建 AI 文本檢測與去 AI 味改寫（控制台路由 `/ai-detect`），輔助合規發布與人工潤色 |
 | **多支付渠道** | 積分計費 + 多通道充值：支援 **Stripe、PayPal、PingPong、微信支付、支付寶** 等，管理員按環境變數與後台開關靈活啟用 |
+| **行動端指令台** | [`mobile-app/`](./mobile-app/) uni-app 客戶端（微信小程式 / Android / iOS / H5）：選專案、下發批量指令、查看任務進度；微信登入/支付；一鍵跳轉 Web 精修 |
 
 **短劇流水線：** 角色立繪 → 場景提取 → 分鏡拆解 → **AI 圖生視頻** 或 **靜幀 Ken Burns 幻燈片** → TTS 配音 / 鏡頭合成 → FFmpeg 整集拼接匯出。
 
 **小說流水線：** 數位作家批量撰寫 → **因果鏈**（章末變更記錄 + 因果審校）→ 四層記憶注入 → 檢索增強連貫性。
 
 **小說轉短劇：** 從小說專案匯入章節或全書 → 劇本改寫 → 分鏡與生成 → 成片匯出（同一工作台，專案內容互通）。
+
+**行動端指令台（[`mobile-app/`](./mobile-app/)）：** Web 工作台的輕量 **外出伴侶**——在手機上選專案、下發數位作家/數位導演批量指令並查看進度；正文編輯、分鏡與合成仍在 Web（`workbench`）完成。一套 uni-app 程式碼可編譯為微信小程式、Android、iOS 與 H5（開發端口 `:48555`）。
 
 ## 產品截圖
 
@@ -51,6 +54,10 @@
 | 小說 — 章節編輯 | 短劇 — 製作工作台 |
 |:---:|:---:|
 | ![數位作家 — 大綱、AI 續寫、流式正文](./workbench-data/images/novel_ch.jpg) | ![數位導演 — 分鏡、配音、AI 視頻、鏡頭合成](./workbench-data/images/video.jpg) |
+
+| 行動端 — 專案 | 行動端 — 任務 |
+|:---:|:---:|
+| ![火火指令台 — 專案列表與快捷操作](./workbench-data/images/mobile-project.jpg) | ![火火指令台 — 批量任務進度](./workbench-data/images/mobile-task.jpg) |
 
 ### 更多特性
 
@@ -67,6 +74,7 @@
 ```text
 workbench/          Nuxt 3 工作台（開發端口 :28555）
 workbench-server/  Hono API + Drizzle + Mastra Agent（開發端口 :18555）
+mobile-app/        uni-app 行動端指令台（H5 開發端口 :48555）
 deploy/            Docker Compose + nginx（控制台 + API）
 workbench-data/      SQLite 資料庫（預設）+ 靜態資源 workbench-data/static/
                      + 文件截圖 workbench-data/images/

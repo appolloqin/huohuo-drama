@@ -31,12 +31,15 @@
 | **ผู้กำกับดิจิทัล** | ตอนละครสั้นแบบ batch ฝั่งเซิร์ฟเวอร์: เลือก **วิดีโอ AI** หรือ **สไลด์โชว์เฟรมนิ่ง** ตอนเริ่ม; บท → storyboard → สินทรัพย์ → mux → รวมตอนทำงานเบื้องหลัง กู้คืนความคืบหน้าหลังรีเฟรช |
 | **ตรวจจับ AI** | ตรวจจับข้อความ AI และการ rewrite ลดลักษณะ AI ในตัว (เส้นทางคอนโซล `/ai-detect`) สำหรับการเผยแพร่ที่เป็นไปตามข้อกำหนดและการขัดเกลา |
 | **ชำระเงินหลายช่องทาง** | เรียกเก็บด้วยเครดิต พร้อม **Stripe, PayPal, PingPong, WeChat Pay และ Alipay** — แอดมินเปิดช่องทางผ่าน env vars และ UI การตั้งค่า |
+| **สถานีคำสั่งมือถือ** | [`mobile-app/`](./mobile-app/) ไคลเอนต์ uni-app (WeChat mini program / Android / iOS / H5): เลือกโปรเจกต์ ส่งคำสั่ง batch ติดตามความคืบหน้า; WeChat login/ชำระเงิน; ลิงก์ไป Web สำหรับแก้ไขรายละเอียด |
 
 **สายละครสั้น:** ภาพบทบาท → สกัดฉาก → storyboard → **AI image-to-video** หรือ **สไลด์ Ken Burns เฟรมนิ่ง** → TTS / mux ต่อช็อต → รวมตอนด้วย FFmpeg และส่งออก
 
 **สายนิยาย:** batch นักเขียนดิจิทัล → **causal chain** (change records ท้ายบท + causal audit) → ฉีดหน่วยความจำสี่ชั้น → ความต่อเนื่องแบบ retrieval-augmented
 
 **นิยาย → ละครสั้น:** นำเข้าจากโปรเจกต์นิยาย → rewrite บท → storyboard และการสร้าง → ส่งออกตอน (พื้นที่ทำงานเดียวกัน โปรเจกต์ร่วมกัน)
+
+**สถานีคำสั่งมือถือ ([`mobile-app/`](./mobile-app/)):** คู่หู **พกพา** แบบเบาสำหรับ Web workbench — เลือกโปรเจกต์ ส่งคำสั่ง batch ของนักเขียน/ผู้กำกับดิจิทัล และติดตามความคืบหน้าจากมือถือ การแก้บท storyboard และ mux ยังอยู่บน Web (`workbench`) โค้ดเบส uni-app เดียวคอมไพล์เป็น WeChat mini program, Android, iOS และ H5 (dev `:48555`)
 
 ## ภาพหน้าจอ
 
@@ -51,6 +54,10 @@
 | นิยาย — ตัวแก้ไขบท | ละครสั้น — workbench การผลิต |
 |:---:|:---:|
 | ![Digital Writer — outline, AI continue, streaming draft](./workbench-data/images/novel_ch.jpg) | ![Digital Director — storyboard, TTS, AI video, per-shot mux](./workbench-data/images/video.jpg) |
+
+| มือถือ — โปรเจกต์ | มือถือ — งาน |
+|:---:|:---:|
+| ![สถานีคำสั่งมือถือ — รายการโปรเจกต์](./workbench-data/images/mobile-project.jpg) | ![สถานีคำสั่งมือถือ — ความคืบหน้า batch job](./workbench-data/images/mobile-task.jpg) |
 
 ### ฟีเจอร์เพิ่มเติม
 
@@ -67,6 +74,7 @@
 ```text
 workbench/          Nuxt 3 workbench (dev :28555)
 workbench-server/  Hono API + Drizzle + Mastra agents (dev :18555)
+mobile-app/        uni-app mobile command station (H5 dev :48555)
 deploy/            Docker Compose + nginx (console + API)
 workbench-data/      SQLite DB (default) + static media under workbench-data/static/
                      + docs screenshots under workbench-data/images/

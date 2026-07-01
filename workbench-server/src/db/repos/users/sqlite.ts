@@ -27,6 +27,26 @@ export function updateUserCredits(id: number, credits: number, updatedAt: string
   db().update(schema.users).set({ credits, updatedAt }).where(eq(schema.users.id, id)).run()
 }
 
+export function findUserByWechatMpOpenid(openid: string): UserRow | null {
+  const [row] = db().select().from(schema.users).where(eq(schema.users.wechatMpOpenid, openid)).all()
+  return row ?? null
+}
+
+export function updateUserWechatIdentity(
+  id: number,
+  patch: { wechatMpOpenid?: string | null; wechatUnionid?: string | null },
+  updatedAt: string,
+): void {
+  const set: {
+    updatedAt: string
+    wechatMpOpenid?: string | null
+    wechatUnionid?: string | null
+  } = { updatedAt }
+  if (patch.wechatMpOpenid !== undefined) set.wechatMpOpenid = patch.wechatMpOpenid
+  if (patch.wechatUnionid !== undefined) set.wechatUnionid = patch.wechatUnionid
+  db().update(schema.users).set(set).where(eq(schema.users.id, id)).run()
+}
+
 export function updateUserAccess(
   id: number,
   patch: { role?: string; navModulesOverride?: string | null },

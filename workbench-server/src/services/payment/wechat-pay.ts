@@ -107,6 +107,75 @@ export async function wechatNativePay(args: {
   return { codeUrl: json.code_url, raw: json }
 }
 
+/** 微信小程序 JSAPI 下单 */
+export async function wechatJsapiPay(args: {
+  settings: WechatPaySettings
+  outTradeNo: string
+  description: string
+  amountCnyFen: number
+  notifyUrl: string
+  payerOpenid: string
+}) {
+  const s = args.settings
+  const urlPath = '/v3/pay/transactions/jsapi'
+  const bodyObj = {
+    appid: s.app_id,
+    mchid: s.mch_id,
+    description: args.description,
+    out_trade_no: args.outTradeNo,
+    notify_url: args.notifyUrl,
+    amount: {
+      total: args.amountCnyFen,
+      currency: 'CNY',
+    },
+    payer: {
+      openid: args.payerOpenid,
+    },
+  }
+  const body = JSON.stringify(bodyObj)
+  const { authorization } = buildAuthorization({
+    mchId: s.mch_id!,
+    serialNo: s.serial_no!,
+    privateKey: s.private_key!,
+    method: 'POST',
+    urlPath,
+    body,
+  })
+
+  const resp = await fetch(`${wechatBaseUrl(s.env)}${urlPath}`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      Accept: 'application/json',
+      Authorization: authorization,
+    },
+    body,
+  })
+  const json = await resp.json().catch(() => ({} as { prepay_id?: string; message?: string }))
+  if (!resp.ok || !json.prepay_id) {
+    throw new Error(json.message || `微信 JSAPI 下单失败(${resp.status})`)
+  }
+  return { prepayId: json.prepay_id, raw: json }
+}
+
+/** 生成小程序 wx.requestPayment 所需参数 */
+export function buildMiniProgramPayParams(settings: WechatPaySettings, prepayId: string) {
+  const appId = settings.app_id!
+  const timeStamp = String(Math.floor(Date.now() / 1000))
+  const nonceStr = crypto.randomBytes(16).toString('hex')
+  const packageStr = `prepay_id=${prepayId}`
+  const message = `${appId}\n${timeStamp}\n${nonceStr}\n${packageStr}\n`
+  const paySign = signWechatV3(settings.private_key!, message)
+  return {
+    appId,
+    timeStamp,
+    nonceStr,
+    package: packageStr,
+    signType: 'RSA' as const,
+    paySign,
+  }
+}
+
 /** 解密微信支付 V3 回调 resource */
 export function decryptWechatResource(apiV3Key: string, resource: {
   associated_data?: string

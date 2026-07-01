@@ -1,0 +1,102 @@
+/**
+ * 火火移动端全局样式 — 对齐 Web workbench design tokens
+ */
+page {
+  box-sizing: border-box;
+  width: 100%;
+  overflow-x: hidden;
+  --bg-base: #f3f6fb;
+  --bg-0: #ffffff;
+  --bg-1: #f8fbff;
+  --bg-2: #eef3f9;
+  --bg-3: #d7e0ec;
+  --border: #dbe4f0;
+  --text-0: #182132;
+  --text-1: #2c3850;
+  --text-2: #60718a;
+  --text-3: #8fa0b8;
+  --accent: #4c7dff;
+  --accent-dark: #355fce;
+  --accent-bg: rgba(76, 125, 255, 0.1);
+  --accent-text: #2548a6;
+  --accent-gradient: linear-gradient(135deg, #7aa7ff 0%, #4c7dff 46%, #355fce 100%);
+  --success: #3f8a63;
+  --success-bg: rgba(63, 138, 99, 0.1);
+  --error: #d24f66;
+  --error-bg: rgba(210, 79, 102, 0.1);
+  --info: #3a73cc;
+  --info-bg: rgba(58, 115, 204, 0.1);
+  --shadow-card: 0 8px 20px rgba(50, 74, 114, 0.08);
+  --radius: 8px;
+  --radius-lg: 14px;
+  --body-bg: linear-gradient(180deg, #f8fbff 0%, #eef3f9 100%);
+  background: var(--body-bg);
+  color: var(--text-0);
+  font-size: 14px;
+  line-height: 1.5;
+}
+
+.field {
+  margin-bottom: 12px;
+}
+.field-label {
+  display: block;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-1);
+  margin-bottom: 6px;
+}
+.input {
+  width: 100%;
+  height: 40px;
+  padding: 0 12px;
+  border-radius: var(--radius);
+  border: 1px solid var(--border);
+  background: #fcfdff;
+  font-size: 14px;
+  box-sizing: border-box;
+}
+
+.btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  height: 40px;
+  padding: 0 16px;
+  border-radius: var(--radius);
+  font-size: 14px;
+  font-weight: 600;
+  border: none;
+  line-height: 40px;
+}
+.btn::after {
+  border: none;
+}
+.btn-primary {
+  background: var(--accent-gradient);
+  color: #fff;
+}
+.btn-secondary {
+  background: var(--bg-0);
+  color: var(--accent-text);
+  border: 1px solid rgba(76, 125, 255, 0.35);
+}
+.btn-ghost {
+  background: transparent;
+  color: var(--text-2);
+  border: 1px solid var(--border);
+}
+.btn-danger-outline {
+  background: var(--error-bg);
+  color: var(--error);
+  border: 1px solid rgba(210, 79, 102, 0.35);
+}
+.btn-block {
+  width: 100%;
+}
+.btn-sm {
+  height: 32px;
+  padding: 0 12px;
+  font-size: 12px;
+  line-height: 32px;
+}

@@ -27,6 +27,9 @@ export const users = sqliteTable('users', {
   credits: integer('credits').notNull().default(0),
   /** JSON 数组；null = 继承角色导航模块 */
   navModulesOverride: text('nav_modules_override'),
+  /** 微信小程序 openid（移动端登录绑定） */
+  wechatMpOpenid: text('wechat_mp_openid'),
+  wechatUnionid: text('wechat_unionid'),
   createdAt: text('created_at').notNull(),
   updatedAt: text('updated_at').notNull(),
 })
