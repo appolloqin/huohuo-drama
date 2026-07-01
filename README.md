@@ -31,12 +31,15 @@ Built for creators and small teams, the platform productizes writing, production
 | **Digital Director** | Server-side batch episodes: choose **AI video** or **frame slideshow** at start; script → storyboard → assets → mux → merge runs in the background with progress restore after refresh |
 | **AI Detection** | Built-in AI text detection and de-AI rewriting (console route `/ai-detect`) for compliance-friendly publishing and polish |
 | **Multi-channel payments** | Credit-based billing with **Stripe, PayPal, PingPong, WeChat Pay, and Alipay**—admins enable channels via env vars and the settings UI |
+| **Mobile command station** | [`mobile-app/`](./mobile-app/) uni-app client (WeChat mini program / Android / iOS / H5): pick projects, dispatch batch commands, track job progress; WeChat login & pay; deep-link to Web for detailed editing |
 
 **Short-drama flow:** cast portraits → scene extraction → storyboard → **AI image-to-video** or **frame Ken Burns slideshow** → TTS / per-shot mux → FFmpeg episode merge & export.
 
 **Novel flow:** Digital Writer batch → **causal chain** (chapter-end change records + causal audit) → four-layer memory injection → retrieval-augmented continuity.
 
 **Novel → short drama:** import from a novel project → screenplay rewrite → storyboard & generation → episode export (same workspace, shared projects).
+
+**Mobile command station ([`mobile-app/`](./mobile-app/)):** A lightweight **on-the-go** companion to the Web workbench—select a project, send Digital Writer / Director batch commands, and monitor progress from your phone. Chapter editing, storyboards, and mux stay on Web (`workbench`). One uni-app codebase targets WeChat mini program, Android, iOS, and H5 (dev `:48555`).
 
 ## Screenshots
 
@@ -51,6 +54,10 @@ Built for creators and small teams, the platform productizes writing, production
 | Novel — chapter editor | Short drama — production workbench |
 |:---:|:---:|
 | ![Digital Writer — outline, AI continue, streaming draft](./workbench-data/images/novel_ch.jpg) | ![Digital Director — storyboard, TTS, AI video, per-shot mux](./workbench-data/images/video.jpg) |
+
+| Mobile — projects | Mobile — tasks |
+|:---:|:---:|
+| ![Mobile command station — project list and quick actions](./workbench-data/images/mobile-project.jpg) | ![Mobile command station — batch job progress](./workbench-data/images/mobile-task.jpg) |
 
 ### More features
 
@@ -67,6 +74,7 @@ Built for creators and small teams, the platform productizes writing, production
 ```text
 workbench/          Nuxt 3 workbench (dev :28555)
 workbench-server/  Hono API + Drizzle + Mastra agents (dev :18555)
+mobile-app/        uni-app mobile command station (H5 dev :48555)
 deploy/            Docker Compose + nginx (console + API)
 workbench-data/      SQLite DB (default) + static media under workbench-data/static/
                      + docs screenshots under workbench-data/images/

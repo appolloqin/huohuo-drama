@@ -37,6 +37,26 @@ export async function updateUserCredits(id: number, credits: number, updatedAt: 
   await db().update(schema.users).set({ credits, updatedAt }).where(eq(schema.users.id, id))
 }
 
+export async function findUserByWechatMpOpenid(openid: string): Promise<UserRow | null> {
+  const rows = await db().select().from(schema.users).where(eq(schema.users.wechatMpOpenid, openid))
+  return rows[0] ?? null
+}
+
+export async function updateUserWechatIdentity(
+  id: number,
+  patch: { wechatMpOpenid?: string | null; wechatUnionid?: string | null },
+  updatedAt: string,
+): Promise<void> {
+  const set: {
+    updatedAt: string
+    wechatMpOpenid?: string | null
+    wechatUnionid?: string | null
+  } = { updatedAt }
+  if (patch.wechatMpOpenid !== undefined) set.wechatMpOpenid = patch.wechatMpOpenid
+  if (patch.wechatUnionid !== undefined) set.wechatUnionid = patch.wechatUnionid
+  await db().update(schema.users).set(set).where(eq(schema.users.id, id))
+}
+
 export async function updateUserAccess(
   id: number,
   patch: { role?: string; navModulesOverride?: string | null },

@@ -31,12 +31,15 @@
 | **デジタル監督** | サーバー側バッチエピソード：開始時に **AI 動画** または **静止画スライドショー** を選択；脚本 → 絵コンテ → 素材 → 合成 → 結合をバックグラウンド実行、更新後も進捗を復元 |
 | **AI 検出** | 内蔵 AI テキスト検出と de-AI リライト（コンソールルート `/ai-detect`）で、コンプライアンスに配慮した公開と仕上げを支援 |
 | **マルチチャネル決済** | クレジット課金 + **Stripe、PayPal、PingPong、WeChat Pay、Alipay**——管理者は環境変数と設定 UI でチャネルを有効化 |
+| **モバイル指令台** | [`mobile-app/`](./mobile-app/) uni-app クライアント（WeChat ミニプログラム / Android / iOS / H5）：プロジェクト選択、バッチ指令送信、タスク進捗確認；WeChat ログイン/決済；Web へのディープリンクで詳細編集 |
 
 **ショートドラマフロー：** キャスト肖像 → シーン抽出 → 絵コンテ → **AI 画像から動画** または **静止画 Ken Burns スライドショー** → TTS / ショット単位合成 → FFmpeg エピソード結合・書き出し。
 
 **小説フロー：** デジタル作家バッチ → **因果チェーン**（章末変更記録 + 因果監査）→ 4 層メモリ注入 → 検索拡張連続性。
 
 **小説 → ショートドラマ：** 小説プロジェクトからインポート → 脚本リライト → 絵コンテ & 生成 → エピソード書き出し（同一ワークスペース、プロジェクト共有）。
+
+**モバイル指令台（[`mobile-app/`](./mobile-app/)）：** Web ワークベンチの軽量 **外出用コンパニオン**——スマホでプロジェクトを選び、デジタル作家/監督のバッチ指令を送信し進捗を確認。章編集・絵コンテ・合成は Web（`workbench`）のまま。1 つの uni-app コードベースで WeChat ミニプログラム、Android、iOS、H5 に対応（開発 `:48555`）。
 
 ## スクリーンショット
 
@@ -51,6 +54,10 @@
 | 小説 — 章エディタ | ショートドラマ — 制作ワークベンチ |
 |:---:|:---:|
 | ![デジタル作家 — アウトライン、AI 続き、ストリーミング下書き](./workbench-data/images/novel_ch.jpg) | ![デジタル監督 — 絵コンテ、TTS、AI 動画、ショット合成](./workbench-data/images/video.jpg) |
+
+| モバイル — プロジェクト | モバイル — タスク |
+|:---:|:---:|
+| ![モバイル指令台 — プロジェクト一覧](./workbench-data/images/mobile-project.jpg) | ![モバイル指令台 — バッチタスク進捗](./workbench-data/images/mobile-task.jpg) |
 
 ### その他の機能
 
@@ -67,6 +74,7 @@
 ```text
 workbench/          Nuxt 3 ワークベンチ（開発 :28555）
 workbench-server/  Hono API + Drizzle + Mastra agents（開発 :18555）
+mobile-app/        uni-app モバイル指令台（H5 開発 :48555）
 deploy/            Docker Compose + nginx（コンソール + API）
 workbench-data/      SQLite DB（デフォルト）+ 静的メディア workbench-data/static/
                      + ドキュメント用スクリーンショット workbench-data/images/

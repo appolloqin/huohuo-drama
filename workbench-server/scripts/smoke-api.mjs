@@ -61,6 +61,16 @@ if (!healthBody?.status) {
 }
 console.log(`     db_driver=${healthBody.db_driver || 'sqlite'}`)
 
+const mobileHealth = await request('GET', '/mobile/health')
+const mobileHealthBody = assertOk('GET /mobile/health', mobileHealth)
+if (mobileHealthBody?.channel !== 'mobile') {
+  console.error('FAIL mobile health payload', mobileHealthBody)
+  process.exit(1)
+}
+
+const mobileConfig = await request('GET', '/mobile/config')
+assertOk('GET /mobile/config', mobileConfig)
+
 const reg = await request('POST', '/auth/register', { username, password })
 assertOk('POST /auth/register', reg)
 

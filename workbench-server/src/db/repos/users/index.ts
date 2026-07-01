@@ -27,6 +27,21 @@ export async function updateUserCredits(id: number, credits: number, updatedAt: 
   sqlite.updateUserCredits(id, credits, updatedAt)
 }
 
+export async function findUserByWechatMpOpenid(openid: string): Promise<UserRow | null> {
+  return isMysqlDriver()
+    ? mysql.findUserByWechatMpOpenid(openid)
+    : sqlite.findUserByWechatMpOpenid(openid)
+}
+
+export async function updateUserWechatIdentity(
+  id: number,
+  patch: { wechatMpOpenid?: string | null; wechatUnionid?: string | null },
+  updatedAt: string,
+): Promise<void> {
+  if (isMysqlDriver()) return mysql.updateUserWechatIdentity(id, patch, updatedAt)
+  sqlite.updateUserWechatIdentity(id, patch, updatedAt)
+}
+
 export async function updateUserAccess(
   id: number,
   patch: { role?: string; navModulesOverride?: string | null },

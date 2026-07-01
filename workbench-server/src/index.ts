@@ -37,6 +37,7 @@ import novel from './routes/novel/novel.js'
 import aiDetect from './routes/ai/ai-detect.js'
 import templates from './routes/template/templates.js'
 import batchJobs from './routes/task/batch-jobs.js'
+import mobile from './routes/mobile/mobile.js'
 import seo from './routes/showcase/seo.js'
 import { recoverStaleBatchJobs, resumePendingBatchJobs } from './services/batch/batch-job-service.js'
 import { requireAuth } from './middleware/auth.js'
@@ -59,6 +60,8 @@ httpApp.use('*', cors({
     'http://127.0.0.1:5173',
     'http://localhost:38555',
     'http://127.0.0.1:38555',
+    'http://localhost:48555',
+    'http://127.0.0.1:48555',
     'http://localhost:4173',
     'http://127.0.0.1:4173',
   ],
@@ -81,6 +84,7 @@ httpApp.route('/', seo)
 const v1Api = new Hono()
 v1Api.use('*', apiRobotsNoIndex)
 v1Api.route('/auth', auth)
+v1Api.route('/mobile', mobile)
 v1Api.route('/showcase', showcase)
 v1Api.route('/payments', payments)
 

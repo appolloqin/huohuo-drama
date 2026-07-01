@@ -1,0 +1,51 @@
+{
+  "pages": [
+    {
+      "path": "pages/login/login",
+      "style": {
+        "navigationBarTitleText": "登录",
+        "navigationStyle": "custom"
+      }
+    },
+    {
+      "path": "pages/projects/index",
+      "style": {
+        "navigationBarTitleText": "项目",
+        "navigationStyle": "custom"
+      }
+    },
+    {
+      "path": "pages/command/index",
+      "style": {
+        "navigationBarTitleText": "指令",
+        "navigationStyle": "custom"
+      }
+    },
+    {
+      "path": "pages/tasks/index",
+      "style": {
+        "navigationBarTitleText": "任务",
+        "navigationStyle": "custom"
+      }
+    },
+    {
+      "path": "pages/tasks/detail",
+      "style": {
+        "navigationBarTitleText": "任务详情"
+      }
+    },
+    {
+      "path": "pages/me/index",
+      "style": {
+        "navigationBarTitleText": "我的",
+        "navigationStyle": "custom"
+      }
+    }
+  ],
+  "globalStyle": {
+    "navigationBarTextStyle": "black",
+    "navigationBarTitleText": "火火指令台",
+    "navigationBarBackgroundColor": "#f8fbff",
+    "backgroundColor": "#f3f6fb"
+  }
+}

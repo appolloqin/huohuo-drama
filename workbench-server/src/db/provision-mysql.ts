@@ -196,6 +196,8 @@ async function applyLegacyColumnPatches(pool: Pool) {
   await appendTableColumnIfAbsent(pool, 'dramas', 'template_summary', 'TEXT')
   await appendTableColumnIfAbsent(pool, 'users', 'credits', 'INT NOT NULL DEFAULT 0')
   await appendTableColumnIfAbsent(pool, 'users', 'nav_modules_override', 'TEXT')
+  await appendTableColumnIfAbsent(pool, 'users', 'wechat_mp_openid', 'TEXT')
+  await appendTableColumnIfAbsent(pool, 'users', 'wechat_unionid', 'TEXT')
   await appendTableColumnIfAbsent(pool, 'credit_logs', 'token_count', 'INT')
   await appendTableColumnIfAbsent(pool, 'credit_logs', 'tokens_estimated', 'INT DEFAULT 0')
   await appendTableColumnIfAbsent(pool, 'payment_orders', 'paypal_order_id', 'TEXT')

@@ -31,12 +31,15 @@ Dành cho creator và nhóm nhỏ, nền tảng sản phẩm hóa viết, sản 
 | **Đạo diễn số** | Tiến tập theo lô phía server: chọn **video AI** hoặc **trình chiếu khung hình tĩnh** khi bắt đầu; kịch bản → storyboard → tài nguyên → ghép → nối chạy nền, khôi phục tiến độ sau khi refresh |
 | **Phát hiện AI** | Phát hiện văn bản AI và viết lại bỏ dấu AI tích hợp sẵn (route console `/ai-detect`) cho xuất bản tuân thủ và chỉnh sửa |
 | **Thanh toán đa kênh** | Tính phí theo tín dụng với **Stripe, PayPal, PingPong, WeChat Pay và Alipay** — admin bật kênh qua biến môi trường và UI cài đặt |
+| **Trạm lệnh di động** | [`mobile-app/`](./mobile-app/) client uni-app (WeChat mini program / Android / iOS / H5): chọn dự án, gửi lệnh batch, theo dõi tiến độ; đăng nhập/thanh toán WeChat; deep-link sang Web để chỉnh sửa chi tiết |
 
 **Luồng phim ngắn:** chân dung cast → trích xuất cảnh → storyboard → **AI image-to-video** hoặc **trình chiếu Ken Burns khung hình tĩnh** → TTS / ghép từng cảnh → nối & xuất tập bằng FFmpeg.
 
 **Luồng tiểu thuyết:** Nhà văn số theo lô → **chuỗi nhân quả** (bản ghi thay đổi cuối chương + kiểm tra nhân quả) → tiêm bộ nhớ bốn lớp → liên tục tăng cường truy xuất.
 
 **Tiểu thuyết → phim ngắn:** nhập từ dự án tiểu thuyết → viết lại kịch bản → storyboard & sinh tài nguyên → xuất tập (cùng workspace, dự án dùng chung).
+
+**Trạm lệnh di động ([`mobile-app/`](./mobile-app/)):** **Bạn đồng hành di động** nhẹ cho Web workbench — chọn dự án, gửi lệnh batch Nhà văn số / Đạo diễn số và theo dõi tiến độ trên điện thoại. Chỉnh sửa chương, storyboard và mux vẫn trên Web (`workbench`). Một codebase uni-app biên dịch sang WeChat mini program, Android, iOS và H5 (dev `:48555`).
 
 ## Ảnh chụp màn hình
 
@@ -51,6 +54,10 @@ Dành cho creator và nhóm nhỏ, nền tảng sản phẩm hóa viết, sản 
 | Tiểu thuyết — trình soạn chương | Phim ngắn — workbench sản xuất |
 |:---:|:---:|
 | ![Nhà văn số — dàn ý, AI tiếp tục, bản nháp streaming](./workbench-data/images/novel_ch.jpg) | ![Đạo diễn số — storyboard, TTS, video AI, ghép từng cảnh](./workbench-data/images/video.jpg) |
+
+| Di động — dự án | Di động — tác vụ |
+|:---:|:---:|
+| ![Trạm lệnh di động — danh sách dự án](./workbench-data/images/mobile-project.jpg) | ![Trạm lệnh di động — tiến độ batch job](./workbench-data/images/mobile-task.jpg) |
 
 ### Thêm tính năng
 
@@ -67,6 +74,7 @@ Dành cho creator và nhóm nhỏ, nền tảng sản phẩm hóa viết, sản 
 ```text
 workbench/          Nuxt 3 workbench (dev :28555)
 workbench-server/  Hono API + Drizzle + Mastra agents (dev :18555)
+mobile-app/        uni-app mobile command station (H5 dev :48555)
 deploy/            Docker Compose + nginx (console + API)
 workbench-data/      SQLite DB (default) + static media under workbench-data/static/
                      + docs screenshots under workbench-data/images/
