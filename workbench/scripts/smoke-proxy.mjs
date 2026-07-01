@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * 经 Nuxt dev 代理（与浏览器相同路径）对接 MySQL 后端联调。
+ * 对接 MySQL 后端联调。
  *
  * 前置：workbench-server npm run dev (18555, DB_DRIVER=mysql) + workbench npm run dev (28555)
  *
