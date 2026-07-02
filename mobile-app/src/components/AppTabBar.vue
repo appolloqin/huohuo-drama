@@ -7,7 +7,9 @@
       :class="{ active: active === item.id }"
       @click="go(item)"
     >
-      <text class="tab-icon">{{ item.icon }}</text>
+      <view class="tab-icon-wrap" :class="{ active: active === item.id }">
+        <text class="tab-icon">{{ item.icon }}</text>
+      </view>
       <text class="tab-label">{{ item.label }}</text>
       <view v-if="item.id === 'tasks' && taskBadge > 0" class="tab-badge">{{ taskBadge > 9 ? '9+' : taskBadge }}</view>
     </view>
@@ -52,16 +54,18 @@ defineExpose({ refreshBadge })
 <style scoped>
 .tab-bar {
   position: fixed;
-  left: 0;
-  right: 0;
-  bottom: 0;
+  left: 12px;
+  right: 12px;
+  bottom: calc(8px + env(safe-area-inset-bottom));
   z-index: 100;
   display: flex;
-  height: calc(52px + env(safe-area-inset-bottom));
-  padding-bottom: env(safe-area-inset-bottom);
-  background: rgba(255, 255, 255, 0.96);
-  border-top: 1px solid var(--border);
-  box-shadow: 0 -4px 20px rgba(50, 74, 114, 0.06);
+  height: 58px;
+  padding: 6px;
+  border-radius: 18px;
+  background: rgba(255, 255, 255, 0.94);
+  border: 1px solid var(--border-soft);
+  box-shadow: 0 8px 32px rgba(50, 74, 114, 0.12);
+  backdrop-filter: blur(12px);
 }
 .tab-item {
   flex: 1;
@@ -72,25 +76,37 @@ defineExpose({ refreshBadge })
   gap: 2px;
   position: relative;
   color: var(--text-3);
+  border-radius: 12px;
 }
 .tab-item.active {
   color: var(--accent);
 }
+.tab-icon-wrap {
+  width: 28px;
+  height: 28px;
+  border-radius: 10px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.tab-icon-wrap.active {
+  background: var(--accent-bg);
+}
 .tab-icon {
-  font-size: 18px;
+  font-size: 16px;
   line-height: 1;
 }
 .tab-label {
-  font-size: 11px;
+  font-size: 10px;
   font-weight: 500;
 }
 .tab-item.active .tab-label {
-  font-weight: 600;
+  font-weight: 700;
 }
 .tab-badge {
   position: absolute;
-  top: 6px;
-  right: calc(50% - 22px);
+  top: 2px;
+  right: calc(50% - 24px);
   min-width: 16px;
   height: 16px;
   padding: 0 4px;
@@ -98,7 +114,9 @@ defineExpose({ refreshBadge })
   background: var(--error);
   color: #fff;
   font-size: 10px;
+  font-weight: 700;
   line-height: 16px;
   text-align: center;
+  border: 2px solid #fff;
 }
 </style>

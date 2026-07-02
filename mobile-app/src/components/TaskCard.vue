@@ -1,13 +1,23 @@
 <template>
-  <view class="task-card" @click="$emit('open')">
+  <view class="task-card" :class="{ active: isActive }" @click="$emit('open')">
     <view class="task-head">
-      <view class="status-dot" :class="job.status" />
-      <text class="task-kicker">{{ kicker }}</text>
+      <view class="task-head-left">
+        <view v-if="isActive" class="status-dot pulse" />
+        <view v-else class="status-dot" :class="job.status" />
+        <text class="task-kicker">{{ kicker }}</text>
+      </view>
+      <text class="status-badge" :class="job.status">{{ statusLabel }}</text>
     </view>
     <text class="task-title">{{ job.drama_title || '未命名项目' }}</text>
     <text class="task-sub">{{ progressLabel }}</text>
-    <view v-if="showProgress" class="progress-rail">
-      <view class="progress-bar" :style="{ width: pct + '%' }" />
+    <view v-if="showProgress" class="progress-wrap">
+      <view class="progress-meta">
+        <text class="progress-pct">{{ pct }}%</text>
+        <text class="progress-count">{{ job.progress?.index || 0 }}/{{ job.progress?.total || 0 }}</text>
+      </view>
+      <view class="progress-rail">
+        <view class="progress-bar" :style="{ width: pct + '%' }" />
+      </view>
     </view>
     <view v-if="showActions" class="task-actions" @click.stop>
       <view class="action-chip action-chip-primary" @click="$emit('open')">详情</view>
@@ -37,6 +47,8 @@ const kicker = computed(() => {
   return '数字导演'
 })
 
+const statusLabel = computed(() => statusText(props.job.status))
+
 const progressLabel = computed(() => {
   const p = props.job.progress
   if (!p) return statusText(props.job.status)
@@ -44,7 +56,7 @@ const progressLabel = computed(() => {
   const total = p.total || 0
   const ep = p.episode_number || 0
   const phase = p.phase || ''
-  if (total) return `第 ${ep} ${unit.value} · ${phaseLabel(phase)} (${idx}/${total})`
+  if (total) return `第 ${ep} ${unit.value} · ${phaseLabel(phase)}`
   return statusText(props.job.status)
 })
 
@@ -92,16 +104,28 @@ function phaseLabel(phase: string) {
   box-sizing: border-box;
   background: var(--bg-0);
   border-radius: var(--radius-lg);
-  padding: 14px;
+  border: 1px solid var(--border-soft);
+  padding: 16px;
   margin-bottom: 12px;
   box-shadow: var(--shadow-card);
   overflow: hidden;
 }
+.task-card.active {
+  border-color: rgba(76, 125, 255, 0.28);
+  box-shadow: 0 10px 28px rgba(76, 125, 255, 0.1);
+}
 .task-head {
   display: flex;
   align-items: center;
+  justify-content: space-between;
   gap: 8px;
-  margin-bottom: 6px;
+  margin-bottom: 8px;
+}
+.task-head-left {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
 }
 .status-dot {
   width: 8px;
@@ -113,69 +137,61 @@ function phaseLabel(phase: string) {
 .status-dot.running,
 .status-dot.pending {
   background: var(--info);
-  box-shadow: 0 0 0 3px var(--info-bg);
 }
 .status-dot.completed { background: var(--success); }
 .status-dot.failed { background: var(--error); }
+.status-dot.pulse {
+  background: var(--info);
+  box-shadow: 0 0 0 0 rgba(58, 115, 204, 0.45);
+  animation: pulse 1.8s ease-out infinite;
+}
+@keyframes pulse {
+  0% { box-shadow: 0 0 0 0 rgba(58, 115, 204, 0.45); }
+  70% { box-shadow: 0 0 0 8px rgba(58, 115, 204, 0); }
+  100% { box-shadow: 0 0 0 0 rgba(58, 115, 204, 0); }
+}
 .task-kicker {
   font-size: 11px;
-  font-weight: 600;
+  font-weight: 700;
   color: var(--text-2);
+  letter-spacing: 0.02em;
 }
 .task-title {
   display: block;
-  font-size: 15px;
-  font-weight: 600;
+  font-size: 16px;
+  font-weight: 700;
   color: var(--text-0);
   margin-bottom: 4px;
+  line-height: 1.35;
   word-break: break-all;
 }
 .task-sub {
   display: block;
   font-size: 12px;
   color: var(--text-2);
-  margin-bottom: 10px;
-  word-break: break-all;
+  margin-bottom: 12px;
+  line-height: 1.45;
 }
-.progress-rail {
-  height: 3px;
-  background: var(--bg-3);
-  border-radius: 99px;
-  overflow: hidden;
-  margin-bottom: 10px;
+.progress-wrap {
+  margin-bottom: 12px;
 }
-.progress-bar {
-  height: 100%;
-  background: var(--accent-gradient);
+.progress-meta {
+  display: flex;
+  justify-content: space-between;
+  margin-bottom: 6px;
+}
+.progress-pct {
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--accent-text);
+}
+.progress-count {
+  font-size: 11px;
+  color: var(--text-3);
 }
 .task-actions {
   display: flex;
   gap: 8px;
   width: 100%;
-  box-sizing: border-box;
-}
-.action-chip {
-  flex: 1;
-  min-width: 0;
-  height: 32px;
-  line-height: 32px;
-  text-align: center;
-  font-size: 12px;
-  font-weight: 600;
-  border-radius: var(--radius);
-  color: var(--text-2);
-  background: transparent;
-  border: 1px solid var(--border);
-  box-sizing: border-box;
-}
-.action-chip-primary {
-  color: var(--accent-text);
-  background: var(--accent-bg);
-  border-color: rgba(76, 125, 255, 0.35);
-}
-.action-chip-danger {
-  color: var(--error);
-  background: var(--error-bg);
-  border-color: rgba(210, 79, 102, 0.35);
 }
 </style>

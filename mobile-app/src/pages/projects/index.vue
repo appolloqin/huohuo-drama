@@ -1,14 +1,12 @@
 <template>
   <view class="page-shell">
-    <view class="top-bar">
-      <view>
-        <text class="top-title">项目</text>
-        <text class="top-sub">选择项目并下达指令</text>
-      </view>
-      <CreditPill :credits="user?.credits ?? 0" />
-    </view>
+    <PageHeader title="项目" subtitle="选择项目并下达指令">
+      <template #right>
+        <CreditPill :credits="user?.credits ?? 0" />
+      </template>
+    </PageHeader>
 
-    <view class="filter-tabs">
+    <view class="filter-bar">
       <text
         v-for="tab in filterTabs"
         :key="tab.id"
@@ -19,11 +17,13 @@
       <text class="filter-add" @click="showCreate = true">＋</text>
     </view>
 
-    <scroll-view scroll-y class="scroll-body" @scrolltolower="fetchList">
-      <view v-if="loading && !items.length" class="empty">加载中…</view>
-      <view v-else-if="!items.length" class="empty-card" @click="showCreate = true">
-        <text class="empty-title">创建第一个项目</text>
-        <text class="empty-sub">创建后可在此下发写作 / 制作指令</text>
+    <scroll-view scroll-y class="scroll-body projects-scroll" @scrolltolower="fetchList">
+      <view v-if="loading && !items.length" class="loading-hint">加载中…</view>
+      <view v-else-if="!items.length" class="empty-state" @click="showCreate = true">
+        <view class="empty-state-icon">＋</view>
+        <text class="empty-state-title">创建第一个项目</text>
+        <text class="empty-state-sub">创建后可在此下发写作 / 制作指令</text>
+        <view class="empty-cta">新建项目</view>
       </view>
       <ProjectCard
         v-for="item in items"
@@ -37,6 +37,7 @@
 
     <view v-if="showCreate" class="mask" @click.self="showCreate = false">
       <view class="sheet">
+        <view class="sheet-handle" />
         <text class="sheet-title">新建项目</text>
         <view class="field">
           <text class="field-label">类型</text>
@@ -59,10 +60,10 @@
         </view>
         <text class="sheet-hint">详细设定请在电脑端完善</text>
         <view class="sheet-actions">
-          <button class="btn btn-ghost" @click="showCreate = false">取消</button>
-          <button class="btn btn-primary" :disabled="creating" @click="submitCreate">
+          <view class="btn btn-ghost" @click="showCreate = false">取消</view>
+          <view class="btn btn-primary" @click="submitCreate">
             {{ creating ? '创建中…' : '创建' }}
-          </button>
+          </view>
         </view>
       </view>
     </view>
@@ -76,6 +77,7 @@ import { onShow } from '@dcloudio/uni-app'
 import { ref } from 'vue'
 import AppTabBar from '../../components/AppTabBar.vue'
 import CreditPill from '../../components/CreditPill.vue'
+import PageHeader from '../../components/PageHeader.vue'
 import ProjectCard from '../../components/ProjectCard.vue'
 import { useAuth } from '../../composables/useAuth'
 import { useProjects, useProjectSelection } from '../../composables/useProjects'
@@ -153,138 +155,13 @@ onShow(async () => {
 </script>
 
 <style scoped>
-.page-shell {
-  min-height: 100vh;
-  padding-bottom: calc(60px + env(safe-area-inset-bottom));
-  background: var(--body-bg);
-  box-sizing: border-box;
-  overflow-x: hidden;
+.projects-scroll {
+  height: calc(100vh - 168px);
 }
-.top-bar {
-  display: flex;
-  justify-content: space-between;
-  align-items: flex-start;
-  padding: 16px 16px 8px;
-  box-sizing: border-box;
-}
-.top-title {
-  display: block;
-  font-size: 22px;
-  font-weight: 700;
-  color: var(--text-0);
-}
-.top-sub {
-  font-size: 12px;
+.loading-hint {
+  text-align: center;
+  padding: 48px 20px;
   color: var(--text-3);
-}
-.filter-tabs {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  width: 100%;
-  box-sizing: border-box;
-  padding: 0 16px 12px;
-}
-.filter-tab {
   font-size: 13px;
-  padding: 6px 12px;
-  border-radius: 99px;
-  color: var(--text-2);
-  background: var(--bg-0);
-  border: 1px solid var(--border);
-}
-.filter-tab.active {
-  color: var(--accent-text);
-  background: var(--accent-bg);
-  border-color: rgba(76, 125, 255, 0.25);
-}
-.filter-add {
-  margin-left: auto;
-  width: 32px;
-  height: 32px;
-  line-height: 32px;
-  text-align: center;
-  border-radius: 8px;
-  background: var(--accent-gradient);
-  color: #fff;
-  font-size: 18px;
-}
-.scroll-body {
-  height: calc(100vh - 140px);
-  width: 100%;
-  box-sizing: border-box;
-  padding: 0 16px;
-}
-.empty-card {
-  width: 100%;
-  box-sizing: border-box;
-  border: 1.5px dashed var(--border);
-  border-radius: var(--radius-lg);
-  padding: 40px 20px;
-  text-align: center;
-  background: var(--bg-0);
-}
-.empty {
-  text-align: center;
-  padding: 40px;
-  color: var(--text-3);
-}
-.empty-title {
-  display: block;
-  font-weight: 600;
-  margin-bottom: 6px;
-}
-.empty-sub {
-  font-size: 12px;
-  color: var(--text-3);
-}
-.mask {
-  position: fixed;
-  inset: 0;
-  background: rgba(24, 33, 50, 0.45);
-  z-index: 200;
-  display: flex;
-  align-items: flex-end;
-}
-.sheet {
-  width: 100%;
-  background: var(--bg-0);
-  border-radius: 16px 16px 0 0;
-  padding: 20px 16px calc(16px + env(safe-area-inset-bottom));
-}
-.sheet-title {
-  display: block;
-  font-size: 17px;
-  font-weight: 700;
-  margin-bottom: 16px;
-}
-.seg {
-  display: flex;
-  gap: 8px;
-}
-.seg-item {
-  flex: 1;
-  text-align: center;
-  padding: 8px;
-  border-radius: 8px;
-  border: 1px solid var(--border);
-  font-size: 13px;
-}
-.seg-item.on {
-  background: var(--accent-bg);
-  border-color: var(--accent);
-  color: var(--accent-text);
-  font-weight: 600;
-}
-.sheet-hint {
-  display: block;
-  font-size: 11px;
-  color: var(--text-3);
-  margin: 8px 0 16px;
-}
-.sheet-actions {
-  display: flex;
-  justify-content: flex-end;
-  gap: 10px;
 }
 </style>
