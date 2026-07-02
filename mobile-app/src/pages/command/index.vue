@@ -1,24 +1,28 @@
 <template>
   <view class="page-shell">
-    <view class="top-bar">
-      <view class="top-main">
-        <text class="top-title">指令</text>
-        <text v-if="selectedProjectTitle" class="project-name">《{{ selectedProjectTitle }}》</text>
-        <text v-else class="top-sub">请先选择项目</text>
+    <PageHeader
+      title="指令"
+      :subtitle="selectedProjectTitle ? `《${selectedProjectTitle}》` : '请先选择项目'"
+      kicker="Command"
+    >
+      <template v-if="selectedProjectId" #right>
+        <text class="link-chip" @click="pickProject">切换</text>
+      </template>
+    </PageHeader>
+
+    <view v-if="!selectedProjectId" class="scroll-body command-scroll">
+      <view class="empty-state">
+        <view class="empty-state-icon">⌘</view>
+        <text class="empty-state-title">请先选择项目</text>
+        <text class="empty-state-sub">在「项目」页点选，或从最近项目选择</text>
+        <view class="empty-cta" @click="goProjects">去选项目</view>
       </view>
-      <text v-if="selectedProjectId" class="link-btn" @click="pickProject">切换</text>
     </view>
 
-    <view v-if="!selectedProjectId" class="empty-panel">
-      <text class="empty-title">请先选择项目</text>
-      <text class="empty-sub">在「项目」页点选，或从最近项目选择</text>
-      <button class="btn btn-primary" @click="goProjects">去选项目</button>
-    </view>
-
-    <scroll-view v-else scroll-y class="scroll-body">
+    <scroll-view v-else scroll-y class="scroll-body command-scroll">
       <view class="section">
         <text class="section-label">常用指令</text>
-        <view class="cmd-panel">
+        <view class="panel cmd-panel">
           <CommandButton
             layout="hero"
             variant="primary"
@@ -59,13 +63,18 @@
 
       <view class="section">
         <text class="section-label">跳转 Web</text>
-        <view class="web-panel">
+        <view class="panel web-panel">
           <view class="web-row web-row-primary" @click="openWebEdit">
-            <text class="web-row-title">在电脑端编辑</text>
+            <view class="web-row-main">
+              <text class="web-row-title">在电脑端编辑</text>
+              <text class="web-row-sub">分镜、合成等精细操作</text>
+            </view>
             <text class="web-row-arrow">›</text>
           </view>
           <view class="web-row" @click="copyWebEdit">
-            <text class="web-row-title muted">复制编辑链接</text>
+            <view class="web-row-main">
+              <text class="web-row-title muted">复制编辑链接</text>
+            </view>
             <text class="web-row-arrow">›</text>
           </view>
         </view>
@@ -75,6 +84,7 @@
 
     <view v-if="scopeSheet" class="mask" @click.self="scopeSheet = false">
       <view class="sheet">
+        <view class="sheet-handle" />
         <text class="sheet-title">写指定范围</text>
         <view class="field">
           <text class="field-label">从第</text>
@@ -85,10 +95,10 @@
           <input v-model="toChapter" class="input" type="number" />
         </view>
         <view class="sheet-actions">
-          <button class="btn btn-ghost" @click="scopeSheet = false">取消</button>
-          <button class="btn btn-primary" :disabled="busy === 'scope'" @click="runScope">
+          <view class="btn btn-ghost" @click="scopeSheet = false">取消</view>
+          <view class="btn btn-primary" @click="runScope">
             {{ busy === 'scope' ? '下达中…' : '确认下达' }}
-          </button>
+          </view>
         </view>
       </view>
     </view>
@@ -102,6 +112,7 @@ import { ref } from 'vue'
 import { onShow as onPageShow } from '@dcloudio/uni-app'
 import AppTabBar from '../../components/AppTabBar.vue'
 import CommandButton from '../../components/CommandButton.vue'
+import PageHeader from '../../components/PageHeader.vue'
 import { useAuth } from '../../composables/useAuth'
 import { useProjectSelection } from '../../composables/useProjects'
 import { batchJobsApi, dramasApi, mobileApi } from '../../api'
@@ -259,116 +270,41 @@ onPageShow(() => {
 </script>
 
 <style scoped>
-.page-shell {
-  min-height: 100vh;
-  padding-bottom: calc(60px + env(safe-area-inset-bottom));
-  background: var(--body-bg);
-  box-sizing: border-box;
-  overflow-x: hidden;
-}
-.top-bar {
-  display: flex;
-  justify-content: space-between;
-  align-items: flex-start;
-  padding: 16px;
-}
-.top-title {
-  display: block;
-  font-size: 22px;
-  font-weight: 700;
-}
-.project-name {
-  display: block;
-  font-size: 13px;
-  color: var(--accent-text);
-  margin-top: 4px;
-}
-.top-sub {
-  font-size: 12px;
-  color: var(--text-3);
-}
-.link-btn {
-  font-size: 13px;
-  color: var(--accent);
-}
-.empty-panel {
-  margin: 24px 16px;
-  padding: 32px 20px;
-  text-align: center;
-  background: var(--bg-0);
-  border-radius: var(--radius-lg);
-}
-.empty-title {
-  display: block;
-  font-weight: 600;
-  margin-bottom: 6px;
-}
-.empty-sub {
-  display: block;
-  font-size: 12px;
-  color: var(--text-3);
-  margin-bottom: 16px;
-}
-.scroll-body {
-  height: calc(100vh - 100px);
-  width: 100%;
-  box-sizing: border-box;
-  padding: 0 16px;
+.command-scroll {
+  height: calc(100vh - 120px);
 }
 .section {
   margin-bottom: 20px;
-  width: 100%;
-  box-sizing: border-box;
-}
-.section-label {
-  display: block;
-  font-size: 13px;
-  font-weight: 600;
-  color: var(--text-1);
-  margin-bottom: 10px;
 }
 .cmd-panel {
-  width: 100%;
-  box-sizing: border-box;
-  background: var(--bg-0);
-  border-radius: var(--radius-lg);
-  box-shadow: var(--shadow-card);
   padding: 12px;
 }
 .cmd-list {
-  margin-top: 8px;
+  margin-top: 4px;
   padding-top: 4px;
-  border-top: 1px solid var(--border);
-}
-.web-panel {
-  width: 100%;
-  box-sizing: border-box;
-  background: var(--bg-0);
-  border-radius: var(--radius-lg);
-  box-shadow: var(--shadow-card);
-  overflow: hidden;
+  border-top: 1px solid var(--border-soft);
 }
 .web-row {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  width: 100%;
-  box-sizing: border-box;
+  gap: 12px;
   padding: 14px 16px;
-  border-bottom: 1px solid var(--border);
-  background: transparent;
-}
-.web-row::after {
-  display: none;
+  border-bottom: 1px solid var(--border-soft);
 }
 .web-row:last-child {
   border-bottom: none;
 }
+.web-row-main {
+  flex: 1;
+  min-width: 0;
+}
 .web-row-primary .web-row-title {
   color: var(--accent-text);
-  font-weight: 600;
+  font-weight: 700;
 }
 .web-row-title {
+  display: block;
   font-size: 14px;
   color: var(--text-0);
 }
@@ -376,40 +312,15 @@ onPageShow(() => {
   color: var(--text-2);
   font-weight: 400;
 }
-.web-row-arrow {
-  font-size: 18px;
-  color: var(--text-3);
-}
-.section-hint {
+.web-row-sub {
   display: block;
-  margin-top: 8px;
+  margin-top: 2px;
   font-size: 11px;
   color: var(--text-3);
 }
-.mask {
-  position: fixed;
-  inset: 0;
-  background: rgba(24, 33, 50, 0.45);
-  z-index: 200;
-  display: flex;
-  align-items: flex-end;
-}
-.sheet {
-  width: 100%;
-  background: var(--bg-0);
-  border-radius: 16px 16px 0 0;
-  padding: 20px 16px calc(16px + env(safe-area-inset-bottom));
-}
-.sheet-title {
-  display: block;
-  font-size: 17px;
-  font-weight: 700;
-  margin-bottom: 16px;
-}
-.sheet-actions {
-  display: flex;
-  justify-content: flex-end;
-  gap: 10px;
-  margin-top: 8px;
+.web-row-arrow {
+  font-size: 20px;
+  color: var(--text-3);
+  flex-shrink: 0;
 }
 </style>

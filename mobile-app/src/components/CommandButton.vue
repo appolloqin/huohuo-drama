@@ -74,11 +74,11 @@ function onTap() {
 .cmd--hero {
   display: flex;
   align-items: center;
-  gap: 12px;
-  padding: 16px;
-  border-radius: var(--radius-lg);
+  gap: 14px;
+  padding: 18px 16px;
+  border-radius: 14px;
   background: var(--accent-gradient);
-  box-shadow: 0 4px 14px rgba(76, 125, 255, 0.2);
+  box-shadow: 0 8px 20px rgba(76, 125, 255, 0.28);
 }
 .cmd--hero .cmd-title {
   color: #fff;

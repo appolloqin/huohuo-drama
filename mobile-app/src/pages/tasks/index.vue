@@ -1,12 +1,14 @@
 <template>
   <view class="page-shell">
-    <view class="top-bar">
-      <text class="top-title">任务</text>
-      <text class="top-sub">批量撰写 / 制作进度</text>
+    <PageHeader title="任务" subtitle="批量撰写 / 制作进度" kicker="Tasks" />
+
+    <view v-if="active.length" class="active-banner">
+      <view class="banner-dot" />
+      <text class="banner-text">{{ active.length }} 个任务进行中</text>
     </view>
 
-    <scroll-view scroll-y class="scroll-body">
-      <view v-if="loading" class="empty">加载中…</view>
+    <scroll-view scroll-y class="scroll-body tasks-scroll">
+      <view v-if="loading" class="loading-hint">加载中…</view>
       <template v-else>
         <view v-if="active.length" class="section">
           <text class="section-label">进行中</text>
@@ -28,10 +30,11 @@
             @open="openDetail(job.id)"
           />
         </view>
-        <view v-if="!active.length && !recent.length" class="empty-card">
-          <text class="empty-title">暂无任务</text>
-          <text class="empty-sub">在「指令」页下达批量撰写或制作指令</text>
-          <view class="empty-action" @click="goCommand">去发指令</view>
+        <view v-if="!active.length && !recent.length" class="empty-state">
+          <view class="empty-state-icon">◷</view>
+          <text class="empty-state-title">暂无任务</text>
+          <text class="empty-state-sub">在「指令」页下达批量撰写或制作指令</text>
+          <view class="empty-cta" @click="goCommand">去发指令</view>
         </view>
       </template>
     </scroll-view>
@@ -44,6 +47,7 @@
 import { ref } from 'vue'
 import { onShow, onHide, onUnload } from '@dcloudio/uni-app'
 import AppTabBar from '../../components/AppTabBar.vue'
+import PageHeader from '../../components/PageHeader.vue'
 import TaskCard from '../../components/TaskCard.vue'
 import { useAuth } from '../../composables/useAuth'
 import { batchJobsApi } from '../../api'
@@ -118,79 +122,43 @@ onUnload(stopPoll)
 </script>
 
 <style scoped>
-.page-shell {
-  min-height: 100vh;
-  padding-bottom: calc(60px + env(safe-area-inset-bottom));
-  background: var(--body-bg);
-  box-sizing: border-box;
-  overflow-x: hidden;
+.tasks-scroll {
+  height: calc(100vh - 130px);
 }
-.top-bar {
-  padding: 16px;
-  box-sizing: border-box;
+.active-banner {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0 16px 12px;
+  padding: 10px 14px;
+  border-radius: var(--radius);
+  background: var(--info-bg);
+  border: 1px solid rgba(58, 115, 204, 0.18);
 }
-.top-title {
-  display: block;
-  font-size: 22px;
-  font-weight: 700;
+.banner-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--info);
+  animation: pulse 1.8s ease-out infinite;
 }
-.top-sub {
-  font-size: 12px;
-  color: var(--text-3);
-}
-.scroll-body {
-  height: calc(100vh - 90px);
-  width: 100%;
-  box-sizing: border-box;
-  padding: 0 16px;
+.banner-text {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--info);
 }
 .section {
   margin-bottom: 16px;
-  width: 100%;
-  box-sizing: border-box;
 }
-.section-label {
-  display: block;
-  font-size: 12px;
-  font-weight: 600;
-  color: var(--text-2);
-  margin-bottom: 8px;
-}
-.empty {
+.loading-hint {
   text-align: center;
-  padding: 40px;
+  padding: 48px 20px;
   color: var(--text-3);
+  font-size: 13px;
 }
-.empty-card {
-  margin-top: 24px;
-  width: 100%;
-  box-sizing: border-box;
-  padding: 32px 20px;
-  text-align: center;
-  background: var(--bg-0);
-  border-radius: var(--radius-lg);
-}
-.empty-action {
-  display: inline-block;
-  min-width: 120px;
-  height: 40px;
-  line-height: 40px;
-  padding: 0 20px;
-  border-radius: var(--radius);
-  background: var(--accent-gradient);
-  color: #fff;
-  font-size: 14px;
-  font-weight: 600;
-}
-.empty-title {
-  display: block;
-  font-weight: 600;
-  margin-bottom: 6px;
-}
-.empty-sub {
-  display: block;
-  font-size: 12px;
-  color: var(--text-3);
-  margin-bottom: 16px;
+@keyframes pulse {
+  0% { box-shadow: 0 0 0 0 rgba(58, 115, 204, 0.45); }
+  70% { box-shadow: 0 0 0 8px rgba(58, 115, 204, 0); }
+  100% { box-shadow: 0 0 0 0 rgba(58, 115, 204, 0); }
 }
 </style>

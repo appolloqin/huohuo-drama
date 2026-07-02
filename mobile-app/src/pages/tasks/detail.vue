@@ -1,20 +1,23 @@
 <template>
   <view class="page-detail" v-if="job">
-    <view class="head">
+    <view class="detail-hero">
       <text class="kicker">{{ job.project_type === 'novel' ? '数字作家' : '数字导演' }}</text>
       <text class="title">《{{ job.drama_title || '未命名' }}》</text>
-      <text class="status" :class="job.status">{{ statusLabel }}</text>
+      <text class="status-badge" :class="job.status">{{ statusLabel }}</text>
     </view>
 
-    <view class="card">
+    <view class="card panel">
       <text class="card-label">总进度</text>
-      <text class="card-value">{{ progressText }}</text>
+      <view class="progress-head">
+        <text class="card-value">{{ progressText }}</text>
+        <text v-if="pct > 0" class="progress-pct">{{ pct }}%</text>
+      </view>
       <view v-if="pct > 0" class="progress-rail">
         <view class="progress-bar" :style="{ width: pct + '%' }" />
       </view>
     </view>
 
-    <view v-if="job.progress" class="card">
+    <view v-if="job.progress" class="card panel">
       <text class="card-label">当前阶段</text>
       <text class="card-value">
         第 {{ job.progress.episode_number || '—' }} {{ unit }}
@@ -27,7 +30,7 @@
       <text v-if="job.progress.check_summary" class="card-summary">{{ job.progress.check_summary }}</text>
     </view>
 
-    <view v-if="job.error_message" class="card error-card">
+    <view v-if="job.error_message" class="card panel error-card">
       <text class="card-label">错误</text>
       <text class="card-summary">{{ job.error_message }}</text>
     </view>
@@ -38,7 +41,7 @@
         class="action-block action-block-danger"
         @click="cancel"
       >停止任务</view>
-      <view class="action-block" @click="openWeb">
+      <view class="action-block action-block-primary" @click="openWeb">
         在电脑端查看 / 编辑
       </view>
     </view>
@@ -167,76 +170,74 @@ onUnload(stopPoll)
   box-sizing: border-box;
   overflow-x: hidden;
 }
-.head {
+.detail-hero {
   margin-bottom: 16px;
+  padding: 4px 2px 8px;
 }
 .kicker {
   display: block;
   font-size: 11px;
-  font-weight: 600;
-  color: var(--text-2);
-  margin-bottom: 4px;
+  font-weight: 700;
+  color: var(--accent);
+  margin-bottom: 6px;
+  letter-spacing: 0.04em;
 }
 .title {
   display: block;
-  font-size: 20px;
+  font-size: 22px;
   font-weight: 700;
-  margin-bottom: 6px;
+  margin-bottom: 10px;
+  line-height: 1.3;
 }
-.status {
-  font-size: 13px;
-  color: var(--info);
-}
-.status.completed { color: var(--success); }
-.status.failed { color: var(--error); }
 .card {
-  width: 100%;
-  box-sizing: border-box;
-  background: var(--bg-0);
-  border-radius: var(--radius-lg);
-  padding: 14px 16px;
+  padding: 16px;
   margin-bottom: 12px;
-  box-shadow: var(--shadow-card);
 }
 .card-label {
   display: block;
   font-size: 11px;
+  font-weight: 600;
   color: var(--text-3);
-  margin-bottom: 4px;
+  margin-bottom: 6px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+.progress-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
 }
 .card-value {
   display: block;
-  font-size: 15px;
-  font-weight: 600;
+  font-size: 16px;
+  font-weight: 700;
   color: var(--text-0);
+}
+.progress-pct {
+  font-size: 14px;
+  font-weight: 700;
+  color: var(--accent-text);
 }
 .card-sub {
   display: block;
   font-size: 12px;
   color: var(--text-2);
-  margin-top: 6px;
+  margin-top: 8px;
 }
 .card-summary {
   display: block;
   font-size: 12px;
   color: var(--text-2);
   margin-top: 8px;
-  line-height: 1.5;
+  line-height: 1.55;
 }
 .error-card {
-  border: 1px solid rgba(210, 79, 102, 0.25);
+  border-color: rgba(210, 79, 102, 0.28);
   background: var(--error-bg);
 }
 .progress-rail {
-  height: 3px;
-  background: var(--bg-3);
-  border-radius: 99px;
-  margin-top: 10px;
-  overflow: hidden;
-}
-.progress-bar {
-  height: 100%;
-  background: var(--accent-gradient);
+  margin-top: 12px;
 }
 .actions {
   display: flex;
@@ -244,28 +245,32 @@ onUnload(stopPoll)
   gap: 10px;
   margin-top: 8px;
   width: 100%;
-  box-sizing: border-box;
 }
 .action-block {
   width: 100%;
   box-sizing: border-box;
-  height: 44px;
-  line-height: 44px;
+  height: 46px;
+  line-height: 46px;
   text-align: center;
   font-size: 14px;
   font-weight: 600;
   border-radius: var(--radius);
   color: var(--text-2);
-  background: transparent;
+  background: var(--bg-0);
   border: 1px solid var(--border);
+}
+.action-block-primary {
+  color: var(--accent-text);
+  background: var(--accent-bg);
+  border-color: rgba(76, 125, 255, 0.28);
 }
 .action-block-danger {
   color: var(--error);
   background: var(--error-bg);
-  border-color: rgba(210, 79, 102, 0.35);
+  border-color: rgba(210, 79, 102, 0.28);
 }
 .loading {
-  padding: 40px;
+  padding: 48px;
   text-align: center;
   color: var(--text-3);
 }

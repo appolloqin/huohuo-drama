@@ -1,27 +1,29 @@
 <template>
-  <view class="project-card" @click="$emit('open')">
-    <view class="card-rail" :class="item.project_type" />
-    <view class="card-body">
-      <view class="card-head">
-        <view class="kind-chip" :class="item.project_type">
-          {{ item.project_type === 'novel' ? '小说' : '短剧' }}
-        </view>
-        <text v-if="item.genre || item.style" class="meta-chip">{{ item.genre || item.style }}</text>
+  <view class="project-card" :class="item.project_type" @click="$emit('open')">
+    <view class="card-top">
+      <view class="type-badge" :class="item.project_type">
+        {{ item.project_type === 'novel' ? '小说' : '短剧' }}
       </view>
-      <text class="card-title">{{ item.title }}</text>
-      <view class="stats-row">
-        <text class="stat">
-          {{ item.written_count || 0 }}/{{ item.total_episodes || 0 }}
-          {{ item.project_type === 'novel' ? '章' : '集' }}
-        </text>
-      </view>
-      <view class="progress-rail">
-        <view class="progress-bar" :style="{ width: progressPct + '%' }" />
-      </view>
-      <view class="card-actions" @click.stop>
-        <view class="action-chip action-chip-primary" @click="$emit('command')">发指令</view>
-        <view class="action-chip" @click="$emit('web')">电脑编辑</view>
-      </view>
+      <text v-if="item.genre || item.style" class="meta-tag">{{ item.genre || item.style }}</text>
+      <text class="progress-pct">{{ progressPct }}%</text>
+    </view>
+    <text class="card-title">{{ item.title }}</text>
+    <view class="stats-line">
+      <text class="stat-text">
+        已完成 {{ item.written_count || 0 }} / {{ item.total_episodes || 0 }}
+        {{ item.project_type === 'novel' ? '章' : '集' }}
+      </text>
+    </view>
+    <view class="progress-rail">
+      <view
+        class="progress-bar"
+        :class="item.project_type"
+        :style="{ width: progressPct + '%' }"
+      />
+    </view>
+    <view class="card-actions" @click.stop>
+      <view class="action-chip action-chip-primary" @click="$emit('command')">发指令</view>
+      <view class="action-chip" @click="$emit('web')">电脑编辑</view>
     </view>
   </view>
 </template>
@@ -42,98 +44,91 @@ const progressPct = computed(() => {
 
 <style scoped>
 .project-card {
-  display: flex;
   width: 100%;
   max-width: 100%;
   box-sizing: border-box;
   background: var(--bg-0);
   border-radius: var(--radius-lg);
+  border: 1px solid var(--border-soft);
   box-shadow: var(--shadow-card);
-  overflow: hidden;
+  padding: 16px;
   margin-bottom: 12px;
+  position: relative;
+  overflow: hidden;
 }
-.card-rail {
+.project-card::before {
+  content: '';
+  position: absolute;
+  left: 0;
+  top: 0;
+  bottom: 0;
   width: 4px;
-  flex-shrink: 0;
+  background: var(--accent-gradient);
 }
-.card-rail.novel { background: linear-gradient(180deg, #7aa7ff, #4c7dff); }
-.card-rail.drama { background: linear-gradient(180deg, #f0b45c, #d4882d); }
-.card-body {
-  flex: 1;
-  min-width: 0;
-  padding: 14px 14px 14px 12px;
-  box-sizing: border-box;
+.project-card.drama::before {
+  background: linear-gradient(180deg, #f0b45c, #d4882d);
 }
-.card-head {
+.card-top {
   display: flex;
   align-items: center;
   gap: 8px;
-  margin-bottom: 8px;
-  flex-wrap: wrap;
+  margin-bottom: 10px;
+  padding-left: 2px;
 }
-.kind-chip {
+.type-badge {
   font-size: 10px;
-  font-weight: 600;
-  padding: 2px 8px;
-  border-radius: 99px;
+  font-weight: 700;
+  padding: 3px 8px;
+  border-radius: 6px;
+  letter-spacing: 0.02em;
 }
-.kind-chip.novel {
+.type-badge.novel {
   color: var(--accent-text);
   background: var(--accent-bg);
 }
-.kind-chip.drama {
+.type-badge.drama {
   color: #8a5a12;
-  background: rgba(212, 136, 45, 0.12);
+  background: var(--drama-bg);
 }
-.meta-chip {
-  font-size: 10px;
+.meta-tag {
+  flex: 1;
+  min-width: 0;
+  font-size: 11px;
   color: var(--text-3);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.progress-pct {
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--accent-text);
+}
+.project-card.drama .progress-pct {
+  color: #8a5a12;
 }
 .card-title {
   display: block;
-  font-size: 16px;
-  font-weight: 600;
+  font-size: 17px;
+  font-weight: 700;
   color: var(--text-0);
   margin-bottom: 8px;
+  line-height: 1.35;
   word-break: break-all;
 }
-.stats-row { margin-bottom: 8px; }
-.stat { font-size: 12px; color: var(--text-2); }
-.progress-rail {
-  height: 3px;
-  background: var(--bg-3);
-  border-radius: 99px;
-  overflow: hidden;
-  margin-bottom: 12px;
+.stats-line {
+  margin-bottom: 10px;
 }
-.progress-bar {
-  height: 100%;
-  background: var(--accent-gradient);
-  border-radius: 99px;
+.stat-text {
+  font-size: 12px;
+  color: var(--text-2);
+}
+.progress-rail {
+  margin-bottom: 14px;
 }
 .card-actions {
   display: flex;
   gap: 8px;
   width: 100%;
-  box-sizing: border-box;
-}
-.action-chip {
-  flex: 1;
-  min-width: 0;
-  height: 32px;
-  line-height: 32px;
-  text-align: center;
-  font-size: 12px;
-  font-weight: 600;
-  border-radius: var(--radius);
-  color: var(--text-2);
-  background: transparent;
-  border: 1px solid var(--border);
-  box-sizing: border-box;
-}
-.action-chip-primary {
-  color: var(--accent-text);
-  background: var(--accent-bg);
-  border-color: rgba(76, 125, 255, 0.35);
 }
 </style>
