@@ -1,46 +1,51 @@
 <template>
   <view
-    class="cmd"
+    class="cmd tappable"
     :class="[`cmd--${layout}`, `cmd--${variant}`, { 'cmd--disabled': disabled || loading }]"
     @click="onTap"
   >
-    <!-- 主操作：横向大卡 -->
     <template v-if="layout === 'hero'">
-      <view class="cmd-hero-icon">{{ icon }}</view>
+      <view class="cmd-hero-icon">
+      <AppIcon :name="iconName" size="lg" color="#4c7dff" />
+      </view>
       <view class="cmd-hero-text">
         <text class="cmd-title">{{ title }}</text>
         <text v-if="subtitle" class="cmd-sub">{{ subtitle }}</text>
       </view>
-      <text v-if="loading" class="cmd-spinner">…</text>
-      <text v-else class="cmd-hero-arrow">›</text>
+      <view v-if="loading" class="cmd-loading cmd-loading--muted" />
+      <AppIcon v-else name="chevron" size="md" color="#8b97ab" />
     </template>
 
-    <!-- 次操作：列表行 -->
     <template v-else>
-      <view class="cmd-row-icon" :class="`cmd-row-icon--${variant}`">{{ icon }}</view>
+      <view class="cmd-row-icon" :class="`cmd-row-icon--${variant}`">
+        <AppIcon :name="iconName" size="md" :color="iconColor" />
+      </view>
       <view class="cmd-row-text">
         <text class="cmd-title">{{ title }}</text>
         <text v-if="subtitle" class="cmd-sub">{{ subtitle }}</text>
       </view>
-      <text v-if="loading" class="cmd-spinner">…</text>
-      <text v-else class="cmd-row-arrow">›</text>
+      <view v-if="loading" class="cmd-loading cmd-loading--muted" />
+      <AppIcon v-else name="chevron" size="sm" color="#8b97ab" />
     </template>
   </view>
 </template>
 
 <script setup lang="ts">
+import { computed } from 'vue'
+import AppIcon, { type AppIconName } from './AppIcon.vue'
+
 const props = withDefaults(
   defineProps<{
     title: string
     subtitle?: string
-    icon?: string
+    icon?: AppIconName
     variant?: 'primary' | 'default' | 'danger'
     layout?: 'hero' | 'row'
     disabled?: boolean
     loading?: boolean
   }>(),
   {
-    icon: '⌘',
+    icon: 'command',
     variant: 'default',
     layout: 'row',
     disabled: false,
@@ -48,6 +53,13 @@ const props = withDefaults(
   },
 )
 const emit = defineEmits<{ click: [] }>()
+
+const iconName = computed(() => props.icon)
+
+const iconColor = computed(() => {
+  if (props.variant === 'danger') return '#d24f66'
+  return '#4c7dff'
+})
 
 function onTap() {
   if (props.disabled || props.loading) return
@@ -57,48 +69,39 @@ function onTap() {
 
 <style scoped>
 .cmd {
-  display: block;
+  display: flex;
+  align-items: center;
+  gap: 12px;
   width: 100%;
   max-width: 100%;
-  margin: 0;
-  padding: 0;
-  border: none;
-  background: transparent;
-  text-align: left;
-  line-height: 1.35;
   box-sizing: border-box;
   overflow: hidden;
 }
 
-/* ── Hero 主指令 ── */
 .cmd--hero {
-  display: flex;
-  align-items: center;
-  gap: 14px;
   padding: 18px 16px;
   border-radius: 14px;
-  background: var(--accent-gradient);
-  box-shadow: 0 8px 20px rgba(76, 125, 255, 0.28);
+  background: var(--accent-bg);
+  border: 1px solid var(--accent-line);
 }
 .cmd--hero .cmd-title {
-  color: #fff;
+  color: var(--accent-text);
   font-size: 16px;
   font-weight: 700;
 }
 .cmd--hero .cmd-sub {
-  color: rgba(255, 255, 255, 0.82);
-  font-size: 12px;
-  margin-top: 4px;
+  color: var(--text-2);
+  font-size: 13px;
+  margin-top: 3px;
 }
 .cmd-hero-icon {
   width: 44px;
   height: 44px;
   border-radius: 12px;
-  background: rgba(255, 255, 255, 0.2);
+  background: #fff;
   display: flex;
   align-items: center;
   justify-content: center;
-  font-size: 20px;
   flex-shrink: 0;
 }
 .cmd-hero-text {
@@ -107,38 +110,24 @@ function onTap() {
   display: flex;
   flex-direction: column;
 }
-.cmd-hero-arrow {
-  font-size: 22px;
-  color: rgba(255, 255, 255, 0.75);
-  flex-shrink: 0;
-}
 
-/* ── Row 列表行 ── */
 .cmd--row {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  padding: 14px 2px;
-  border-bottom: 1px solid var(--border);
+  padding: 14px 4px;
+  border-bottom: 1px solid var(--border-soft);
 }
-.cmd--row:last-child {
-  border-bottom: none;
-}
+.cmd--row:last-child { border-bottom: none; }
 .cmd-row-icon {
-  width: 36px;
-  height: 36px;
-  border-radius: 10px;
+  width: 40px;
+  height: 40px;
+  border-radius: 12px;
   background: var(--accent-bg);
-  color: var(--accent-text);
   display: flex;
   align-items: center;
   justify-content: center;
-  font-size: 15px;
   flex-shrink: 0;
 }
 .cmd-row-icon--danger {
   background: var(--error-bg);
-  color: var(--error);
 }
 .cmd-row-text {
   flex: 1;
@@ -147,21 +136,15 @@ function onTap() {
   flex-direction: column;
 }
 .cmd--row .cmd-title {
-  font-size: 14px;
+  font-size: 15px;
   font-weight: 600;
   color: var(--text-0);
 }
 .cmd--row .cmd-sub {
-  font-size: 11px;
+  font-size: 12px;
   color: var(--text-3);
   margin-top: 2px;
 }
-.cmd-row-arrow {
-  font-size: 18px;
-  color: var(--text-3);
-  flex-shrink: 0;
-}
-
 .cmd--danger.cmd--row .cmd-title {
   color: var(--error);
 }
@@ -171,9 +154,20 @@ function onTap() {
   pointer-events: none;
 }
 
-.cmd-spinner {
-  font-size: 14px;
-  color: var(--text-3);
+.cmd-loading {
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  border: 2px solid rgba(255, 255, 255, 0.35);
+  border-top-color: #fff;
+  animation: spin 0.8s linear infinite;
   flex-shrink: 0;
+}
+.cmd-loading--muted {
+  border-color: #dde4ef;
+  border-top-color: var(--accent);
+}
+@keyframes spin {
+  to { transform: rotate(360deg); }
 }
 </style>

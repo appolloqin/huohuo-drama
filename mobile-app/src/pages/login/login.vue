@@ -1,10 +1,9 @@
 <template>
   <view class="page-login">
-    <view class="login-glow login-glow-a" />
-    <view class="login-glow login-glow-b" />
-
     <view class="brand-block">
-      <view class="brand-mark">火</view>
+      <view class="brand-mark">
+        <AppIcon name="command" size="lg" color="#4c7dff" />
+      </view>
       <text class="brand-name">火火指令台</text>
       <text class="brand-slogan">手机发令，电脑精修</text>
     </view>
@@ -18,10 +17,10 @@
         <text class="field-label">密码</text>
         <input v-model="password" class="input" password placeholder="请输入密码" />
       </view>
-      <view class="btn btn-primary btn-block login-btn" @click="onLogin">
+      <view class="btn btn-primary btn-block login-btn tappable" @click="onLogin">
         {{ busy ? '登录中…' : '登录' }}
       </view>
-      <view class="btn btn-ghost btn-block" @click="onRegister">注册账号</view>
+      <view class="btn btn-ghost btn-block tappable" @click="onRegister">注册账号</view>
       <text v-if="error" class="error-text">{{ error }}</text>
     </view>
 
@@ -31,6 +30,7 @@
 
 <script setup lang="ts">
 import { ref } from 'vue'
+import AppIcon from '../../components/AppIcon.vue'
 import { useAuth } from '../../composables/useAuth'
 
 const { login, register } = useAuth()
@@ -40,6 +40,7 @@ const busy = ref(false)
 const error = ref('')
 
 async function onLogin() {
+  if (busy.value) return
   if (!username.value.trim() || !password.value) {
     error.value = '请输入用户名和密码'
     return
@@ -57,6 +58,7 @@ async function onLogin() {
 }
 
 async function onRegister() {
+  if (busy.value) return
   if (!username.value.trim() || password.value.length < 6) {
     error.value = '用户名必填，密码至少 6 位'
     return
@@ -77,47 +79,24 @@ async function onRegister() {
 <style scoped>
 .page-login {
   min-height: 100vh;
-  padding: 56px 24px 24px;
+  padding: 64px 24px 24px;
   background: var(--body-bg);
   box-sizing: border-box;
-  position: relative;
-  overflow: hidden;
-}
-.login-glow {
-  position: absolute;
-  border-radius: 50%;
-  pointer-events: none;
-}
-.login-glow-a {
-  width: 220px;
-  height: 220px;
-  top: -60px;
-  right: -40px;
-  background: radial-gradient(circle, rgba(76, 125, 255, 0.18) 0%, transparent 70%);
-}
-.login-glow-b {
-  width: 180px;
-  height: 180px;
-  bottom: 80px;
-  left: -60px;
-  background: radial-gradient(circle, rgba(122, 167, 255, 0.12) 0%, transparent 70%);
 }
 .brand-block {
-  position: relative;
   margin-bottom: 36px;
 }
 .brand-mark {
-  width: 56px;
-  height: 56px;
-  margin-bottom: 16px;
-  border-radius: 16px;
-  background: var(--accent-gradient);
-  color: #fff;
-  font-size: 26px;
-  font-weight: 700;
-  line-height: 56px;
-  text-align: center;
-  box-shadow: 0 10px 24px rgba(76, 125, 255, 0.32);
+  width: 60px;
+  height: 60px;
+  margin-bottom: 18px;
+  border-radius: 18px;
+  background: var(--accent-bg);
+  border: 1px solid var(--accent-line);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  box-shadow: var(--shadow-soft);
 }
 .brand-name {
   display: block;
@@ -125,14 +104,13 @@ async function onRegister() {
   font-weight: 700;
   color: var(--text-0);
   margin-bottom: 8px;
-  letter-spacing: -0.02em;
+  letter-spacing: -0.03em;
 }
 .brand-slogan {
-  font-size: 14px;
+  font-size: 15px;
   color: var(--text-2);
 }
 .form-card {
-  position: relative;
   padding: 22px 18px;
 }
 .login-btn {
@@ -141,16 +119,15 @@ async function onRegister() {
 .error-text {
   display: block;
   margin-top: 12px;
-  font-size: 12px;
+  font-size: 13px;
   color: var(--error);
   text-align: center;
 }
 .foot-hint {
   display: block;
-  position: relative;
   text-align: center;
   margin-top: 28px;
-  font-size: 12px;
+  font-size: 13px;
   color: var(--text-3);
 }
 </style>

@@ -1,6 +1,6 @@
 <template>
   <view class="page-shell">
-    <PageHeader title="任务" subtitle="批量撰写 / 制作进度" kicker="Tasks" />
+    <PageHeader title="任务" subtitle="批量撰写 / 制作进度" />
 
     <view v-if="active.length" class="active-banner">
       <view class="banner-dot" />
@@ -30,12 +30,14 @@
             @open="openDetail(job.id)"
           />
         </view>
-        <view v-if="!active.length && !recent.length" class="empty-state">
-          <view class="empty-state-icon">◷</view>
-          <text class="empty-state-title">暂无任务</text>
-          <text class="empty-state-sub">在「指令」页下达批量撰写或制作指令</text>
-          <view class="empty-cta" @click="goCommand">去发指令</view>
-        </view>
+        <EmptyState
+          v-if="!active.length && !recent.length"
+          icon="tasks"
+          title="暂无任务"
+          subtitle="在「指令」页下达批量撰写或制作指令"
+          action="去发指令"
+          @click="goCommand"
+        />
       </template>
     </scroll-view>
 
@@ -47,6 +49,7 @@
 import { ref } from 'vue'
 import { onShow, onHide, onUnload } from '@dcloudio/uni-app'
 import AppTabBar from '../../components/AppTabBar.vue'
+import EmptyState from '../../components/EmptyState.vue'
 import PageHeader from '../../components/PageHeader.vue'
 import TaskCard from '../../components/TaskCard.vue'
 import { useAuth } from '../../composables/useAuth'
@@ -123,17 +126,17 @@ onUnload(stopPoll)
 
 <style scoped>
 .tasks-scroll {
-  height: calc(100vh - 130px);
+  height: calc(100vh - 126px);
 }
 .active-banner {
   display: flex;
   align-items: center;
-  gap: 8px;
-  margin: 0 16px 12px;
-  padding: 10px 14px;
-  border-radius: var(--radius);
+  gap: 10px;
+  margin: 0 16px 14px;
+  padding: 12px 14px;
+  border-radius: 12px;
   background: var(--info-bg);
-  border: 1px solid rgba(58, 115, 204, 0.18);
+  border: 1px solid #d4e4f8;
 }
 .banner-dot {
   width: 8px;
@@ -143,18 +146,16 @@ onUnload(stopPoll)
   animation: pulse 1.8s ease-out infinite;
 }
 .banner-text {
-  font-size: 13px;
+  font-size: 14px;
   font-weight: 600;
   color: var(--info);
 }
-.section {
-  margin-bottom: 16px;
-}
+.section { margin-bottom: 18px; }
 .loading-hint {
   text-align: center;
   padding: 48px 20px;
   color: var(--text-3);
-  font-size: 13px;
+  font-size: 14px;
 }
 @keyframes pulse {
   0% { box-shadow: 0 0 0 0 rgba(58, 115, 204, 0.45); }
