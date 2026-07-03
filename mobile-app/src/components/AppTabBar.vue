@@ -3,15 +3,21 @@
     <view
       v-for="item in tabs"
       :key="item.id"
-      class="tab-item"
+      class="tab-item tappable"
       :class="{ active: active === item.id }"
       @click="go(item)"
     >
       <view class="tab-icon-wrap" :class="{ active: active === item.id }">
-        <text class="tab-icon">{{ item.icon }}</text>
+        <AppIcon
+          :name="item.icon"
+          size="md"
+          :color="active === item.id ? '#4c7dff' : '#8b97ab'"
+        />
       </view>
       <text class="tab-label">{{ item.label }}</text>
-      <view v-if="item.id === 'tasks' && taskBadge > 0" class="tab-badge">{{ taskBadge > 9 ? '9+' : taskBadge }}</view>
+      <view v-if="item.id === 'tasks' && taskBadge > 0" class="tab-badge">
+        {{ taskBadge > 9 ? '9+' : taskBadge }}
+      </view>
     </view>
   </view>
 </template>
@@ -19,6 +25,7 @@
 <script setup lang="ts">
 import { ref, onMounted } from 'vue'
 import { batchJobsApi } from '../api'
+import AppIcon, { type AppIconName } from './AppIcon.vue'
 
 defineProps<{
   active: 'projects' | 'command' | 'tasks' | 'me'
@@ -26,11 +33,11 @@ defineProps<{
 
 const taskBadge = ref(0)
 
-const tabs = [
-  { id: 'projects' as const, label: '项目', icon: '▦', path: '/pages/projects/index' },
-  { id: 'command' as const, label: '指令', icon: '⌘', path: '/pages/command/index' },
-  { id: 'tasks' as const, label: '任务', icon: '◷', path: '/pages/tasks/index' },
-  { id: 'me' as const, label: '我的', icon: '○', path: '/pages/me/index' },
+const tabs: { id: 'projects' | 'command' | 'tasks' | 'me'; label: string; icon: AppIconName; path: string }[] = [
+  { id: 'projects', label: '项目', icon: 'projects', path: '/pages/projects/index' },
+  { id: 'command', label: '指令', icon: 'command', path: '/pages/command/index' },
+  { id: 'tasks', label: '任务', icon: 'tasks', path: '/pages/tasks/index' },
+  { id: 'me', label: '我的', icon: 'me', path: '/pages/me/index' },
 ]
 
 async function refreshBadge() {
@@ -54,18 +61,17 @@ defineExpose({ refreshBadge })
 <style scoped>
 .tab-bar {
   position: fixed;
-  left: 12px;
-  right: 12px;
-  bottom: calc(8px + env(safe-area-inset-bottom));
+  left: 16px;
+  right: 16px;
+  bottom: calc(10px + env(safe-area-inset-bottom));
   z-index: 100;
   display: flex;
-  height: 58px;
+  height: 60px;
   padding: 6px;
-  border-radius: 18px;
-  background: rgba(255, 255, 255, 0.94);
+  border-radius: 16px;
+  background: rgba(255, 255, 255, 0.96);
   border: 1px solid var(--border-soft);
-  box-shadow: 0 8px 32px rgba(50, 74, 114, 0.12);
-  backdrop-filter: blur(12px);
+  box-shadow: 0 4px 20px rgba(23, 28, 38, 0.08);
 }
 .tab-item {
   flex: 1;
@@ -73,17 +79,15 @@ defineExpose({ refreshBadge })
   flex-direction: column;
   align-items: center;
   justify-content: center;
-  gap: 2px;
+  gap: 3px;
   position: relative;
   color: var(--text-3);
   border-radius: 12px;
 }
-.tab-item.active {
-  color: var(--accent);
-}
+.tab-item.active { color: var(--accent-text); }
 .tab-icon-wrap {
-  width: 28px;
-  height: 28px;
+  width: 30px;
+  height: 30px;
   border-radius: 10px;
   display: flex;
   align-items: center;
@@ -92,21 +96,18 @@ defineExpose({ refreshBadge })
 .tab-icon-wrap.active {
   background: var(--accent-bg);
 }
-.tab-icon {
-  font-size: 16px;
-  line-height: 1;
-}
 .tab-label {
   font-size: 10px;
   font-weight: 500;
 }
 .tab-item.active .tab-label {
   font-weight: 700;
+  color: var(--accent-text);
 }
 .tab-badge {
   position: absolute;
-  top: 2px;
-  right: calc(50% - 24px);
+  top: 4px;
+  right: calc(50% - 26px);
   min-width: 16px;
   height: 16px;
   padding: 0 4px;

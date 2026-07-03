@@ -10,21 +10,25 @@
       <text
         v-for="tab in filterTabs"
         :key="tab.id"
-        class="filter-tab"
+        class="filter-tab tappable"
         :class="{ active: filter === tab.id }"
         @click="setFilter(tab.id)"
       >{{ tab.label }}</text>
-      <text class="filter-add" @click="showCreate = true">＋</text>
+      <view class="filter-add tappable" @click="showCreate = true">
+        <AppIcon name="plus" size="md" color="#4c7dff" />
+      </view>
     </view>
 
     <scroll-view scroll-y class="scroll-body projects-scroll" @scrolltolower="fetchList">
       <view v-if="loading && !items.length" class="loading-hint">加载中…</view>
-      <view v-else-if="!items.length" class="empty-state" @click="showCreate = true">
-        <view class="empty-state-icon">＋</view>
-        <text class="empty-state-title">创建第一个项目</text>
-        <text class="empty-state-sub">创建后可在此下发写作 / 制作指令</text>
-        <view class="empty-cta">新建项目</view>
-      </view>
+      <EmptyState
+        v-else-if="!items.length"
+        icon="folder"
+        title="创建第一个项目"
+        subtitle="创建后可在此下发写作 / 制作指令"
+        action="新建项目"
+        @click="showCreate = true"
+      />
       <ProjectCard
         v-for="item in items"
         :key="item.id"
@@ -42,8 +46,8 @@
         <view class="field">
           <text class="field-label">类型</text>
           <view class="seg">
-            <text class="seg-item" :class="{ on: createType === 'novel' }" @click="createType = 'novel'">小说</text>
-            <text class="seg-item" :class="{ on: createType === 'drama' }" @click="createType = 'drama'">短剧</text>
+            <text class="seg-item tappable" :class="{ on: createType === 'novel' }" @click="createType = 'novel'">小说</text>
+            <text class="seg-item tappable" :class="{ on: createType === 'drama' }" @click="createType = 'drama'">短剧</text>
           </view>
         </view>
         <view class="field">
@@ -56,14 +60,12 @@
         </view>
         <view class="field">
           <text class="field-label">{{ createType === 'novel' ? '计划章数' : '集数' }}</text>
-          <input v-model="createEpisodes" class="input" type="number" placeholder="如：100" />
+          <input v-model="createEpisodes" class="input" type="number" inputmode="numeric" placeholder="如：100" />
         </view>
         <text class="sheet-hint">详细设定请在电脑端完善</text>
         <view class="sheet-actions">
           <view class="btn btn-ghost" @click="showCreate = false">取消</view>
-          <view class="btn btn-primary" @click="submitCreate">
-            {{ creating ? '创建中…' : '创建' }}
-          </view>
+          <view class="btn btn-primary" @click="submitCreate">{{ creating ? '创建中…' : '创建' }}</view>
         </view>
       </view>
     </view>
@@ -75,8 +77,10 @@
 <script setup lang="ts">
 import { onShow } from '@dcloudio/uni-app'
 import { ref } from 'vue'
+import AppIcon from '../../components/AppIcon.vue'
 import AppTabBar from '../../components/AppTabBar.vue'
 import CreditPill from '../../components/CreditPill.vue'
+import EmptyState from '../../components/EmptyState.vue'
 import PageHeader from '../../components/PageHeader.vue'
 import ProjectCard from '../../components/ProjectCard.vue'
 import { useAuth } from '../../composables/useAuth'
@@ -122,6 +126,7 @@ function openWeb(id: number) {
 }
 
 async function submitCreate() {
+  if (creating.value) return
   if (!createTitle.value.trim()) {
     uni.showToast({ title: '请填写项目名称', icon: 'none' })
     return
@@ -156,12 +161,12 @@ onShow(async () => {
 
 <style scoped>
 .projects-scroll {
-  height: calc(100vh - 168px);
+  height: calc(100vh - 164px);
 }
 .loading-hint {
   text-align: center;
   padding: 48px 20px;
   color: var(--text-3);
-  font-size: 13px;
+  font-size: 14px;
 }
 </style>

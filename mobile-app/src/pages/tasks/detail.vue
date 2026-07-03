@@ -36,14 +36,8 @@
     </view>
 
     <view class="actions">
-      <view
-        v-if="isActive"
-        class="action-block action-block-danger"
-        @click="cancel"
-      >停止任务</view>
-      <view class="action-block action-block-primary" @click="openWeb">
-        在电脑端查看 / 编辑
-      </view>
+      <view v-if="isActive" class="action-block action-block-danger tappable" @click="cancel">停止任务</view>
+      <view class="action-block action-block-primary tappable" @click="openWeb">在电脑端查看 / 编辑</view>
     </view>
   </view>
   <view v-else class="loading">加载中…</view>
@@ -67,12 +61,8 @@ const unit = computed(() => (job.value?.project_type === 'novel' ? '章' : '集'
 
 const statusLabel = computed(() => {
   const map: Record<string, string> = {
-    pending: '排队中',
-    running: '运行中',
-    completed: '已完成',
-    failed: '失败',
-    stopped: '已停止',
-    cancelled: '已取消',
+    pending: '排队中', running: '运行中', completed: '已完成',
+    failed: '失败', stopped: '已停止', cancelled: '已取消',
   }
   return map[job.value?.status || ''] || job.value?.status || ''
 })
@@ -91,11 +81,7 @@ const pct = computed(() => {
 
 function phaseLabel(phase: string) {
   const map: Record<string, string> = {
-    brief: '写作说明',
-    chapter: '撰写',
-    check: '审校',
-    rewrite: '修正',
-    episode: '制作',
+    brief: '写作说明', chapter: '撰写', check: '审校', rewrite: '修正', episode: '制作',
   }
   return map[phase] || phase || '处理中'
 }
@@ -148,15 +134,8 @@ function openWeb() {
   }
 }
 
-onLoad((query) => {
-  jobId = String(query?.id || '')
-})
-
-onShow(() => {
-  if (!requireAuth()) return
-  load().then(startPoll)
-})
-
+onLoad((query) => { jobId = String(query?.id || '') })
+onShow(() => { if (!requireAuth()) return; load().then(startPoll) })
 onHide(stopPoll)
 onUnload(stopPoll)
 </script>
@@ -168,39 +147,33 @@ onUnload(stopPoll)
   padding-bottom: calc(24px + env(safe-area-inset-bottom));
   background: var(--body-bg);
   box-sizing: border-box;
-  overflow-x: hidden;
 }
-.detail-hero {
-  margin-bottom: 16px;
-  padding: 4px 2px 8px;
-}
+.detail-hero { margin-bottom: 18px; }
 .kicker {
   display: block;
   font-size: 11px;
   font-weight: 700;
-  color: var(--accent);
+  color: var(--accent-text);
   margin-bottom: 6px;
-  letter-spacing: 0.04em;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
 }
 .title {
   display: block;
-  font-size: 22px;
+  font-size: 24px;
   font-weight: 700;
   margin-bottom: 10px;
   line-height: 1.3;
 }
-.card {
-  padding: 16px;
-  margin-bottom: 12px;
-}
+.card { padding: 16px; margin-bottom: 12px; }
 .card-label {
   display: block;
   font-size: 11px;
-  font-weight: 600;
+  font-weight: 700;
   color: var(--text-3);
-  margin-bottom: 6px;
+  margin-bottom: 8px;
+  letter-spacing: 0.06em;
   text-transform: uppercase;
-  letter-spacing: 0.04em;
 }
 .progress-head {
   display: flex;
@@ -209,65 +182,61 @@ onUnload(stopPoll)
   gap: 12px;
 }
 .card-value {
-  display: block;
-  font-size: 16px;
+  font-size: 17px;
   font-weight: 700;
   color: var(--text-0);
 }
 .progress-pct {
   font-size: 14px;
-  font-weight: 700;
+  font-weight: 600;
   color: var(--accent-text);
 }
 .card-sub {
   display: block;
-  font-size: 12px;
+  font-size: 13px;
   color: var(--text-2);
   margin-top: 8px;
 }
 .card-summary {
   display: block;
-  font-size: 12px;
+  font-size: 13px;
   color: var(--text-2);
   margin-top: 8px;
   line-height: 1.55;
 }
 .error-card {
-  border-color: rgba(210, 79, 102, 0.28);
+  border-color: #f0c8d0;
   background: var(--error-bg);
 }
-.progress-rail {
-  margin-top: 12px;
-}
+.progress-rail { margin-top: 12px; }
 .actions {
   display: flex;
   flex-direction: column;
   gap: 10px;
   margin-top: 8px;
-  width: 100%;
 }
 .action-block {
   width: 100%;
-  box-sizing: border-box;
   height: 46px;
   line-height: 46px;
   text-align: center;
   font-size: 14px;
   font-weight: 600;
-  border-radius: var(--radius);
+  border-radius: 12px;
   color: var(--text-2);
   background: var(--bg-0);
   border: 1px solid var(--border);
+  box-sizing: border-box;
 }
 .action-block-primary {
   color: var(--accent-text);
   background: var(--accent-bg);
-  border-color: rgba(76, 125, 255, 0.28);
+  border-color: var(--accent-line);
 }
 .action-block-danger {
   color: var(--error);
   background: var(--error-bg);
-  border-color: rgba(210, 79, 102, 0.28);
+  border-color: #f0c8d0;
 }
 .loading {
   padding: 48px;
