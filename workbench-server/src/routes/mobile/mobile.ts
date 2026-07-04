@@ -1,6 +1,5 @@
 /**
  * 移动端专用 HTTP 路由 — 前缀 /api/v1/mobile
- * 不修改既有 auth / dramas / batch-jobs 等路由契约。
  */
 import { Hono } from 'hono'
 import type { Context } from 'hono'
