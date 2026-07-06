@@ -52,7 +52,7 @@ app.post('/episodes/:id/compose-all', async (c) => {
 app.get('/episodes/:id/compose-status', async (c) => {
   const authUser = getAuthUser(c)
   const episodeId = Number(c.req.param('id'))
-  if (!(await episodeAndDramaForUser(episodeId, authUser.id))) return notFound(c, 'Episode not found')
+  if (!(await episodeAndDramaForUser(episodeId, authUser.id))) return notFound(c, 'Yeah Episode not found')
   const motionPipeline = parseMotionPipelineQuery(c.req.query('motion_pipeline'))
   return success(c, await getEpisodeComposeStatus(episodeId, motionPipeline))
 })
