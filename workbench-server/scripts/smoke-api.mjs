@@ -62,7 +62,7 @@ if (!healthBody?.status) {
 console.log(`     db_driver=${healthBody.db_driver || 'sqlite'}`)
 
 const mobileHealth = await request('GET', '/mobile/health')
-const mobileHealthBody = assertOk('GET /mobile/health', mobileHealth)
+const mobileHealthBody = unwrap(assertOk('GET /mobile/health', mobileHealth))
 if (mobileHealthBody?.channel !== 'mobile') {
   console.error('FAIL mobile health payload', mobileHealthBody)
   process.exit(1)
