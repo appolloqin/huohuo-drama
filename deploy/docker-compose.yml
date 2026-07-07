@@ -33,4 +33,3 @@ services:
 # workbench + workbench-server；Nginx 已内置（deploy/nginx.conf），/ 跳转 /console/
 # 使用：cd deploy && docker compose up -d --build
 # 环境变量 DB_DRIVER / DATABASE_URL 见 .env.example（默认 sqlite）
-# 全栈（含 site）见 docker-compose.full.yml；MySQL 侧车见 docker-compose.mysql.yml
