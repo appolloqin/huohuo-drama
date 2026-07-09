@@ -1,8 +1,17 @@
 import * as charactersRepo from '../../db/repos/characters/index.js'
+import * as characterFormsRepo from '../../db/repos/character-forms/index.js'
+import * as propsRepo from '../../db/repos/props/index.js'
 import * as episodesRepo from '../../db/repos/episodes/index.js'
 import * as scenesRepo from '../../db/repos/scenes/index.js'
 import { now } from '../../common/http/response.js'
 import { linkCharacterToEpisode } from '../../common/drama/episode-links.js'
+
+export async function linkPropToEpisode(episodeId: number, propId: number) {
+  const exists = await episodesRepo.episodePropLinkExists(episodeId, propId)
+  if (!exists) {
+    await episodesRepo.insertEpisodePropLink(episodeId, propId, now())
+  }
+}
 
 export async function attachSceneToEpisode(episodeId: number, sceneId: number) {
   const exists = await episodesRepo.episodeSceneLinkExists(episodeId, sceneId)
@@ -126,6 +135,165 @@ export async function upsertLocationsWithDedup(
 
   return {
     message: `场景保存完成：新增 ${results.created}，复用已有 ${results.reused}`,
+    ...results,
+  }
+}
+
+export async function queryProjectCharacterFormsCatalog(dramaId: number, episodeId: number) {
+  const linkedCharIds = new Set(
+    (await episodesRepo.listEpisodeCharacterLinks(episodeId)).map(link => link.characterId),
+  )
+  const forms = await characterFormsRepo.listActiveCharacterFormsByDrama(dramaId)
+  const characters = await charactersRepo.listActiveCharactersByDrama(dramaId)
+  const charNameById = new Map(characters.map(c => [c.id, c.name]))
+
+  return {
+    count: forms.length,
+    character_forms: forms.map(form => ({
+      ...form,
+      character_name: charNameById.get(form.characterId) || '',
+    })),
+    current_episode_forms: forms.filter(form => linkedCharIds.has(form.characterId)),
+  }
+}
+
+export async function queryProjectPropsCatalog(dramaId: number, episodeId: number) {
+  const linkedPropIds = new Set(
+    (await episodesRepo.listEpisodePropLinks(episodeId)).map(link => link.propId),
+  )
+  const props = await propsRepo.listActivePropsByDrama(dramaId)
+  const characters = await charactersRepo.listActiveCharactersByDrama(dramaId)
+  const charNameById = new Map(characters.map(c => [c.id, c.name]))
+  const forms = await characterFormsRepo.listActiveCharacterFormsByDrama(dramaId)
+  const formNameById = new Map(forms.map(f => [f.id, f.name]))
+
+  return {
+    count: props.length,
+    props: props.map(prop => ({
+      ...prop,
+      character_name: prop.characterId ? charNameById.get(prop.characterId) || '' : '',
+      character_form_name: prop.characterFormId ? formNameById.get(prop.characterFormId) || '' : '',
+    })),
+    current_episode_props: props.filter(prop => linkedPropIds.has(prop.id)),
+  }
+}
+
+export async function upsertCharacterFormsWithDedup(
+  episodeId: number,
+  dramaId: number,
+  forms: Array<{
+    character_name: string
+    name: string
+    appearance?: string
+    description?: string
+    prompt?: string
+  }>,
+) {
+  const timestamp = now()
+  const results = { created: 0, merged: 0, skipped: 0 }
+
+  for (const input of forms) {
+    const baseChar = await charactersRepo.findActiveCharacterByName(dramaId, input.character_name.trim())
+    if (!baseChar) {
+      results.skipped++
+      continue
+    }
+    await linkCharacterToEpisode(episodeId, baseChar.id)
+
+    const existing = await characterFormsRepo.findActiveCharacterFormByName(baseChar.id, input.name.trim())
+    if (existing) {
+      await characterFormsRepo.updateCharacterForm(existing.id, {
+        appearance: input.appearance || existing.appearance,
+        description: input.description || existing.description,
+        prompt: input.prompt || existing.prompt,
+        updatedAt: timestamp,
+      })
+      results.merged++
+      continue
+    }
+
+    await characterFormsRepo.insertCharacterForm({
+      dramaId,
+      characterId: baseChar.id,
+      name: input.name.trim(),
+      appearance: input.appearance || null,
+      description: input.description || null,
+      prompt: input.prompt || null,
+      createdAt: timestamp,
+      updatedAt: timestamp,
+    })
+    results.created++
+  }
+
+  return {
+    message: `衍生形态保存完成：新增 ${results.created}，合并 ${results.merged}，跳过 ${results.skipped}`,
+    ...results,
+  }
+}
+
+export async function upsertPropsWithDedup(
+  episodeId: number,
+  dramaId: number,
+  props: Array<{
+    name: string
+    type?: string
+    description?: string
+    prompt?: string
+    character_name?: string
+    character_form_name?: string
+  }>,
+) {
+  const timestamp = now()
+  const results = { created: 0, merged: 0 }
+
+  for (const input of props) {
+    let characterId: number | null = null
+    let characterFormId: number | null = null
+
+    if (input.character_name?.trim()) {
+      const baseChar = await charactersRepo.findActiveCharacterByName(dramaId, input.character_name.trim())
+      if (baseChar) {
+        characterId = baseChar.id
+        await linkCharacterToEpisode(episodeId, baseChar.id)
+        if (input.character_form_name?.trim()) {
+          const form = await characterFormsRepo.findActiveCharacterFormByName(baseChar.id, input.character_form_name.trim())
+          if (form) characterFormId = form.id
+        }
+      }
+    }
+
+    const existing = await propsRepo.findActivePropByName(dramaId, input.name.trim())
+    if (existing) {
+      await propsRepo.updateProp(existing.id, {
+        type: input.type || existing.type,
+        description: input.description || existing.description,
+        prompt: input.prompt || existing.prompt,
+        characterId: characterId ?? existing.characterId,
+        characterFormId: characterFormId ?? existing.characterFormId,
+        updatedAt: timestamp,
+      })
+      await linkPropToEpisode(episodeId, existing.id)
+      results.merged++
+      continue
+    }
+
+    const insertResult = await propsRepo.insertProp({
+      dramaId,
+      name: input.name.trim(),
+      type: input.type || null,
+      description: input.description || null,
+      prompt: input.prompt || null,
+      characterId,
+      characterFormId,
+      createdAt: timestamp,
+      updatedAt: timestamp,
+    })
+    await linkPropToEpisode(episodeId, insertResult.lastInsertRowid)
+    results.created++
+  }
+
+  return {
+    message: `道具保存完成：新增 ${results.created}，合并 ${results.merged}`,
     ...results,
   }
 }

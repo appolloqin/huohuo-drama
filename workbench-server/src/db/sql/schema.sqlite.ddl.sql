@@ -82,6 +82,26 @@
   );
   CREATE INDEX IF NOT EXISTS idx_characters_drama_id ON characters (drama_id);
 
+  CREATE TABLE IF NOT EXISTS character_forms (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    drama_id INTEGER NOT NULL,
+    character_id INTEGER NOT NULL,
+    name TEXT NOT NULL,
+    appearance TEXT,
+    description TEXT,
+    prompt TEXT,
+    image_url TEXT,
+    reference_images JSON CHECK (reference_images IS NULL OR json_valid(reference_images)),
+    seed_value TEXT,
+    sort_order INTEGER,
+    local_path TEXT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    deleted_at TEXT
+  );
+  CREATE INDEX IF NOT EXISTS idx_character_forms_drama_id ON character_forms (drama_id);
+  CREATE INDEX IF NOT EXISTS idx_character_forms_character_id ON character_forms (character_id);
+
   CREATE TABLE IF NOT EXISTS scenes (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     drama_id INTEGER NOT NULL,
@@ -93,6 +113,8 @@
     image_url TEXT,
     status TEXT DEFAULT 'pending',
     local_path TEXT,
+    scene_mode TEXT DEFAULT 'backdrop',
+    compose_config JSON CHECK (compose_config IS NULL OR json_valid(compose_config)),
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL,
     deleted_at TEXT
@@ -159,13 +181,33 @@
   CREATE INDEX IF NOT EXISTS idx_episode_scenes_scene_id
     ON episode_scenes (scene_id);
 
+  CREATE TABLE IF NOT EXISTS episode_props (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    episode_id INTEGER NOT NULL,
+    prop_id INTEGER NOT NULL,
+    created_at TEXT NOT NULL
+  );
+  CREATE INDEX IF NOT EXISTS idx_episode_props_episode_id
+    ON episode_props (episode_id);
+  CREATE INDEX IF NOT EXISTS idx_episode_props_prop_id
+    ON episode_props (prop_id);
+
   CREATE TABLE IF NOT EXISTS storyboard_characters (
     storyboard_id INTEGER NOT NULL,
     character_id INTEGER NOT NULL,
+    character_form_id INTEGER,
     PRIMARY KEY (storyboard_id, character_id)
   );
   CREATE INDEX IF NOT EXISTS idx_storyboard_characters_character_id
     ON storyboard_characters (character_id);
+
+  CREATE TABLE IF NOT EXISTS storyboard_props (
+    storyboard_id INTEGER NOT NULL,
+    prop_id INTEGER NOT NULL,
+    PRIMARY KEY (storyboard_id, prop_id)
+  );
+  CREATE INDEX IF NOT EXISTS idx_storyboard_props_prop_id
+    ON storyboard_props (prop_id);
 
   CREATE TABLE IF NOT EXISTS ai_service_configs (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -361,6 +403,8 @@
   CREATE TABLE IF NOT EXISTS props (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     drama_id INTEGER NOT NULL,
+    character_id INTEGER,
+    character_form_id INTEGER,
     name TEXT NOT NULL,
     type TEXT,
     description TEXT,
@@ -372,6 +416,7 @@
     updated_at TEXT NOT NULL,
     deleted_at TEXT
   );
+  CREATE INDEX IF NOT EXISTS idx_props_drama_id ON props (drama_id);
 
   -- Media catalog indexed from completed image/video generations and grid workflow.
   CREATE TABLE IF NOT EXISTS assets (

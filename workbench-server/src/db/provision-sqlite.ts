@@ -69,6 +69,12 @@ function applyLegacyColumnPatches(sqlite: Database.Database) {
   appendTableColumnIfAbsent(sqlite, 'storyboards', 'video_prompt_blob_path', 'TEXT')
   appendTableColumnIfAbsent(sqlite, 'storyboards', 'dialogue_blob_path', 'TEXT')
   appendTableColumnIfAbsent(sqlite, 'agent_configs', 'system_prompt_blob_path', 'TEXT')
+  appendTableColumnIfAbsent(sqlite, 'props', 'character_id', 'INTEGER')
+  appendTableColumnIfAbsent(sqlite, 'props', 'character_form_id', 'INTEGER')
+  appendTableColumnIfAbsent(sqlite, 'scenes', 'scene_mode', "TEXT DEFAULT 'backdrop'")
+  appendTableColumnIfAbsent(sqlite, 'scenes', 'compose_config', 'TEXT')
+  appendTableColumnIfAbsent(sqlite, 'image_generations', 'character_form_id', 'INTEGER')
+  appendTableColumnIfAbsent(sqlite, 'storyboard_characters', 'character_form_id', 'INTEGER')
   // Backfill motion_pipeline on legacy merge rows: title-tagged frame_slideshow
   // rows get frame_slideshow; everything else (untagged pre-pipeline AI merges)
   // gets ai_video so the two workbenches never share a merge job.

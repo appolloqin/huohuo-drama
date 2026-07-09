@@ -1,9 +1,11 @@
 import { isMysqlDriver } from '../../driver.js'
 import type {
   CharacterRow,
+  CharacterFormRow,
   DramaRow,
   EpisodeRow,
   ImageGenerationRow,
+  PropRow,
   SceneRow,
   StoryboardRow,
   VideoGenerationRow,
@@ -42,6 +44,24 @@ export async function sceneDramaForUser(
   return isMysqlDriver()
     ? mysql.sceneDramaForUser(sceneId, userId)
     : sqlite.sceneDramaForUser(sceneId, userId)
+}
+
+export async function characterFormDramaForUser(
+  formId: number,
+  userId: number,
+): Promise<{ form: CharacterFormRow; drama: DramaRow } | null> {
+  return isMysqlDriver()
+    ? mysql.characterFormDramaForUser(formId, userId)
+    : sqlite.characterFormDramaForUser(formId, userId)
+}
+
+export async function propDramaForUser(
+  propId: number,
+  userId: number,
+): Promise<{ prop: PropRow; drama: DramaRow } | null> {
+  return isMysqlDriver()
+    ? mysql.propDramaForUser(propId, userId)
+    : sqlite.propDramaForUser(propId, userId)
 }
 
 export async function storyboardEpisodeForUser(

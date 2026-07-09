@@ -16,6 +16,8 @@ import episodes from './routes/drama/episodes.js'
 import storyboards from './routes/drama/storyboards.js'
 import scenes from './routes/drama/scenes.js'
 import characters from './routes/drama/characters.js'
+import characterForms from './routes/drama/character-forms.js'
+import props from './routes/drama/props.js'
 import images from './routes/media/images.js'
 import videos from './routes/media/videos.js'
 import upload from './routes/media/upload.js'
@@ -98,6 +100,8 @@ protectedApi.route('/episodes', episodes)
 protectedApi.route('/storyboards', storyboards)
 protectedApi.route('/scenes', scenes)
 protectedApi.route('/characters', characters)
+protectedApi.route('/character-forms', characterForms)
+protectedApi.route('/props', props)
 protectedApi.route('/images', images)
 protectedApi.route('/videos', videos)
 protectedApi.route('/upload', upload)

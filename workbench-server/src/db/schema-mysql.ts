@@ -319,6 +319,26 @@ export const characters = mysqlTable('characters', {
   deletedAt: text('deleted_at'),
 })
 
+/** 角色衍生形态（变身、换装等），基于基础角色扩展资产库 */
+export const characterForms = mysqlTable('character_forms', {
+  id: int('id').autoincrement().primaryKey(),
+  dramaId: int('drama_id').notNull(),
+  characterId: int('character_id').notNull(),
+  name: text('name').notNull(),
+  appearance: text('appearance'),
+  description: text('description'),
+  prompt: text('prompt'),
+  imageUrl: text('image_url'),
+  /** JSON 数组 */
+  referenceImages: text('reference_images'),
+  seedValue: text('seed_value'),
+  sortOrder: int('sort_order'),
+  localPath: text('local_path'),
+  createdAt: text('created_at').notNull(),
+  updatedAt: text('updated_at').notNull(),
+  deletedAt: text('deleted_at'),
+})
+
 /** 可复用场景/布景，含文生图提示词 */
 export const scenes = mysqlTable('scenes', {
   id: int('id').autoincrement().primaryKey(),
@@ -332,6 +352,10 @@ export const scenes = mysqlTable('scenes', {
   imageUrl: text('image_url'),
   status: text('status').default('pending'),
   localPath: text('local_path'),
+  /** backdrop | composed */
+  sceneMode: text('scene_mode').default('backdrop'),
+  /** JSON：生成时选用的角色/形态/道具 id 列表 */
+  composeConfig: text('compose_config'),
   createdAt: text('created_at').notNull(),
   updatedAt: text('updated_at').notNull(),
   deletedAt: text('deleted_at'),
@@ -353,10 +377,22 @@ export const episodeScenes = mysqlTable('episode_scenes', {
   createdAt: text('created_at').notNull(),
 })
 
+/** 分集与道具的多对多关联 */
+export const episodeProps = mysqlTable('episode_props', {
+  id: int('id').autoincrement().primaryKey(),
+  episodeId: int('episode_id').notNull(),
+  propId: int('prop_id').notNull(),
+  createdAt: text('created_at').notNull(),
+})
+
 /** 项目级手持道具或陈设物 */
 export const props = mysqlTable('props', {
   id: int('id').autoincrement().primaryKey(),
   dramaId: int('drama_id').notNull(),
+  /** 可选专属角色 */
+  characterId: int('character_id'),
+  /** 可选专属衍生形态 */
+  characterFormId: int('character_form_id'),
   name: text('name').notNull(),
   type: text('type'),
   description: text('description'),
@@ -419,8 +455,17 @@ export const storyboards = mysqlTable('storyboards', {
 export const storyboardCharacters = mysqlTable('storyboard_characters', {
   storyboardId: int('storyboard_id').notNull(),
   characterId: int('character_id').notNull(),
+  characterFormId: int('character_form_id'),
 }, (table) => ({
   pk: primaryKey({ columns: [table.storyboardId, table.characterId] }),
+}))
+
+/** 分镜与道具的多对多关联（联合主键） */
+export const storyboardProps = mysqlTable('storyboard_props', {
+  storyboardId: int('storyboard_id').notNull(),
+  propId: int('prop_id').notNull(),
+}, (table) => ({
+  pk: primaryKey({ columns: [table.storyboardId, table.propId] }),
 }))
 
 // ══════════════════════════════════════════════════════════════
@@ -434,6 +479,7 @@ export const imageGenerations = mysqlTable('image_generations', {
   dramaId: int('drama_id'),
   sceneId: int('scene_id'),
   characterId: int('character_id'),
+  characterFormId: int('character_form_id'),
   propId: int('prop_id'),
   imageType: text('image_type'),
   frameType: text('frame_type'),

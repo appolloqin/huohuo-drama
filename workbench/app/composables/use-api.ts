@@ -644,6 +644,8 @@ export const episodeAPI = {
   generateContent: (id: number, body: { prompt: string }) =>
     api.post<{ content: string }>(`/episodes/${id}/generate-content`, body),
   characters: (id: number) => api.get(`/episodes/${id}/characters`),
+  characterForms: (id: number) => api.get(`/episodes/${id}/character-forms`),
+  props: (id: number) => api.get(`/episodes/${id}/props`),
   scenes: (id: number) => api.get(`/episodes/${id}/scenes`),
   storyboards: (id: number) => api.get(`/episodes/${id}/storyboards`),
   pipelineStatus: (id: number) => api.get(`/episodes/${id}/pipeline-status`),
@@ -665,9 +667,46 @@ export const characterAPI = {
     api.post('/characters/batch-generate-images', { character_ids: ids, episode_id: episodeId, ...opts }),
 }
 
-export const sceneAPI = {
+export const characterFormAPI = {
+  listByDrama: (dramaId: number, characterId?: number) => {
+    const q = characterId ? `?character_id=${characterId}` : ''
+    return api.get(`/character-forms/drama/${dramaId}${q}`)
+  },
+  create: (data: any) => api.post('/character-forms', data),
+  update: (id: number, data: any) => api.put(`/character-forms/${id}`, data),
+  del: (id: number) => api.del(`/character-forms/${id}`),
   generateImage: (id: number, episodeId: number, opts?: { aspect_ratio?: string }) =>
-    api.post(`/scenes/${id}/generate-image`, { episode_id: episodeId, ...opts }),
+    api.post(`/character-forms/${id}/generate-image`, { episode_id: episodeId, ...opts }),
+  batchImages: (ids: number[], episodeId: number, opts?: { aspect_ratio?: string }) =>
+    api.post('/character-forms/batch-generate-images', { character_form_ids: ids, episode_id: episodeId, ...opts }),
+}
+
+export const propAPI = {
+  listByDrama: (dramaId: number, characterId?: number) => {
+    const q = characterId ? `?character_id=${characterId}` : ''
+    return api.get(`/props/drama/${dramaId}${q}`)
+  },
+  create: (data: any) => api.post('/props', data),
+  update: (id: number, data: any) => api.put(`/props/${id}`, data),
+  del: (id: number) => api.del(`/props/${id}`),
+  generateImage: (id: number, episodeId: number, opts?: { aspect_ratio?: string }) =>
+    api.post(`/props/${id}/generate-image`, { episode_id: episodeId, ...opts }),
+  batchImages: (ids: number[], episodeId: number, opts?: { aspect_ratio?: string }) =>
+    api.post('/props/batch-generate-images', { prop_ids: ids, episode_id: episodeId, ...opts }),
+}
+
+export const sceneAPI = {
+  generateImage: (
+    id: number,
+    episodeId: number,
+    opts?: {
+      aspect_ratio?: string
+      scene_mode?: 'backdrop' | 'composed'
+      character_form_ids?: number[]
+      prop_ids?: number[]
+      character_ids?: number[]
+    },
+  ) => api.post(`/scenes/${id}/generate-image`, { episode_id: episodeId, ...opts }),
 }
 
 export const imageAPI = {

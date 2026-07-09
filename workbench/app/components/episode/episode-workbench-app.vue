@@ -113,6 +113,7 @@
       <div v-if="workbenchStageKey === 'script'" class="panel-root">
         <EpisodeScriptWizardPane
           v-if="screenplayStepIdx < 4"
+          class="panel-stage-host"
           :step="screenplayStepIdx"
           :episode-id="activeEpisodeId"
           :episode-number="epIndex"
@@ -191,6 +192,7 @@
                     <div class="lens-num">#{{ String(i+1).padStart(2,'0') }}</div>
                     <span class="tag" style="font-size:10px">{{ sb.shot_type || sb.shotType || '—' }}</span>
                     <span v-if="readShotLinkedCastIds(sb).length" class="tag" style="font-size:10px">{{ readShotLinkedCastIds(sb).length }} 角色</span>
+                    <span v-if="readShotPropIds(sb).length" class="tag" style="font-size:10px">{{ readShotPropIds(sb).length }} 道具</span>
                     <div class="lens-status">
                       <div v-if="sb.imageUrl || sb.composedImage || sb.firstFrameImage" class="lens-dot has-img" title="已生成图片"></div>
                       <div v-if="sb.videoUrl || sb.composedVideoUrl" class="lens-dot has-video" title="已生成视频"></div>
@@ -328,6 +330,39 @@
                           {{ char.name }}
                         </button>
                         <span v-if="!castList.length" class="text-muted" style="font-size:12px">当前集还没有角色</span>
+                      </div>
+                      <div v-if="readShotLinkedCastIds(focusedShotRow).length" class="cast-chip-row" style="margin-top:8px">
+                        <template v-for="charId in readShotLinkedCastIds(focusedShotRow)" :key="'form-'+charId">
+                          <span class="text-muted" style="font-size:11px;align-self:center">{{ readCastNameById(charId) }}形态</span>
+                          <select
+                            class="input"
+                            style="width:auto;min-width:120px;padding:4px 8px;font-size:12px"
+                            :value="readShotFormIdForChar(focusedShotRow, charId) || ''"
+                            @change="setShotFormForChar(focusedShotRow, charId, $event.target.value ? Number($event.target.value) : null)"
+                          >
+                            <option value="">基础形象</option>
+                            <option
+                              v-for="form in characterFormsForCast(charId)"
+                              :key="form.id"
+                              :value="form.id"
+                            >{{ form.name }}</option>
+                          </select>
+                        </template>
+                      </div>
+                    </label>
+                    <label class="form-block">
+                      <span class="form-label">绑定道具</span>
+                      <div class="cast-chip-row">
+                        <button
+                          v-for="prop in propList"
+                          :key="prop.id"
+                          type="button"
+                          :class="['cast-chip', { active: shotHasPropLink(focusedShotRow, prop.id) }]"
+                          @click="toggleShotPropLink(focusedShotRow, prop.id)"
+                        >
+                          {{ prop.name }}
+                        </button>
+                        <span v-if="!propList.length" class="text-muted" style="font-size:12px">暂无道具</span>
                       </div>
                     </label>
                     <label class="form-block">
@@ -544,10 +579,141 @@
             </div>
           </div>
 
+          <!-- Sub: Character Forms -->
+          <div v-else-if="resourcePaneKey === 'characterForms'" class="clip-pane">
+            <div class="clip-section-bar">
+              <span class="text-muted" style="font-size:12px">{{ characterFormList.length }} 个衍生形态</span>
+              <div class="video-config-trigger">
+                <BaseSelect
+                  :model-value="imageConfigPickerValue"
+                  :options="imageProviderSelectOptions"
+                  placeholder="选择图片模型"
+                  searchable
+                  style="width:min(260px, 40vw)"
+                  @update:model-value="persistEpisodeImageConfig"
+                />
+              </div>
+              <div v-if="imageAspectScope" class="image-aspect-trigger">
+                <BaseSelect
+                  :model-value="currentImageAspectRatio"
+                  :options="imageAspectPickerOptions"
+                  placeholder="比例"
+                  searchable
+                  style="width:min(210px, 34vw)"
+                  @update:model-value="persistEpisodeImageAspectRatio(imageAspectScope, $event)"
+                />
+              </div>
+              <div class="ml-auto flex gap-1">
+                <button class="btn btn-sm" @click="openAssetCreateModal('characterForm')">新增形态</button>
+                <button class="btn btn-sm" @click="batchRequestFormPortraits">批量生成</button>
+              </div>
+            </div>
+            <div class="tile-grid">
+              <div v-for="f in characterFormList" :key="f.id" class="card tile-card">
+                <div class="tile-cover">
+                  <img
+                    v-if="f.image_url || f.imageUrl"
+                    :src="'/' + (f.image_url || f.imageUrl)"
+                    class="zoom-hit"
+                    @click.stop="revealAssetPreview('/' + (f.image_url || f.imageUrl), `${readCharacterFormBaseName(f)}·${f.name}`)"
+                  />
+                  <div v-else class="tile-cover-empty">
+                    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.3"><path d="M12 3l1.5 4.5L18 9l-4.5 1.5L12 15l-1.5-4.5L6 9l4.5-1.5L12 3z"/></svg>
+                  </div>
+                  <span class="tile-cover-badge" :class="(f.image_url || f.imageUrl) ? 'is-ready' : (formPortraitBusy(f.id) ? 'is-pending' : '')">{{ (f.image_url || f.imageUrl) ? '已生成' : (formPortraitBusy(f.id) ? '生成中' : '待生成') }}</span>
+                </div>
+                <div class="tile-body">
+                  <div class="tile-name">{{ f.name }}</div>
+                  <div class="tile-meta text-muted">{{ readCharacterFormBaseName(f) }}</div>
+                </div>
+                <div class="tile-foot">
+                  <button class="btn btn-sm ml-auto" :disabled="formPortraitBusy(f.id)" @click="requestFormPortraitRender(f.id)">{{ formPortraitBusy(f.id) ? '生成中' : '生成' }}</button>
+                </div>
+              </div>
+              <div v-if="!characterFormList.length" class="text-muted" style="font-size:12px;padding:12px">暂无衍生形态，可手动新增或等待 Agent 从剧本提取。</div>
+            </div>
+          </div>
+
+          <!-- Sub: Props -->
+          <div v-else-if="resourcePaneKey === 'props'" class="clip-pane">
+            <div class="clip-section-bar">
+              <span class="text-muted" style="font-size:12px">{{ propList.length }} 个道具</span>
+              <div class="video-config-trigger">
+                <BaseSelect
+                  :model-value="imageConfigPickerValue"
+                  :options="imageProviderSelectOptions"
+                  placeholder="选择图片模型"
+                  searchable
+                  style="width:min(260px, 40vw)"
+                  @update:model-value="persistEpisodeImageConfig"
+                />
+              </div>
+              <div v-if="imageAspectScope" class="image-aspect-trigger">
+                <BaseSelect
+                  :model-value="currentImageAspectRatio"
+                  :options="imageAspectPickerOptions"
+                  placeholder="比例"
+                  searchable
+                  style="width:min(210px, 34vw)"
+                  @update:model-value="persistEpisodeImageAspectRatio(imageAspectScope, $event)"
+                />
+              </div>
+              <div class="ml-auto flex gap-1">
+                <button class="btn btn-sm" @click="openAssetCreateModal('prop')">新增道具</button>
+                <button class="btn btn-sm" @click="batchRequestPropImages">批量生成</button>
+              </div>
+            </div>
+            <div class="tile-grid">
+              <div v-for="p in propList" :key="p.id" class="card tile-card">
+                <div class="tile-cover">
+                  <img
+                    v-if="p.image_url || p.imageUrl"
+                    :src="'/' + (p.image_url || p.imageUrl)"
+                    class="zoom-hit"
+                    @click.stop="revealAssetPreview('/' + (p.image_url || p.imageUrl), `${p.name} 道具`)"
+                  />
+                  <div v-else class="tile-cover-empty">
+                    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.3"><path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"/></svg>
+                  </div>
+                  <span v-if="p.character_id || p.characterId" class="tag" style="position:absolute;top:6px;left:6px">{{ readPropOwnerLabel(p) }}</span>
+                  <span class="tile-cover-badge" :class="(p.image_url || p.imageUrl) ? 'is-ready' : (propImageBusy(p.id) ? 'is-pending' : '')">{{ (p.image_url || p.imageUrl) ? '已生成' : (propImageBusy(p.id) ? '生成中' : '待生成') }}</span>
+                </div>
+                <div class="tile-body">
+                  <div class="tile-name">{{ p.name }}</div>
+                  <div class="tile-meta text-muted">{{ p.type || '道具' }}</div>
+                </div>
+                <div class="tile-foot">
+                  <button class="btn btn-sm ml-auto" :disabled="propImageBusy(p.id)" @click="requestPropImageRender(p.id)">{{ propImageBusy(p.id) ? '生成中' : '生成' }}</button>
+                </div>
+              </div>
+              <div v-if="!propList.length" class="text-muted" style="font-size:12px;padding:12px">暂无道具，可手动新增或等待 Agent 从剧本提取。</div>
+            </div>
+          </div>
+
           <!-- Sub: Scenes -->
           <div v-else-if="resourcePaneKey === 'scenes'" class="clip-pane">
             <div class="clip-section-bar">
               <span class="text-muted" style="font-size:12px">{{ locationRowsForEpisode.length }} 个场景</span>
+              <div class="flex gap-1 items-center">
+                <label class="text-muted" style="font-size:12px">模式</label>
+                <select v-model="sceneGenerateMode" class="btn btn-sm" style="padding:4px 8px">
+                  <option value="backdrop">空镜背景</option>
+                  <option value="composed">人物合成</option>
+                </select>
+              </div>
+              <details v-if="characterFormList.length || propList.length" class="scene-compose-picker">
+                <summary class="text-muted" style="font-size:12px;cursor:pointer">参考资源（形态/道具）</summary>
+                <div v-if="characterFormList.length" class="flex flex-wrap gap-1" style="margin-top:6px">
+                  <label v-for="f in characterFormList" :key="'sf-'+f.id" class="tag" style="cursor:pointer">
+                    <input v-model="sceneGenSelectedFormIds" type="checkbox" :value="f.id" style="margin-right:4px">{{ f.name }}
+                  </label>
+                </div>
+                <div v-if="propList.length" class="flex flex-wrap gap-1" style="margin-top:6px">
+                  <label v-for="p in propList" :key="'sp-'+p.id" class="tag" style="cursor:pointer">
+                    <input v-model="sceneGenSelectedPropIds" type="checkbox" :value="p.id" style="margin-right:4px">{{ p.name }}
+                  </label>
+                </div>
+              </details>
               <div class="video-config-trigger">
                 <BaseSelect
                   :model-value="imageConfigPickerValue"
@@ -594,7 +760,7 @@
                 </div>
                 <div class="tile-body">
                   <div class="tile-name">{{ s.location }}</div>
-                  <div class="tile-meta text-muted">{{ s.time || '—' }}</div>
+                  <div class="tile-meta text-muted">{{ s.time || '—' }} · {{ readSceneModeLabel(s) }}</div>
                 </div>
                 <div class="tile-foot">
                   <span :class="['status-dot', (s.image_url || s.imageUrl) && 'ok', locationBackdropBusy(s.id) && 'pending']" />
@@ -1302,6 +1468,15 @@
       </div>
     </main>
     </div>
+
+    <EpisodeAssetCreateModal
+      v-model="assetCreateModalOpen"
+      :kind="assetCreateModalKind"
+      :cast-list="castList"
+      :character-form-list="characterFormList"
+      :busy="assetCreateBusy"
+      @submit="submitAssetCreate"
+    />
   </div>
 </template>
 
@@ -1316,13 +1491,15 @@ import EpisodeExportPanel from '~/components/episode/shared/episode-export-panel
 import EpisodeDubbingPane from '~/components/episode/shared/episode-dubbing-pane.vue'
 import EpisodeKeyframeSequencePane from '~/components/episode/shared/episode-keyframe-sequence-pane.vue'
 import EpisodeScriptWizardPane from '~/components/episode/shared/episode-script-wizard-pane.vue'
+import EpisodeAssetCreateModal from '~/components/episode/shared/episode-asset-create-modal.vue'
 import { useAgent } from '~/composables/useAgent'
 import {
-  dramaAPI, episodeAPI, storyboardAPI, characterAPI, sceneAPI,
+  dramaAPI, episodeAPI, storyboardAPI, characterAPI, characterFormAPI, propAPI, sceneAPI,
   imageAPI, videoAPI, composeAPI, slideshowAPI, mergeAPI, gridAPI, aiConfigAPI, voicesAPI, templatesAPI,
 } from '~/composables/use-api'
 import {
   Users, MapPin, Video, ImageIcon, Layers, Mic2, FileText, FolderKanban, Clapperboard, Download, Film,
+  Sparkles, Package,
 } from 'lucide-vue-next'
 import { toast } from 'vue-sonner'
 import {
@@ -1381,6 +1558,8 @@ const epIndex = Number(route.params.epIndex)
 const projectBriefSnapshot = ref(null)
 const episodeWorkbenchRow = ref(null)
 const castList = ref([])
+const characterFormList = ref([])
+const propList = ref([])
 const locationRowsForEpisode = ref([])
 const shotRowsForEpisode = ref([])
 const episodeMergeJobState = ref(null)
@@ -1427,6 +1606,9 @@ const episodeMergePollTimer = ref(null)
 
 // ── 剧本流水线步骤（改写 → 提取 → 音色 → 分镜）────────────
 const screenplayStepIdx = ref(0)
+const screenplayStepBootstrapped = ref(false)
+let lastSyncedSourceBody = null
+let lastSyncedScreenplayBody = null
 const resourcePaneKey = ref('castList')
 const assetPaneTabIndex = computed({
   get: () => assetPaneTabDefs.value.findIndex(t => t.id === resourcePaneKey.value),
@@ -1480,7 +1662,15 @@ const imageProviderRows = ref([])
 const videoProviderRows = ref([])
 const audioProviderRows = ref([])
 const portraitRenderPendingIds = ref([])
+const formRenderPendingIds = ref([])
+const propRenderPendingIds = ref([])
 const backdropRenderPendingIds = ref([])
+const sceneGenerateMode = ref('backdrop')
+const sceneGenSelectedFormIds = ref([])
+const sceneGenSelectedPropIds = ref([])
+const assetCreateModalOpen = ref(false)
+const assetCreateModalKind = ref('characterForm')
+const assetCreateBusy = ref(false)
 const frameRenderPendingKeys = ref([])
 const clipRenderPendingIds = ref([])
 const mergeRenderPendingIds = ref([])
@@ -1536,6 +1726,85 @@ onBeforeUnmount(() => {
 
 function locationBackdropBusy(id) {
   return backdropRenderPendingIds.value.includes(id)
+}
+
+function formPortraitBusy(id) {
+  return formRenderPendingIds.value.includes(id)
+}
+
+function propImageBusy(id) {
+  return propRenderPendingIds.value.includes(id)
+}
+
+function readCharacterFormBaseName(form) {
+  const charId = form.character_id || form.characterId
+  const char = castList.value.find(c => c.id === charId)
+  return char?.name || '角色'
+}
+
+function readPropOwnerLabel(prop) {
+  const charId = prop.character_id || prop.characterId
+  const formId = prop.character_form_id || prop.characterFormId
+  if (formId) {
+    const form = characterFormList.value.find(f => f.id === formId)
+    if (form) return `${readCharacterFormBaseName(form)}·${form.name}`
+  }
+  if (charId) {
+    const char = castList.value.find(c => c.id === charId)
+    if (char) return char.name
+  }
+  return '专属'
+}
+
+function readSceneModeLabel(scene) {
+  const mode = scene.scene_mode || scene.sceneMode || 'backdrop'
+  return mode === 'composed' ? '人物合成' : '空镜背景'
+}
+
+function buildSceneGenerateOptions() {
+  return {
+    aspect_ratio: readImageAspectForScope('scene'),
+    scene_mode: sceneGenerateMode.value,
+    character_form_ids: sceneGenSelectedFormIds.value.map(Number).filter(Boolean),
+    prop_ids: sceneGenSelectedPropIds.value.map(Number).filter(Boolean),
+  }
+}
+
+function openAssetCreateModal(kind) {
+  assetCreateModalKind.value = kind
+  assetCreateModalOpen.value = true
+}
+
+async function submitAssetCreate(payload) {
+  assetCreateBusy.value = true
+  try {
+    if (payload.kind === 'characterForm') {
+      await characterFormAPI.create({
+        drama_id: dramaId,
+        character_id: payload.character_id,
+        name: payload.name,
+        appearance: payload.appearance,
+        description: payload.description,
+      })
+      toast.success('衍生形态已创建')
+    } else {
+      await propAPI.create({
+        drama_id: dramaId,
+        name: payload.name,
+        type: payload.type,
+        character_id: payload.character_id,
+        character_form_id: payload.character_form_id,
+        description: payload.description,
+      })
+      toast.success('道具已创建')
+    }
+    assetCreateModalOpen.value = false
+    await syncWorkbenchFromApi()
+  } catch (e) {
+    toast.error(e.message)
+  } finally {
+    assetCreateBusy.value = false
+  }
 }
 
 function shotFrameTaskKey(id, frameType) {
@@ -1602,7 +1871,7 @@ const episodeImageSizes = ref({})
 const episodeVideoGenOptions = ref(readEpisodeVideoGenOptions())
 const imageAspectPickerOptions = imageAspectSelectOptions()
 const imageAspectScope = computed(() => {
-  if (resourcePaneKey.value === 'castList') return 'character'
+  if (resourcePaneKey.value === 'castList' || resourcePaneKey.value === 'characterForms' || resourcePaneKey.value === 'props') return 'character'
   if (resourcePaneKey.value === 'scenes') return 'scene'
   if (resourcePaneKey.value === 'shots' || resourcePaneKey.value === 'keyframes') return 'shot'
   if (resourcePaneKey.value === 'videos' || resourcePaneKey.value === 'slideshow') return 'video'
@@ -1851,9 +2120,30 @@ const gridSplitBlankGridStyle = computed(() => {
 })
 
 // Production step helpers
+/** 角色/音色/分镜就绪后，资产图片类步骤才参与完成判定 */
+const assetImageStepsApplicable = computed(() =>
+  !!castList.value.length
+  && assignedVoiceCastCount.value === castList.value.length
+  && !!shotRowsForEpisode.value.length,
+)
+
+function optionalAssetStepComplete(totalCount, readyCount) {
+  if (!assetImageStepsApplicable.value) return false
+  if (!totalCount) return true
+  return readyCount === totalCount
+}
+
 function assetPaneStepComplete(id) {
-  if (id === 'castList') return !portraitRenderTargetCount.value || readyPortraitCount.value === portraitRenderTargetCount.value
-  if (id === 'scenes') return !!locationRowsForEpisode.value.length && readyBackdropCount.value === locationRowsForEpisode.value.length
+  if (id === 'castList') {
+    if (!assetImageStepsApplicable.value || !portraitRenderTargetCount.value) return false
+    return readyPortraitCount.value === portraitRenderTargetCount.value
+  }
+  if (id === 'characterForms') return optionalAssetStepComplete(formRenderTargetCount.value, readyFormCount.value)
+  if (id === 'props') return optionalAssetStepComplete(propRenderTargetCount.value, readyPropCount.value)
+  if (id === 'scenes') {
+    if (!assetImageStepsApplicable.value || !locationRowsForEpisode.value.length) return false
+    return readyBackdropCount.value === locationRowsForEpisode.value.length
+  }
   if (id === 'dubbing') return !!shotRowsForEpisode.value.length && (!ttsEligibleShotCount.value || ttsCompletedShotCount.value === ttsEligibleShotCount.value)
   if (id === 'shots' || id === 'keyframes') return !!shotRowsForEpisode.value.length && shotsHavingFrameUrls.value === shotRowsForEpisode.value.length
   if (id === 'videos') return !!shotRowsForEpisode.value.length && shotsHavingRawVideos.value === shotRowsForEpisode.value.length
@@ -2201,6 +2491,10 @@ async function commitGridMosaicToShots() {
 }
 
 const readyPortraitCount = computed(() => visiblePortraitCastRows.value.filter(c => c.image_url || c.imageUrl).length)
+const formRenderTargetCount = computed(() => characterFormList.value.length)
+const readyFormCount = computed(() => characterFormList.value.filter(f => f.image_url || f.imageUrl).length)
+const propRenderTargetCount = computed(() => propList.value.length)
+const readyPropCount = computed(() => propList.value.filter(p => p.image_url || p.imageUrl).length)
 const readyBackdropCount = computed(() => locationRowsForEpisode.value.filter(s => s.image_url || s.imageUrl).length)
 const ttsEligibleShotCount = computed(() => shotRowsForEpisode.value.filter(s => shotContainsSpeakableLine(s)).length)
 const ttsCompletedShotCount = computed(() => shotRowsForEpisode.value.filter(s => shotContainsSpeakableLine(s) && shotHasRenderedTts(s)).length)
@@ -2220,6 +2514,8 @@ const portraitRenderTargetCount = computed(() => visiblePortraitCastRows.value.l
 const assetPaneTabDefs = computed(() => {
   const shared = [
     { id: 'castList', label: '角色形象', icon: Users, badge: portraitRenderTargetCount.value ? `${readyPortraitCount.value}/${portraitRenderTargetCount.value}` : '' },
+    { id: 'characterForms', label: '衍生资源', icon: Sparkles, badge: formRenderTargetCount.value ? `${readyFormCount.value}/${formRenderTargetCount.value}` : '' },
+    { id: 'props', label: '道具管理', icon: Package, badge: propRenderTargetCount.value ? `${readyPropCount.value}/${propRenderTargetCount.value}` : '' },
     { id: 'scenes', label: '场景图片', icon: MapPin, badge: readyBackdropCount.value ? `${readyBackdropCount.value}/${locationRowsForEpisode.value.length}` : '' },
     { id: 'dubbing', label: '配音生成', icon: Mic2, badge: '' },
   ]
@@ -2241,7 +2537,7 @@ const assetPaneTabDefs = computed(() => {
 
 const productionStageOptions = [
   { id: 'script', label: '剧本', desc: '内容改写与整理', icon: FileText },
-  { id: 'assets', label: '资产', desc: '角色、场景与音色', icon: FolderKanban },
+  { id: 'assets', label: '资产', desc: '角色、衍生、道具与场景', icon: FolderKanban },
   { id: 'storyboard', label: '分镜', desc: '镜头制作与合成', icon: Clapperboard },
   { id: 'export', label: '导出', desc: '拼接与成片输出', icon: Download },
 ]
@@ -2250,6 +2546,8 @@ const productionSidebarItems = computed(() => {
   if (isAiPipeline.value) {
     return [
       { key: 'prod:castList', label: '角色形象', desc: '', icon: Users, done: assetPaneStepComplete('castList') },
+      { key: 'prod:characterForms', label: '衍生资源', desc: '', icon: Sparkles, done: assetPaneStepComplete('characterForms') },
+      { key: 'prod:props', label: '道具管理', desc: '', icon: Package, done: assetPaneStepComplete('props') },
       { key: 'prod:scenes', label: '场景图片', desc: '', icon: MapPin, done: assetPaneStepComplete('scenes') },
       { key: 'prod:dubbing', label: '配音生成', desc: '', icon: Mic2, done: assetPaneStepComplete('dubbing') },
       { key: 'prod:shots', label: '镜头图片', desc: '', icon: ImageIcon, done: assetPaneStepComplete('shots') },
@@ -2259,6 +2557,8 @@ const productionSidebarItems = computed(() => {
   }
   return [
     { key: 'prod:castList', label: '角色形象', desc: '', icon: Users, done: assetPaneStepComplete('castList') },
+    { key: 'prod:characterForms', label: '衍生资源', desc: '', icon: Sparkles, done: assetPaneStepComplete('characterForms') },
+    { key: 'prod:props', label: '道具管理', desc: '', icon: Package, done: assetPaneStepComplete('props') },
     { key: 'prod:scenes', label: '场景图片', desc: '', icon: MapPin, done: assetPaneStepComplete('scenes') },
     { key: 'prod:dubbing', label: '配音生成', desc: '', icon: Mic2, done: assetPaneStepComplete('dubbing') },
     { key: 'prod:keyframes', label: '关键帧序列', desc: '', icon: ImageIcon, done: assetPaneStepComplete('keyframes') },
@@ -2296,7 +2596,7 @@ const workbenchSidebarNav = computed(() => ([
 const activeProductionStage = computed(() => {
   if (workbenchStageKey.value === 'export') return 'export'
   if (workbenchStageKey.value === 'production') {
-    return ['castList', 'scenes'].includes(resourcePaneKey.value) ? 'assets' : 'storyboard'
+    return ['castList', 'characterForms', 'props', 'scenes'].includes(resourcePaneKey.value) ? 'assets' : 'storyboard'
   }
   if (screenplayStepIdx.value <= 1) return 'script'
   if (screenplayStepIdx.value <= 3) return 'assets'
@@ -2307,9 +2607,15 @@ function workbenchStageFinished(stageId) {
   if (stageId === 'script') return !!persistedScreenplayBody.value
   if (stageId === 'assets') {
     const charsReady = !!castList.value.length && assignedVoiceCastCount.value === castList.value.length
-    const charImagesReady = !portraitRenderTargetCount.value || readyPortraitCount.value === portraitRenderTargetCount.value
-    const sceneImagesReady = !locationRowsForEpisode.value.length || readyBackdropCount.value === locationRowsForEpisode.value.length
-    return charsReady && charImagesReady && sceneImagesReady
+    const charImagesReady = !assetImageStepsApplicable.value
+      ? false
+      : (!portraitRenderTargetCount.value || readyPortraitCount.value === portraitRenderTargetCount.value)
+    const formsReady = optionalAssetStepComplete(formRenderTargetCount.value, readyFormCount.value)
+    const propsReady = optionalAssetStepComplete(propRenderTargetCount.value, readyPropCount.value)
+    const sceneImagesReady = !assetImageStepsApplicable.value || !locationRowsForEpisode.value.length
+      ? false
+      : readyBackdropCount.value === locationRowsForEpisode.value.length
+    return charsReady && charImagesReady && formsReady && propsReady && sceneImagesReady
   }
   if (stageId === 'storyboard') {
     if (!shotRowsForEpisode.value.length) return false
@@ -2336,7 +2642,7 @@ function activateWorkbenchStage(stageId) {
       || (locationRowsForEpisode.value.length && readyBackdropCount.value < locationRowsForEpisode.value.length)
     if (workbenchStageKey.value === 'production' || hasPendingAssetGeneration || hasAssetWorkspace) {
       workbenchStageKey.value = 'production'
-      resourcePaneKey.value = ['castList', 'scenes'].includes(resourcePaneKey.value) ? resourcePaneKey.value : 'castList'
+      resourcePaneKey.value = ['castList', 'characterForms', 'props', 'scenes'].includes(resourcePaneKey.value) ? resourcePaneKey.value : 'castList'
       return
     }
     workbenchStageKey.value = 'script'
@@ -2369,8 +2675,10 @@ const sidebarNavSubsteps = computed(() => {
     return [
       { key: 'script:extract', label: '提取角色场景', done: !!castList.value.length },
       { key: 'script:voice', label: '分配音色', done: !!castList.value.length && assignedVoiceCastCount.value === castList.value.length },
-      { key: 'prod:castList', label: '角色形象', done: !portraitRenderTargetCount.value || readyPortraitCount.value === portraitRenderTargetCount.value },
-      { key: 'prod:scenes', label: '场景图片', done: !locationRowsForEpisode.value.length || readyBackdropCount.value === locationRowsForEpisode.value.length },
+      { key: 'prod:castList', label: '角色形象', done: assetPaneStepComplete('castList') },
+      { key: 'prod:characterForms', label: '衍生资源', done: assetPaneStepComplete('characterForms') },
+      { key: 'prod:props', label: '道具管理', done: assetPaneStepComplete('props') },
+      { key: 'prod:scenes', label: '场景图片', done: assetPaneStepComplete('scenes') },
     ]
   }
   if (activeProductionStage.value === 'storyboard') {
@@ -2528,25 +2836,90 @@ function toCamelCaseField(field) {
   return field.replace(/_([a-z])/g, (_, c) => c.toUpperCase())
 }
 
+function readShotCastBindings(sb) {
+  if (Array.isArray(sb?.cast_bindings)) return sb.cast_bindings
+  if (Array.isArray(sb?.castBindings)) return sb.castBindings
+  return readShotLinkedCastIds(sb).map(character_id => ({ character_id, character_form_id: null }))
+}
+
 function readShotLinkedCastIds(sb) {
-  return sb?.character_ids || sb?.characterIds || []
+  return readShotCastBindings(sb).map(item => item.character_id || item.characterId).filter(Boolean)
+}
+
+function readShotPropIds(sb) {
+  return sb?.prop_ids || sb?.propIds || []
+}
+
+function readCastNameById(charId) {
+  return castList.value.find(c => c.id === charId)?.name || `#${charId}`
+}
+
+function characterFormsForCast(charId) {
+  return characterFormList.value.filter(f => (f.character_id || f.characterId) === charId)
+}
+
+function readShotFormIdForChar(sb, charId) {
+  const binding = readShotCastBindings(sb).find(item => (item.character_id || item.characterId) === charId)
+  return binding?.character_form_id || binding?.characterFormId || null
+}
+
+function patchShotBindings(sb, castBindings, propIds) {
+  const payload = {
+    cast_bindings: castBindings.map(item => ({
+      character_id: item.character_id || item.characterId,
+      character_form_id: item.character_form_id ?? item.characterFormId ?? null,
+    })),
+    prop_ids: propIds,
+  }
+  sb.cast_bindings = payload.cast_bindings
+  sb.castBindings = payload.cast_bindings
+  sb.character_ids = payload.cast_bindings.map(item => item.character_id)
+  sb.characterIds = sb.character_ids
+  sb.prop_ids = payload.prop_ids
+  sb.propIds = payload.prop_ids
+  storyboardAPI.update(sb.id, payload)
 }
 
 function readShotLinkedCastNames(sb) {
   const ids = readShotLinkedCastIds(sb)
-  return castList.value.filter(char => ids.includes(char.id)).map(char => char.name)
+  return castList.value.filter(char => ids.includes(char.id)).map(char => {
+    const formId = readShotFormIdForChar(sb, char.id)
+    if (!formId) return char.name
+    const form = characterFormList.value.find(f => f.id === formId)
+    return form ? `${char.name}·${form.name}` : char.name
+  })
 }
 
 function shotHasCastLink(sb, charId) {
   return readShotLinkedCastIds(sb).includes(charId)
 }
 
+function shotHasPropLink(sb, propId) {
+  return readShotPropIds(sb).includes(propId)
+}
+
 function toggleShotCastLink(sb, charId) {
-  const currentIds = readShotLinkedCastIds(sb)
-  const nextIds = currentIds.includes(charId)
-    ? currentIds.filter(id => id !== charId)
-    : [...currentIds, charId]
-  patchShotFieldValue(sb, 'character_ids', nextIds)
+  const bindings = readShotCastBindings(sb)
+  const exists = bindings.some(item => (item.character_id || item.characterId) === charId)
+  const nextBindings = exists
+    ? bindings.filter(item => (item.character_id || item.characterId) !== charId)
+    : [...bindings, { character_id: charId, character_form_id: null }]
+  patchShotBindings(sb, nextBindings, readShotPropIds(sb))
+}
+
+function setShotFormForChar(sb, charId, formId) {
+  const bindings = readShotCastBindings(sb).map(item => {
+    const id = item.character_id || item.characterId
+    if (id !== charId) return item
+    return { character_id: charId, character_form_id: formId }
+  })
+  patchShotBindings(sb, bindings, readShotPropIds(sb))
+}
+
+function toggleShotPropLink(sb, propId) {
+  const current = readShotPropIds(sb)
+  const next = current.includes(propId) ? current.filter(id => id !== propId) : [...current, propId]
+  patchShotBindings(sb, readShotCastBindings(sb), next)
 }
 
 function renderShotLocationCaption(sb) {
@@ -2579,8 +2952,47 @@ const scriptWizardStepRows = computed(() => {
   ]
 })
 
-watch(persistedSourceBody, v => { rawDraftBuffer.value = v }, { immediate: true })
-watch(persistedScreenplayBody, v => { formattedScriptBuffer.value = v }, { immediate: true })
+watch(persistedSourceBody, (v) => {
+  const next = v ?? ''
+  if (
+    rawDraftBuffer.value === (lastSyncedSourceBody ?? '')
+    || rawDraftBuffer.value === ''
+    || rawDraftBuffer.value === next
+  ) {
+    rawDraftBuffer.value = next
+  }
+  lastSyncedSourceBody = next
+}, { immediate: true })
+
+watch(persistedScreenplayBody, (v) => {
+  const next = v ?? ''
+  if (
+    formattedScriptBuffer.value === (lastSyncedScreenplayBody ?? '')
+    || formattedScriptBuffer.value === ''
+    || formattedScriptBuffer.value === next
+  ) {
+    formattedScriptBuffer.value = next
+  }
+  lastSyncedScreenplayBody = next
+}, { immediate: true })
+
+watch(activeEpisodeId, () => {
+  screenplayStepBootstrapped.value = false
+  lastSyncedSourceBody = null
+  lastSyncedScreenplayBody = null
+})
+
+function applyScreenplayStepFromEpisodeState() {
+  const epHasContent = !!(episodeWorkbenchRow.value?.content)
+  const epHasScript = !!(episodeWorkbenchRow.value?.formatted_script || episodeWorkbenchRow.value?.formattedScript)
+  const epHasSbs = shotRowsForEpisode.value.length > 0
+
+  if (epHasSbs) screenplayStepIdx.value = 4
+  else if (epHasScript && castList.value.some(c => c.voice_id || c.voiceId)) screenplayStepIdx.value = 3
+  else if (epHasScript && castList.value.length) screenplayStepIdx.value = 2
+  else if (epHasScript || epHasContent) screenplayStepIdx.value = 1
+  else screenplayStepIdx.value = 0
+}
 
 // ── 数据加载与剧本阶段 Agent ─────────────────────────────────
 async function syncWorkbenchFromApi() {
@@ -2595,19 +3007,16 @@ async function syncWorkbenchFromApi() {
       episodeImageSizes.value = readEpisodeImageSizes(ep.metadata)
       episodeVideoGenOptions.value = readEpisodeVideoGenOptions(ep.metadata)
       try { castList.value = await episodeAPI.characters(ep.id) } catch { castList.value = [] }
+      try { characterFormList.value = await episodeAPI.characterForms(ep.id) } catch { characterFormList.value = [] }
+      try { propList.value = await episodeAPI.props(ep.id) } catch { propList.value = [] }
       try { locationRowsForEpisode.value = await episodeAPI.scenes(ep.id) } catch { locationRowsForEpisode.value = [] }
       shotRowsForEpisode.value = await episodeAPI.storyboards(ep.id)
       if (shotRowsForEpisode.value.length && !focusedShotRow.value) focusedShotRow.value = shotRowsForEpisode.value[0]
 
-      const epHasContent = !!(episodeWorkbenchRow.value?.content)
-      const epHasScript = !!(episodeWorkbenchRow.value?.formatted_script || episodeWorkbenchRow.value?.formattedScript)
-      const epHasSbs = shotRowsForEpisode.value.length > 0
-
-      if (epHasSbs) screenplayStepIdx.value = 4
-      else if (epHasScript && castList.value.some(c => c.voice_id || c.voiceId)) screenplayStepIdx.value = 3
-      else if (epHasScript && castList.value.length) screenplayStepIdx.value = 2
-      else if (epHasScript || epHasContent) screenplayStepIdx.value = 1
-      else screenplayStepIdx.value = 0
+      if (!screenplayStepBootstrapped.value) {
+        applyScreenplayStepFromEpisodeState()
+        screenplayStepBootstrapped.value = true
+      }
       await fetchLatestGridComposite()
     }
   } catch (e) {
@@ -2663,7 +3072,11 @@ function pollEpisodeMergeJobUntilDone(mergeId) {
   episodeMergePollTimer.value = setInterval(tick, 3000)
 }
 
-function persistRawEpisodeDraft() { episodeAPI.update(activeEpisodeId.value, { content: rawDraftBuffer.value }); episodeWorkbenchRow.value.content = rawDraftBuffer.value }
+function persistRawEpisodeDraft() {
+  episodeAPI.update(activeEpisodeId.value, { content: rawDraftBuffer.value })
+  episodeWorkbenchRow.value.content = rawDraftBuffer.value
+  lastSyncedSourceBody = rawDraftBuffer.value
+}
 
 async function importRawFromUrl() {
   const url = rawUrlInput.value.trim()
@@ -2685,7 +3098,11 @@ async function importRawFromUrl() {
   }
 }
 
-function persistScreenplayDraft() { episodeAPI.update(activeEpisodeId.value, { formatted_script: formattedScriptBuffer.value }); episodeWorkbenchRow.value.formatted_script = formattedScriptBuffer.value }
+function persistScreenplayDraft() {
+  episodeAPI.update(activeEpisodeId.value, { formatted_script: formattedScriptBuffer.value })
+  episodeWorkbenchRow.value.formatted_script = formattedScriptBuffer.value
+  lastSyncedScreenplayBody = formattedScriptBuffer.value
+}
 function invokeDramaScriptFormatterAgent() { persistRawEpisodeDraft(); invokeWorkbenchAgent('drama_script_formatter', '请读取剧本并改写为格式化剧本，然后保存', dramaId, activeEpisodeId.value, syncWorkbenchFromApi) }
 function advanceRewriteWizardSkip() {
   const raw = (rawDraftBuffer.value || persistedSourceBody.value || '').trim()
@@ -2698,7 +3115,7 @@ function advanceRewriteWizardSkip() {
   toast.success('已跳过 AI 改写，当前将直接使用原始内容')
   screenplayStepIdx.value = 2
 }
-function invokeDramaCastSceneExtractAgent() { persistScreenplayDraft(); invokeWorkbenchAgent('drama_cast_scene_extract', '请从剧本中提取所有角色和场景信息，提取时自动与项目已有数据进行去重合并', dramaId, activeEpisodeId.value, syncWorkbenchFromApi) }
+function invokeDramaCastSceneExtractAgent() { persistScreenplayDraft(); invokeWorkbenchAgent('drama_cast_scene_extract', '请从剧本中提取本集出场的角色、衍生形态（变身/换装）、道具与场景，提取时自动与项目已有数据进行去重合并', dramaId, activeEpisodeId.value, syncWorkbenchFromApi) }
 function invokeDramaVoiceAssignAgent() { invokeWorkbenchAgent('drama_voice_assign', '请为所有角色分配合适的音色', dramaId, activeEpisodeId.value, syncWorkbenchFromApi) }
 async function batchGenerateCastPreviews() {
   const pending = castList.value.filter(c => (c.voice_id || c.voiceId) && !(c.voice_preview_url || c.voicePreviewUrl))
@@ -2771,10 +3188,86 @@ function batchRequestCastPortraits() {
     toast.error(e.message)
   })
 }
+async function requestFormPortraitRender(id) {
+  try {
+    if (!formPortraitBusy(id)) formRenderPendingIds.value.push(id)
+    await characterFormAPI.generateImage(id, activeEpisodeId.value, { aspect_ratio: readImageAspectForScope('character') })
+    toast.success('衍生形态图片生成中')
+    await syncWorkbenchFromApi()
+    pollUntilWorkbenchReady(() => {
+      const form = characterFormList.value.find(f => f.id === id)
+      const done = !!(form?.image_url || form?.imageUrl)
+      if (done) formRenderPendingIds.value = formRenderPendingIds.value.filter(item => item !== id)
+      return done
+    })
+  } catch (e) {
+    formRenderPendingIds.value = formRenderPendingIds.value.filter(item => item !== id)
+    toast.error(e.message)
+  }
+}
+
+function batchRequestFormPortraits() {
+  if (!characterFormList.value.length) { toast.info('暂无衍生形态'); return }
+  const ids = characterFormList.value.filter(f => !(f.image_url || f.imageUrl)).map(f => f.id)
+  if (!ids.length) { toast.info('所有衍生形态图片已生成'); return }
+  formRenderPendingIds.value = [...new Set([...formRenderPendingIds.value, ...ids])]
+  characterFormAPI.batchImages(ids, activeEpisodeId.value, { aspect_ratio: readImageAspectForScope('character') }).then(async () => {
+    toast.success('衍生形态批量生成中')
+    await syncWorkbenchFromApi()
+    pollUntilWorkbenchReady(() => ids.every(id => {
+      const form = characterFormList.value.find(f => f.id === id)
+      const done = !!(form?.image_url || form?.imageUrl)
+      if (done) formRenderPendingIds.value = formRenderPendingIds.value.filter(item => item !== id)
+      return done
+    }), 36)
+  }).catch(e => {
+    formRenderPendingIds.value = formRenderPendingIds.value.filter(item => !ids.includes(item))
+    toast.error(e.message)
+  })
+}
+
+async function requestPropImageRender(id) {
+  try {
+    if (!propImageBusy(id)) propRenderPendingIds.value.push(id)
+    await propAPI.generateImage(id, activeEpisodeId.value, { aspect_ratio: readImageAspectForScope('character') })
+    toast.success('道具图片生成中')
+    await syncWorkbenchFromApi()
+    pollUntilWorkbenchReady(() => {
+      const prop = propList.value.find(p => p.id === id)
+      const done = !!(prop?.image_url || prop?.imageUrl)
+      if (done) propRenderPendingIds.value = propRenderPendingIds.value.filter(item => item !== id)
+      return done
+    })
+  } catch (e) {
+    propRenderPendingIds.value = propRenderPendingIds.value.filter(item => item !== id)
+    toast.error(e.message)
+  }
+}
+
+function batchRequestPropImages() {
+  if (!propList.value.length) { toast.info('暂无道具'); return }
+  const ids = propList.value.filter(p => !(p.image_url || p.imageUrl)).map(p => p.id)
+  if (!ids.length) { toast.info('所有道具图片已生成'); return }
+  propRenderPendingIds.value = [...new Set([...propRenderPendingIds.value, ...ids])]
+  propAPI.batchImages(ids, activeEpisodeId.value, { aspect_ratio: readImageAspectForScope('character') }).then(async () => {
+    toast.success('道具批量生成中')
+    await syncWorkbenchFromApi()
+    pollUntilWorkbenchReady(() => ids.every(id => {
+      const prop = propList.value.find(p => p.id === id)
+      const done = !!(prop?.image_url || prop?.imageUrl)
+      if (done) propRenderPendingIds.value = propRenderPendingIds.value.filter(item => item !== id)
+      return done
+    }), 36)
+  }).catch(e => {
+    propRenderPendingIds.value = propRenderPendingIds.value.filter(item => !ids.includes(item))
+    toast.error(e.message)
+  })
+}
+
 async function requestLocationBackdropRender(id) {
   try {
     if (!locationBackdropBusy(id)) backdropRenderPendingIds.value.push(id)
-    await sceneAPI.generateImage(id, activeEpisodeId.value, { aspect_ratio: readImageAspectForScope('scene') })
+    await sceneAPI.generateImage(id, activeEpisodeId.value, buildSceneGenerateOptions())
     toast.success('场景图片生成中')
     await syncWorkbenchFromApi()
     pollUntilWorkbenchReady(() => {
@@ -2792,7 +3285,8 @@ function batchRequestLocationBackdrops() {
   const ids = locationRowsForEpisode.value.filter(s => !(s.image_url || s.imageUrl)).map(s => s.id)
   if (!ids.length) { toast.info('所有场景图片已生成'); return }
   backdropRenderPendingIds.value = [...new Set([...backdropRenderPendingIds.value, ...ids])]
-  ids.forEach(id => { sceneAPI.generateImage(id, activeEpisodeId.value, { aspect_ratio: readImageAspectForScope('scene') }).then(() => syncWorkbenchFromApi()).catch(e => toast.error(e.message)) })
+  const opts = buildSceneGenerateOptions()
+  ids.forEach(id => { sceneAPI.generateImage(id, activeEpisodeId.value, opts).then(() => syncWorkbenchFromApi()).catch(e => toast.error(e.message)) })
   toast.success('场景图片批量生成中')
   pollUntilWorkbenchReady(() => ids.every(id => {
     const scene = locationRowsForEpisode.value.find(s => s.id === id)
@@ -2900,8 +3394,17 @@ function collectShotReferenceAssets(sb) {
   const scene = locationRowsForEpisode.value.find(item => item.id === sceneId)
   pushRef(scene?.image_url || scene?.imageUrl)
   for (const charId of readShotLinkedCastIds(sb)) {
+    const formId = readShotFormIdForChar(sb, charId)
+    if (formId) {
+      const form = characterFormList.value.find(f => f.id === formId)
+      pushRef(form?.image_url || form?.imageUrl)
+    }
     const char = castList.value.find(item => item.id === charId)
     pushRef(char?.image_url || char?.imageUrl)
+  }
+  for (const propId of readShotPropIds(sb)) {
+    const prop = propList.value.find(item => item.id === propId)
+    pushRef(prop?.image_url || prop?.imageUrl)
   }
   for (const ref of tokenizeShotReferenceList(sb)) {
     pushRef(ref)
@@ -3763,6 +4266,16 @@ onMounted(() => { bootstrapEpisodeWorkbench() })
 /* ===== Main Content ===== */
 .canvas-main { flex: 1; display: flex; flex-direction: column; overflow: hidden; min-width: 0; min-height: 0; border-radius: 30px; }
 .panel-root { flex: 1; display: flex; flex-direction: column; overflow: hidden; position: relative; min-height: 0; }
+.panel-stage-host {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+.panel-stage-host :deep(.wizard-pane) {
+  flex: 1;
+  min-height: 0;
+}
 .panel-tabs {
   display: flex;
   align-items: center;

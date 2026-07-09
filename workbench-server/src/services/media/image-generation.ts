@@ -17,6 +17,8 @@ interface GenerateImageParams {
   dramaId?: number
   sceneId?: number
   characterId?: number
+  characterFormId?: number
+  propId?: number
   prompt: string
   model?: string
   size?: string
@@ -32,6 +34,8 @@ async function insertImageGenerationRow(params: GenerateImageParams, config: AIC
     dramaId: params.dramaId,
     sceneId: params.sceneId,
     characterId: params.characterId,
+    characterFormId: params.characterFormId,
+    propId: params.propId,
     prompt: params.prompt,
     model: params.model || config.model,
     provider: config.provider,

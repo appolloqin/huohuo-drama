@@ -2,9 +2,11 @@ import { and, eq, isNull } from 'drizzle-orm'
 import { getSqliteDb, schema } from '../../sqlite/client.js'
 import type {
   CharacterRow,
+  CharacterFormRow,
   DramaRow,
   EpisodeRow,
   ImageGenerationRow,
+  PropRow,
   SceneRow,
   StoryboardRow,
   VideoGenerationRow,
@@ -47,6 +49,27 @@ export function sceneDramaForUser(sceneId: number, userId: number): { scene: Sce
   const drama = dramaOwnedByUser(sc.dramaId, userId)
   if (!drama) return null
   return { scene: sc, drama }
+}
+
+export function characterFormDramaForUser(formId: number, userId: number): {
+  form: CharacterFormRow
+  drama: DramaRow
+} | null {
+  const [form] = db().select().from(schema.characterForms)
+    .where(and(eq(schema.characterForms.id, formId), isNull(schema.characterForms.deletedAt))).all()
+  if (!form) return null
+  const drama = dramaOwnedByUser(form.dramaId, userId)
+  if (!drama) return null
+  return { form, drama }
+}
+
+export function propDramaForUser(propId: number, userId: number): { prop: PropRow; drama: DramaRow } | null {
+  const [prop] = db().select().from(schema.props)
+    .where(and(eq(schema.props.id, propId), isNull(schema.props.deletedAt))).all()
+  if (!prop) return null
+  const drama = dramaOwnedByUser(prop.dramaId, userId)
+  if (!drama) return null
+  return { prop, drama }
 }
 
 export function storyboardEpisodeForUser(storyboardId: number, userId: number): {

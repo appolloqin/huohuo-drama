@@ -5,7 +5,7 @@ import type { NewStoryboardInput } from './sqlite.js'
 import * as mysql from './mysql.js'
 import * as sqlite from './sqlite.js'
 
-export type { NewStoryboardInput } from './sqlite.js'
+export type { NewStoryboardInput, StoryboardCastBinding } from './sqlite.js'
 
 export async function insertStoryboard(input: NewStoryboardInput): Promise<DbRunResult> {
   return isMysqlDriver() ? mysql.insertStoryboard(input) : sqlite.insertStoryboard(input)
@@ -31,6 +31,37 @@ export async function listStoryboardCharacterIds(storyboardId: number): Promise<
   return isMysqlDriver()
     ? mysql.listStoryboardCharacterIds(storyboardId)
     : sqlite.listStoryboardCharacterIds(storyboardId)
+}
+
+export async function listStoryboardCastBindings(storyboardId: number) {
+  return isMysqlDriver()
+    ? mysql.listStoryboardCastBindings(storyboardId)
+    : sqlite.listStoryboardCastBindings(storyboardId)
+}
+
+export async function replaceStoryboardCastBindings(
+  storyboardId: number,
+  bindings: import('./sqlite.js').StoryboardCastBinding[],
+): Promise<void> {
+  if (isMysqlDriver()) return mysql.replaceStoryboardCastBindings(storyboardId, bindings)
+  sqlite.replaceStoryboardCastBindings(storyboardId, bindings)
+}
+
+export async function listStoryboardPropIds(storyboardId: number): Promise<number[]> {
+  return isMysqlDriver()
+    ? mysql.listStoryboardPropIds(storyboardId)
+    : sqlite.listStoryboardPropIds(storyboardId)
+}
+
+export async function replaceStoryboardProps(storyboardId: number, propIds: number[]): Promise<void> {
+  if (isMysqlDriver()) return mysql.replaceStoryboardProps(storyboardId, propIds)
+  sqlite.replaceStoryboardProps(storyboardId, propIds)
+}
+
+export async function listStoryboardPropLinksForIds(storyboardIds: number[]) {
+  return isMysqlDriver()
+    ? mysql.listStoryboardPropLinksForIds(storyboardIds)
+    : sqlite.listStoryboardPropLinksForIds(storyboardIds)
 }
 
 export async function replaceStoryboardCharacters(storyboardId: number, characterIds: number[]): Promise<void> {

@@ -3,10 +3,10 @@ import path from 'path'
 import { fileURLToPath } from 'url'
 import sharp from 'sharp'
 import { randomUUID } from 'node:crypto'
+import { resolveDataRoot, resolveStaticRoot } from './data-root.js'
 
-const moduleDir = path.dirname(fileURLToPath(import.meta.url))
-export const STATIC_ROOT = process.env.STORAGE_PATH || path.resolve(moduleDir, '../../../workbench-data/static')
-export const DATA_ROOT = path.resolve(moduleDir, '../../../workbench-data')
+export const DATA_ROOT = resolveDataRoot()
+export const STATIC_ROOT = resolveStaticRoot()
 
 const MIME_TO_EXT: Record<string, string> = {
   'image/png': '.png',

@@ -16,6 +16,7 @@ export type CreditLogRow = typeof sqliteSchema.creditLogs.$inferSelect
 export type DramaRow = typeof sqliteSchema.dramas.$inferSelect
 export type EpisodeRow = typeof sqliteSchema.episodes.$inferSelect
 export type CharacterRow = typeof sqliteSchema.characters.$inferSelect
+export type CharacterFormRow = typeof sqliteSchema.characterForms.$inferSelect
 export type SceneRow = typeof sqliteSchema.scenes.$inferSelect
 export type PropRow = typeof sqliteSchema.props.$inferSelect
 export type AppSettingRow = typeof sqliteSchema.appSettings.$inferSelect

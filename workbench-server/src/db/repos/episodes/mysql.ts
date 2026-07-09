@@ -267,3 +267,19 @@ export async function episodeSceneLinkExists(episodeId: number, sceneId: number)
 export async function insertEpisodeSceneLink(episodeId: number, sceneId: number, createdAt: string): Promise<void> {
   await db().insert(schema.episodeScenes).values({ episodeId, sceneId, createdAt })
 }
+
+export async function listEpisodePropLinks(episodeId: number) {
+  return db().select().from(schema.episodeProps).where(eq(schema.episodeProps.episodeId, episodeId))
+}
+
+export async function insertEpisodePropLink(episodeId: number, propId: number, createdAt: string): Promise<void> {
+  await db().insert(schema.episodeProps).values({ episodeId, propId, createdAt })
+}
+
+export async function episodePropLinkExists(episodeId: number, propId: number): Promise<boolean> {
+  const rows = await db().select().from(schema.episodeProps).where(and(
+    eq(schema.episodeProps.episodeId, episodeId),
+    eq(schema.episodeProps.propId, propId),
+  )).limit(1)
+  return rows.length > 0
+}

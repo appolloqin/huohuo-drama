@@ -12,29 +12,21 @@ description: 火火短剧 · 角色场景提取 Agent 技能规范
 | 方向 | 说明 |
 |------|------|
 | **上游** | **剧本格式化**（`drama_script_formatter`）产出的 `formatted_script` |
-| **本步产出** | 本集 **角色**（`characters` 表）与 **场景**（`scenes` 表） |
-| **下游** | **音色分配**（`drama_voice_assign`）→ **分镜拆解**（`drama_storyboard_breakdown`） |
-
-## 核心目标
-
-- 仅提取**当前正在处理的这一集**中出场的角色与场景
-- 与项目已有角色 / 场景做去重合并，避免一剧多张「苏野」
-- 命名动物 / 非人类角色走 cast 流程，不与人类合并
-
-## 输出契约
-
-- 角色列表：本集所有出场角色（含命名动物），每项对应 `save_dedup_characters` 一次调用
-- 场景列表：本集所有出现过的 `location + time` 组合，每项对应 `save_dedup_scenes` 一次调用
-- 不在本集出场的角色 / 场景一律不返回
+| **本步产出** | 本集 **角色**、**衍生形态**、**道具** 与 **场景** |
+| **下游** | **音色分配** → **分镜拆解** |
 
 ## 推荐工具流
 
 1. `read_formatted_script` — 读取本集格式化剧本
-2. `read_existing_characters` — 获取项目 cast 与本集已关联角色
-3. `read_existing_scenes` — 获取项目 locations 与本集已关联场景
-4. 分析剧本，决定本集出场清单
-5. `save_dedup_characters` — upsert cast 行并关联到本集
-6. `save_dedup_scenes` — upsert location 行并关联到本集
+2. `read_existing_characters` — 项目 cast 与本集已关联角色
+3. `read_existing_character_forms` — 已有衍生形态（变身/换装等）
+4. `read_existing_props` — 已有道具
+5. `read_existing_scenes` — 项目 locations 与本集已关联场景
+6. 分析剧本，决定本集出场清单
+7. `save_dedup_characters` — upsert cast 并关联本集
+8. `save_dedup_character_forms` — upsert 衍生形态（须已有基础角色）
+9. `save_dedup_props` — upsert 道具（可选关联角色/形态）
+10. `save_dedup_scenes` — upsert location 并关联本集
 
 ## 角色卡片字段
 
@@ -53,7 +45,36 @@ description: 火火短剧 · 角色场景提取 Agent 技能规范
 - 拥有**固定名字或反复出现称呼**的动物（如「墨七」「煤球」），多次出场、有情感节拍、影响剧情时，必须通过 `save_dedup_characters` **单独建行**
 - 不要把命名动物折叠到外形相近的人类身上，除非剧本明确指出二者是同一实体
 - 无名字、无个体特征的群居动物可以跳过
-- 道具（prop）指无生命的物体；需要形象一致的动物一律走 cast 流程（当前没有独立的 prop 摄取工具）
+- 道具（prop）指无生命的物体；需要形象一致的动物一律走 cast 流程
+
+## 衍生形态（Character Form）字段
+
+当剧本出现同一角色的**变身、觉醒、换装、战甲等不同外观**时，使用 `save_dedup_character_forms`：
+
+| 字段 | 含义 |
+|------|------|
+| `character_name` | 基础角色名（须已通过 save_dedup_characters 存在） |
+| `name` | 形态名，如「觉醒态」「便装」「战甲形态」 |
+| `appearance` | 该形态的外观描述（200+ 字） |
+| `description` | 何时出现、剧情意义 |
+| `prompt` | 可选，英文出图提示 |
+
+同一 `character_name + name` 不重复创建。
+
+## 道具（Prop）字段
+
+武器、法器、关键陈设等使用 `save_dedup_props`：
+
+| 字段 | 含义 |
+|------|------|
+| `name` | 道具名 |
+| `type` | weapon / daily / decor / vehicle 等 |
+| `description` | 外观与用途 |
+| `prompt` | 英文物品特写 prompt |
+| `character_name` | 可选，专属角色 |
+| `character_form_name` | 可选，专属形态（须与 character_name 一致） |
+
+通用道具（场景陈设）可不填 character_name。
 
 ## 场景卡片字段
 
@@ -68,11 +89,9 @@ description: 火火短剧 · 角色场景提取 Agent 技能规范
 
 ## 道具（Prop）说明 — 仅文档参考
 
-当剧本中提到手持或场景陈设物件时，可在分析笔记中记录：
+~~当剧本中提到手持或场景陈设物件时，可在分析笔记中记录~~
 
-- `name`、`type`（daily / weapon / vehicle / decor）、`description`、英文 image prompt
-
-**不要**尝试写入 prop 表或调用不存在的 prop 工具；当前版本仅作美术参考，有生命或被命名的生物仍走 cast 流程。
+已支持 `save_dedup_props` 写入道具表。有生命或被命名的生物仍走 cast 流程。
 
 ## 提取边界
 
@@ -82,6 +101,8 @@ description: 火火短剧 · 角色场景提取 Agent 技能规范
 
 ## 输出前自检清单
 
+- [ ] 本集出现的变身/换装已写入 character_forms（如有）
+- [ ] 本集关键道具已写入 props（如有）
 - [ ] 角色清单中没有任何「本集未出场」的项
 - [ ] 命名动物（墨七 / 煤球等）没有被遗漏到 cast 之外
 - [ ] 同一角色名未出现在两张 cast 卡片中
@@ -98,4 +119,4 @@ description: 火火短剧 · 角色场景提取 Agent 技能规范
 | 匿名「几个学生」各建一行 | 群演不需要独立 cast | 不创建；若必须出镜，合并为一行「群演学生」 |
 | `prompt: A man walks in` | 含人物 + 非英文 | 改英文且不写人：`A narrow alley at dusk, neon signs flickering, no people` |
 | 把「墨七」塞进「苏野」描述里 | 命名动物折叠 | 单独建 `墨七` cast 行，写明动物外形 |
-| 尝试调用 prop 写入工具 | 工具不存在 | 仅记录在内心分析，走 cast/scene 工具落库 |
+| 尝试调用 prop 写入工具 | 工具不存在 | 使用 save_dedup_props |

@@ -14,3 +14,17 @@ export async function linkCharactersToEpisode(episodeId: number, characterIds: I
     if (characterId) await linkCharacterToEpisode(episodeId, characterId)
   }
 }
+
+/** 将道具关联到本集（幂等） */
+export async function linkPropToEpisode(episodeId: number, propId: number) {
+  const exists = await episodesRepo.episodePropLinkExists(episodeId, propId)
+  if (!exists) {
+    await episodesRepo.insertEpisodePropLink(episodeId, propId, now())
+  }
+}
+
+export async function linkPropsToEpisode(episodeId: number, propIds: Iterable<number>) {
+  for (const propId of new Set(propIds)) {
+    if (propId) await linkPropToEpisode(episodeId, propId)
+  }
+}

@@ -1,4 +1,6 @@
 import * as charactersRepo from '../../db/repos/characters/index.js'
+import * as characterFormsRepo from '../../db/repos/character-forms/index.js'
+import * as propsRepo from '../../db/repos/props/index.js'
 import * as imageGenerationsRepo from '../../db/repos/image-generations/index.js'
 import * as scenesRepo from '../../db/repos/scenes/index.js'
 import * as storyboardsRepo from '../../db/repos/storyboards/index.js'
@@ -39,6 +41,18 @@ async function applyStoryboardImage(
 async function applyLinkedEntityImages(record: ImageGenerationRow, localPath: string) {
   if (record.characterId) {
     await charactersRepo.updateCharacter(record.characterId, {
+      imageUrl: localPath,
+      updatedAt: now(),
+    })
+  }
+  if (record.characterFormId) {
+    await characterFormsRepo.updateCharacterForm(record.characterFormId, {
+      imageUrl: localPath,
+      updatedAt: now(),
+    })
+  }
+  if (record.propId) {
+    await propsRepo.updateProp(record.propId, {
       imageUrl: localPath,
       updatedAt: now(),
     })
