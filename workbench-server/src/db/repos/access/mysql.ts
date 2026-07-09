@@ -5,9 +5,11 @@ import type {
   DramaRow,
   EpisodeRow,
   ImageGenerationRow,
+  PropRow,
   SceneRow,
   StoryboardRow,
   VideoGenerationRow,
+  CharacterFormRow,
 } from '../types.js'
 
 const db = () => getMysqlDb()
@@ -59,6 +61,32 @@ export async function sceneDramaForUser(
   const drama = await dramaOwnedByUser(sc.dramaId, userId)
   if (!drama) return null
   return { scene: sc, drama }
+}
+
+export async function characterFormDramaForUser(
+  formId: number,
+  userId: number,
+): Promise<{ form: CharacterFormRow; drama: DramaRow } | null> {
+  const forms = await db().select().from(schema.characterForms)
+    .where(and(eq(schema.characterForms.id, formId), isNull(schema.characterForms.deletedAt)))
+  const form = forms[0]
+  if (!form) return null
+  const drama = await dramaOwnedByUser(form.dramaId, userId)
+  if (!drama) return null
+  return { form, drama }
+}
+
+export async function propDramaForUser(
+  propId: number,
+  userId: number,
+): Promise<{ prop: PropRow; drama: DramaRow } | null> {
+  const props = await db().select().from(schema.props)
+    .where(and(eq(schema.props.id, propId), isNull(schema.props.deletedAt)))
+  const prop = props[0]
+  if (!prop) return null
+  const drama = await dramaOwnedByUser(prop.dramaId, userId)
+  if (!drama) return null
+  return { prop, drama }
 }
 
 export async function storyboardEpisodeForUser(

@@ -92,6 +92,22 @@ episodeUnitRouter.get('/:id/scenes', async (c) => {
   return success(c, toSnakeCaseArray(scenes))
 })
 
+episodeUnitRouter.get('/:id/character-forms', async (c) => {
+  const authUser = getAuthUser(c)
+  const episodeId = Number(c.req.param('id'))
+  if (!(await episodeAndDramaForUser(episodeId, authUser.id))) return notFound(c, 'Episode not found')
+  const forms = await episodeService.listEpisodeCharacterForms(episodeId)
+  return success(c, toSnakeCaseArray(forms))
+})
+
+episodeUnitRouter.get('/:id/props', async (c) => {
+  const authUser = getAuthUser(c)
+  const episodeId = Number(c.req.param('id'))
+  if (!(await episodeAndDramaForUser(episodeId, authUser.id))) return notFound(c, 'Episode not found')
+  const props = await episodeService.listEpisodeProps(episodeId)
+  return success(c, toSnakeCaseArray(props))
+})
+
 episodeUnitRouter.get('/:episode_id/storyboards', async (c) => {
   const authUser = getAuthUser(c)
   const episodeId = Number(c.req.param('episode_id'))

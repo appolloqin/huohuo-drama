@@ -216,3 +216,20 @@ export async function insertEpisodeSceneLink(episodeId: number, sceneId: number,
   if (isMysqlDriver()) return mysql.insertEpisodeSceneLink(episodeId, sceneId, createdAt)
   sqlite.insertEpisodeSceneLink(episodeId, sceneId, createdAt)
 }
+
+export async function listEpisodePropLinks(episodeId: number) {
+  return isMysqlDriver()
+    ? mysql.listEpisodePropLinks(episodeId)
+    : sqlite.listEpisodePropLinks(episodeId)
+}
+
+export async function insertEpisodePropLink(episodeId: number, propId: number, createdAt: string): Promise<void> {
+  if (isMysqlDriver()) return mysql.insertEpisodePropLink(episodeId, propId, createdAt)
+  sqlite.insertEpisodePropLink(episodeId, propId, createdAt)
+}
+
+export async function episodePropLinkExists(episodeId: number, propId: number): Promise<boolean> {
+  return isMysqlDriver()
+    ? mysql.episodePropLinkExists(episodeId, propId)
+    : sqlite.episodePropLinkExists(episodeId, propId)
+}

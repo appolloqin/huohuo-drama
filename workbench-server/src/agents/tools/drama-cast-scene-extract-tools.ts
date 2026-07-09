@@ -7,9 +7,13 @@ import { logTaskProgress, logTaskSuccess } from '../../common/task/task-logger.j
 import {
   fetchScreenplayForCastSceneExtract,
   queryProjectCastCatalog,
+  queryProjectCharacterFormsCatalog,
   queryProjectLocationCatalog,
+  queryProjectPropsCatalog,
   upsertCastWithDedup,
+  upsertCharacterFormsWithDedup,
   upsertLocationsWithDedup,
+  upsertPropsWithDedup,
 } from '../helpers/drama-cast-scene-extract-repository.js'
 
 export function buildDramaCastSceneExtractToolkit(episodeId: number, dramaId: number) {
@@ -108,11 +112,98 @@ export function buildDramaCastSceneExtractToolkit(episodeId: number, dramaId: nu
     },
   })
 
+  const pullProjectCharacterFormsCatalogTool = createTool({
+    id: 'read_existing_character_forms',
+    description: 'Read derivative character forms (transformations/outfits) already in this drama project.',
+    inputSchema: z.object({}),
+    execute: async () => {
+      const catalog = await queryProjectCharacterFormsCatalog(dramaId, episodeId)
+      logTaskSuccess('DramaCastSceneExtract', 'read-character-forms', {
+        episodeId,
+        dramaId,
+        projectForms: catalog.count,
+        episodeForms: catalog.current_episode_forms.length,
+      })
+      return catalog
+    },
+  })
+
+  const pullProjectPropsCatalogTool = createTool({
+    id: 'read_existing_props',
+    description: 'Read props (weapons, items, decor) already in this drama project.',
+    inputSchema: z.object({}),
+    execute: async () => {
+      const catalog = await queryProjectPropsCatalog(dramaId, episodeId)
+      logTaskSuccess('DramaCastSceneExtract', 'read-props', {
+        episodeId,
+        dramaId,
+        projectProps: catalog.count,
+        episodeProps: catalog.current_episode_props.length,
+      })
+      return catalog
+    },
+  })
+
+  const mergeCharacterFormsTool = createTool({
+    id: 'save_dedup_character_forms',
+    description:
+      'Save derivative character forms (觉醒态, 战甲, 便装等). Requires base character_name that already exists in cast. Dedup by character + form name.',
+    inputSchema: z.object({
+      character_forms: z.array(z.object({
+        character_name: z.string(),
+        name: z.string(),
+        appearance: z.string().optional(),
+        description: z.string().optional(),
+        prompt: z.string().optional(),
+      })),
+    }),
+    execute: async ({ character_forms }) => {
+      logTaskProgress('DramaCastSceneExtract', 'save-character-forms-begin', {
+        episodeId,
+        dramaId,
+        count: character_forms.length,
+      })
+      const outcome = await upsertCharacterFormsWithDedup(episodeId, dramaId, character_forms)
+      logTaskSuccess('DramaCastSceneExtract', 'save-character-forms-complete', { episodeId, ...outcome })
+      return outcome
+    },
+  })
+
+  const mergePropsTool = createTool({
+    id: 'save_dedup_props',
+    description:
+      'Save props (weapons, handheld items, key decor). Optional character_name / character_form_name for exclusive ownership. Dedup by prop name within drama.',
+    inputSchema: z.object({
+      props: z.array(z.object({
+        name: z.string(),
+        type: z.string().optional(),
+        description: z.string().optional(),
+        prompt: z.string().optional(),
+        character_name: z.string().optional(),
+        character_form_name: z.string().optional(),
+      })),
+    }),
+    execute: async ({ props }) => {
+      logTaskProgress('DramaCastSceneExtract', 'save-props-begin', {
+        episodeId,
+        dramaId,
+        count: props.length,
+      })
+      const outcome = await upsertPropsWithDedup(episodeId, dramaId, props)
+      logTaskSuccess('DramaCastSceneExtract', 'save-props-complete', { episodeId, ...outcome })
+      return outcome
+    },
+  })
+
   return {
     pullScreenplayForExtract: pullScreenplayForExtractTool,
     pullProjectCastCatalog: pullProjectCastCatalogTool,
     pullProjectLocationCatalog: pullProjectLocationCatalogTool,
+    pullProjectCharacterFormsCatalog: pullProjectCharacterFormsCatalogTool,
+    pullProjectPropsCatalog: pullProjectPropsCatalogTool,
     mergeCastRows: mergeCastRowsTool,
     mergeLocationRows: mergeLocationRowsTool,
+    mergeCharacterForms: mergeCharacterFormsTool,
+    mergeProps: mergePropsTool,
   }
 }

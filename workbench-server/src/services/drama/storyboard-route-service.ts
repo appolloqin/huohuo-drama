@@ -5,8 +5,8 @@ import { now } from '../../common/http/response.js'
 import { toSnakeCase } from '../../common/http/transform.js'
 import { generateTTS } from '../media/tts-generation.js'
 import { logTaskError, logTaskPayload, logTaskStart, logTaskSuccess } from '../../common/task/task-logger.js'
-import { validateStoryboardBindings } from '../../common/drama/storyboard-bindings.js'
-import { linkCharactersToEpisode } from '../../common/drama/episode-links.js'
+import { normalizeCastBindings, validateStoryboardBindings } from '../../common/drama/storyboard-bindings.js'
+import { linkCharactersToEpisode, linkPropsToEpisode } from '../../common/drama/episode-links.js'
 import { parseDialogueForTTS } from './compose-dialogue.js'
 
 const STORYBOARD_FIELD_MAP: Record<string, string> = {
@@ -30,6 +30,46 @@ const STORYBOARD_FIELD_MAP: Record<string, string> = {
   reference_images: 'referenceImages',
 }
 
+async function applyStoryboardCastAndProps(
+  storyboardId: number,
+  episodeId: number,
+  body: Record<string, any>,
+) {
+  const castBindings = normalizeCastBindings(body)
+  const hasCastUpdate = 'cast_bindings' in body || 'character_ids' in body
+  const hasPropUpdate = 'prop_ids' in body
+
+  if (hasCastUpdate) {
+    await storyboardsRepo.replaceStoryboardCastBindings(
+      storyboardId,
+      castBindings.map(item => ({
+        characterId: item.character_id,
+        characterFormId: item.character_form_id,
+      })),
+    )
+    await linkCharactersToEpisode(episodeId, castBindings.map(item => item.character_id))
+  }
+
+  if (hasPropUpdate) {
+    const propIds = (body.prop_ids || []).map(Number).filter(Boolean)
+    await storyboardsRepo.replaceStoryboardProps(storyboardId, propIds)
+    await linkPropsToEpisode(episodeId, propIds)
+  }
+}
+
+async function buildStoryboardBindingPayload(storyboardId: number) {
+  const castBindings = await storyboardsRepo.listStoryboardCastBindings(storyboardId)
+  const propIds = await storyboardsRepo.listStoryboardPropIds(storyboardId)
+  return {
+    character_ids: castBindings.map(item => item.characterId),
+    cast_bindings: castBindings.map(item => ({
+      character_id: item.characterId,
+      character_form_id: item.characterFormId,
+    })),
+    prop_ids: propIds,
+  }
+}
+
 export async function listStoryboardCharacterIds(storyboardId: number) {
   return storyboardsRepo.listStoryboardCharacterIds(storyboardId)
 }
@@ -44,15 +84,25 @@ export async function createStoryboardRecord(body: {
   scene_id?: number
   duration?: number
   character_ids?: number[]
+  cast_bindings?: Array<{ character_id: number; character_form_id?: number | null }>
+  prop_ids?: number[]
 }) {
+  const castBindings = normalizeCastBindings(body)
   logTaskStart('StoryboardAPI', 'create', {
     episodeId: body.episode_id,
     shotNumber: body.storyboard_number || 1,
     sceneId: body.scene_id,
-    characterIds: body.character_ids,
+    characterIds: castBindings.map(item => item.character_id),
+    propIds: body.prop_ids,
   })
   logTaskPayload('StoryboardAPI', 'create body', body)
-  await validateStoryboardBindings(body.episode_id, body.scene_id, body.character_ids)
+  await validateStoryboardBindings(
+    body.episode_id,
+    body.scene_id,
+    body.character_ids,
+    castBindings,
+    body.prop_ids,
+  )
 
   const ts = now()
   const res = await storyboardsRepo.insertStoryboard({
@@ -69,8 +119,7 @@ export async function createStoryboardRecord(body: {
   })
 
   const storyboardId = res.lastInsertRowid
-  await storyboardsRepo.replaceStoryboardCharacters(storyboardId, body.character_ids || [])
-  await linkCharactersToEpisode(body.episode_id, body.character_ids || [])
+  await applyStoryboardCastAndProps(storyboardId, body.episode_id, body)
 
   const result = await storyboardsRepo.findStoryboardById(storyboardId)
   if (!result) throw new Error('创建分镜失败')
@@ -82,7 +131,7 @@ export async function createStoryboardRecord(body: {
 
   return {
     ...toSnakeCase(result),
-    character_ids: await listStoryboardCharacterIds(result.id),
+    ...(await buildStoryboardBindingPayload(result.id)),
   }
 }
 
@@ -109,23 +158,27 @@ export async function updateStoryboardRecord(
     updates.subtitleUrl = null
   }
 
+  const castBindings = normalizeCastBindings(body)
+  const nextCharacterIds = 'cast_bindings' in body || 'character_ids' in body
+    ? castBindings.map(item => item.character_id)
+    : await listStoryboardCharacterIds(storyboardId)
+
   await validateStoryboardBindings(
     episodeId,
     'scene_id' in body ? body.scene_id : currentSceneId,
-    'character_ids' in body ? body.character_ids : await listStoryboardCharacterIds(storyboardId),
+    nextCharacterIds,
+    'cast_bindings' in body || 'character_ids' in body ? castBindings : undefined,
+    'prop_ids' in body ? body.prop_ids : undefined,
   )
 
   await storyboardsRepo.updateStoryboard(storyboardId, updates)
-
-  if ('character_ids' in body) {
-    await storyboardsRepo.replaceStoryboardCharacters(storyboardId, body.character_ids || [])
-    await linkCharactersToEpisode(episodeId, body.character_ids || [])
-  }
+  await applyStoryboardCastAndProps(storyboardId, episodeId, body)
 
   logTaskSuccess('StoryboardAPI', 'update', {
     storyboardId,
     updatedFields: Object.keys(updates),
-    characterIds: body.character_ids,
+    characterIds: nextCharacterIds,
+    propIds: body.prop_ids,
   })
 }
 

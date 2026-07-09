@@ -15,6 +15,7 @@ import {
   resolveInlineOrBlob,
   TEXT_BLOB_THRESHOLD,
 } from '../common/storage/text-blob-storage.js'
+import { migrateLegacyWorkbenchDataStorage } from '../common/media/data-root.js'
 import {
   novelChapterContentRelativePath,
   persistNovelChapterContentToDisk,
@@ -261,6 +262,7 @@ export async function migratePlaintextApiKeysMysql(pool: Pool): Promise<void> {
 
 /** F4: move oversized inline text into workbench-data/storage/text/… */
 export function externalizeLargeTextSqlite(sqlite: Database.Database): void {
+  migrateLegacyWorkbenchDataStorage()
   externalizeEpisodeTextSqlite(sqlite)
   externalizeStoryboardTextSqlite(sqlite)
   externalizeAgentPromptTextSqlite(sqlite)
@@ -332,12 +334,20 @@ export function externalizeNovelEpisodeContentSqlite(sqlite: Database.Database):
   const stmt = sqlite.prepare('UPDATE episodes SET content = ?, content_blob_path = ?, metadata = ? WHERE id = ?')
   for (const row of rows) {
     const canonical = novelChapterContentRelativePath(row.drama_id, row.id)
-    if (!row.content?.trim() && row.content_blob_path?.trim() === canonical) continue
+    if (!row.content?.trim() && row.content_blob_path?.trim() === canonical) {
+      if (resolveInlineOrBlob(null, row.content_blob_path)?.trim()) continue
+    }
 
     const text = resolveInlineOrBlob(row.content, row.content_blob_path)
     if (!text?.trim()) continue
 
     const p = persistNovelChapterContentToDisk(row.drama_id, row.id, text)
+    const verified = resolveInlineOrBlob(null, p.blobPath)
+    if (!verified?.trim()) {
+      sqlite.prepare('UPDATE episodes SET content_blob_path = ?, metadata = ? WHERE id = ?')
+        .run(p.blobPath, mergeEpisodeMetadata(row.metadata, { prose_char_count: countNovelChars(text) }), row.id)
+      continue
+    }
     const metadata = mergeEpisodeMetadata(row.metadata, { prose_char_count: countNovelChars(text) })
     stmt.run(p.inline, p.blobPath, metadata, row.id)
   }
@@ -461,6 +471,7 @@ function externalizeAgentPromptTextSqlite(sqlite: Database.Database): void {
 
 export async function externalizeLargeTextMysql(pool: Pool): Promise<void> {
   try {
+    migrateLegacyWorkbenchDataStorage()
     await externalizeEpisodeTextMysql(pool)
     await externalizeStoryboardTextMysql(pool)
     await externalizeAgentPromptTextMysql(pool)
@@ -496,7 +507,9 @@ export async function externalizeNovelEpisodeContentMysql(pool: Pool): Promise<v
     const inline = row.content as string | null
     const blobPath = row.content_blob_path as string | null
     const metadataRaw = row.metadata
-    if (!inline?.trim() && blobPath?.trim() === canonical) continue
+    if (!inline?.trim() && blobPath?.trim() === canonical) {
+      if (resolveInlineOrBlob(null, blobPath)?.trim()) continue
+    }
 
     const text = resolveInlineOrBlob(inline, blobPath)
     if (!text?.trim()) continue
@@ -506,6 +519,14 @@ export async function externalizeNovelEpisodeContentMysql(pool: Pool): Promise<v
       typeof metadataRaw === 'string' ? metadataRaw : (metadataRaw as Record<string, unknown> | null),
       { prose_char_count: countNovelChars(text) },
     )
+    const verified = resolveInlineOrBlob(null, p.blobPath)
+    if (!verified?.trim()) {
+      await pool.execute(
+        'UPDATE `episodes` SET `content_blob_path` = ?, `metadata` = ? WHERE `id` = ?',
+        [p.blobPath, metadata, id],
+      )
+      continue
+    }
     await pool.execute(
       'UPDATE `episodes` SET `content` = ?, `content_blob_path` = ?, `metadata` = ? WHERE `id` = ?',
       [p.inline, p.blobPath, metadata, id],

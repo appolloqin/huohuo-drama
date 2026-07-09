@@ -34,23 +34,64 @@ export async function deleteStoryboard(id: number): Promise<void> {
 }
 
 export async function listStoryboardCharacterIds(storyboardId: number): Promise<number[]> {
+  const bindings = await listStoryboardCastBindings(storyboardId)
+  return bindings.map(link => link.characterId)
+}
+
+export async function listStoryboardCastBindings(storyboardId: number): Promise<import('./sqlite.js').StoryboardCastBinding[]> {
   const rows = await db().select().from(schema.storyboardCharacters)
     .where(eq(schema.storyboardCharacters.storyboardId, storyboardId))
-  return rows.map(link => link.characterId)
+  return rows.map(link => ({
+    characterId: link.characterId,
+    characterFormId: link.characterFormId ?? null,
+  }))
 }
 
 export async function replaceStoryboardCharacters(storyboardId: number, characterIds: number[]): Promise<void> {
+  await replaceStoryboardCastBindings(
+    storyboardId,
+    [...new Set(characterIds.filter(Boolean))].map(characterId => ({ characterId })),
+  )
+}
+
+export async function replaceStoryboardCastBindings(
+  storyboardId: number,
+  bindings: import('./sqlite.js').StoryboardCastBinding[],
+): Promise<void> {
   await db().delete(schema.storyboardCharacters)
     .where(eq(schema.storyboardCharacters.storyboardId, storyboardId))
-  const uniqueIds = [...new Set(characterIds.filter(Boolean))]
-  for (const characterId of uniqueIds) {
-    await db().insert(schema.storyboardCharacters).values({ storyboardId, characterId })
+  const seen = new Set<number>()
+  for (const binding of bindings) {
+    if (!binding.characterId || seen.has(binding.characterId)) continue
+    seen.add(binding.characterId)
+    await db().insert(schema.storyboardCharacters).values({
+      storyboardId,
+      characterId: binding.characterId,
+      characterFormId: binding.characterFormId ?? null,
+    })
+  }
+}
+
+export async function listStoryboardPropIds(storyboardId: number): Promise<number[]> {
+  const rows = await db().select().from(schema.storyboardProps)
+    .where(eq(schema.storyboardProps.storyboardId, storyboardId))
+  return rows.map(link => link.propId)
+}
+
+export async function replaceStoryboardProps(storyboardId: number, propIds: number[]): Promise<void> {
+  await db().delete(schema.storyboardProps)
+    .where(eq(schema.storyboardProps.storyboardId, storyboardId))
+  const uniqueIds = [...new Set(propIds.filter(Boolean))]
+  for (const propId of uniqueIds) {
+    await db().insert(schema.storyboardProps).values({ storyboardId, propId })
   }
 }
 
 export async function deleteStoryboardCharactersByStoryboard(storyboardId: number): Promise<void> {
   await db().delete(schema.storyboardCharacters)
     .where(eq(schema.storyboardCharacters.storyboardId, storyboardId))
+  await db().delete(schema.storyboardProps)
+    .where(eq(schema.storyboardProps.storyboardId, storyboardId))
 }
 
 export async function listStoryboardIdsByEpisode(episodeId: number): Promise<number[]> {
@@ -74,6 +115,12 @@ export async function listStoryboardCharacterLinksForIds(storyboardIds: number[]
   if (!storyboardIds.length) return []
   return db().select().from(schema.storyboardCharacters)
     .where(inArray(schema.storyboardCharacters.storyboardId, storyboardIds))
+}
+
+export async function listStoryboardPropLinksForIds(storyboardIds: number[]) {
+  if (!storyboardIds.length) return []
+  return db().select().from(schema.storyboardProps)
+    .where(inArray(schema.storyboardProps.storyboardId, storyboardIds))
 }
 
 export async function updateStoryboardsByEpisode(episodeId: number, patch: Record<string, unknown>): Promise<void> {

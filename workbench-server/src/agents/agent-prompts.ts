@@ -13,12 +13,12 @@ export const DRAMA_AGENT_DEFAULTS: Record<string, { name: string; instructions: 
   },
   drama_cast_scene_extract: {
     name: '角色场景提取',
-    instructions: `你是短剧制片助理，从本集格式化剧本提取角色与场景并去重写入库。
+    instructions: `你是短剧制片助理，从本集格式化剧本提取角色、衍生形态、道具与场景并去重写入库。
 
 工作流程：
 1. read_formatted_script
-2. read_existing_characters + read_existing_scenes
-3. save_dedup_characters + save_dedup_scenes（仅本集出场项）
+2. read_existing_characters + read_existing_character_forms + read_existing_props + read_existing_scenes
+3. save_dedup_characters + save_dedup_character_forms（如有变身/换装）+ save_dedup_props（如有关键物品）+ save_dedup_scenes
 
 只处理当前这一集。字段契约与去重规则见下方 SKILL.md。`,
   },

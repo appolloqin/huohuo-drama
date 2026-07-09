@@ -16,6 +16,9 @@ import { dramaOwnedByUser, episodeAndDramaForUser } from './drama-access-service
 import { extractChapterOutline } from '../../common/novel/novel-outline.js'
 import { parseNovelMetadata } from '../../common/novel/novel-meta.js'
 import * as dramasRepo from '../../db/repos/dramas/index.js'
+import * as characterFormsRepo from '../../db/repos/character-forms/index.js'
+import * as propsRepo from '../../db/repos/props/index.js'
+import * as storyboardsRepo from '../../db/repos/storyboards/index.js'
 
 export type EpisodeListFilter = episodesRepo.EpisodeListFilter
 
@@ -322,24 +325,62 @@ export async function listEpisodeScenes(episodeId: number) {
   return scenes.filter(sc => !sc.deletedAt)
 }
 
+export async function listEpisodeCharacterForms(episodeId: number) {
+  const linkedCharIdSet = await gatherEpisodeLinkedCharacterIds(episodeId)
+  if (!linkedCharIdSet.size) return []
+  const dramaId = (await episodesRepo.findEpisodeById(episodeId))?.dramaId
+  if (!dramaId) return []
+  const forms = await characterFormsRepo.listActiveCharacterFormsByDrama(dramaId)
+  return forms
+    .filter(f => linkedCharIdSet.has(f.characterId))
+    .sort((a, b) => (a.sortOrder ?? 0) - (b.sortOrder ?? 0) || a.id - b.id)
+}
+
+export async function listEpisodeProps(episodeId: number) {
+  const links = await episodesRepo.listEpisodePropLinks(episodeId)
+  const linkedIds = new Set(links.map(l => l.propId))
+  const dramaId = (await episodesRepo.findEpisodeById(episodeId))?.dramaId
+  if (!dramaId) return []
+  const props = await propsRepo.listActivePropsByDrama(dramaId)
+  const linked = props.filter(p => linkedIds.has(p.id))
+  const unlinked = props.filter(p => !linkedIds.has(p.id))
+  return [...linked, ...unlinked]
+}
+
 export async function assembleEpisodeStoryboardPayload(episodeId: number) {
-  const [rows, links, episodeCharLinks] = await Promise.all([
+  const [rows, castLinks, episodeCharLinks] = await Promise.all([
     episodesRepo.listStoryboardsByEpisodeOrdered(episodeId),
     episodesRepo.listAllStoryboardCharacterLinks(),
     episodesRepo.listEpisodeCharacterLinks(episodeId),
   ])
+  const propLinks = await storyboardsRepo.listStoryboardPropLinksForIds(rows.map(r => r.id))
 
   const castIdsByShotId = new Map<number, number[]>()
-  for (const link of links) {
+  const castBindingsByShotId = new Map<number, Array<{ character_id: number; character_form_id: number | null }>>()
+  for (const link of castLinks) {
     const arr = castIdsByShotId.get(link.storyboardId) || []
     arr.push(link.characterId)
     castIdsByShotId.set(link.storyboardId, arr)
+
+    const bindings = castBindingsByShotId.get(link.storyboardId) || []
+    bindings.push({
+      character_id: link.characterId,
+      character_form_id: link.characterFormId ?? null,
+    })
+    castBindingsByShotId.set(link.storyboardId, bindings)
+  }
+
+  const propIdsByShotId = new Map<number, number[]>()
+  for (const link of propLinks) {
+    const arr = propIdsByShotId.get(link.storyboardId) || []
+    arr.push(link.propId)
+    propIdsByShotId.set(link.storyboardId, arr)
   }
 
   const episodeCharIds = episodeCharLinks.map(link => link.characterId)
   const rowIdSet = new Set(rows.map(r => r.id))
   const shotLinkedCharIds = new Set<number>()
-  for (const link of links) {
+  for (const link of castLinks) {
     if (rowIdSet.has(link.storyboardId)) shotLinkedCharIds.add(link.characterId)
   }
   const mergedCharIds = new Set([...episodeCharIds, ...shotLinkedCharIds])
@@ -349,6 +390,8 @@ export async function assembleEpisodeStoryboardPayload(episodeId: number) {
   return rows.map((row) => ({
     ...toSnakeCase(row),
     character_ids: castIdsByShotId.get(row.id) || [],
+    cast_bindings: castBindingsByShotId.get(row.id) || [],
+    prop_ids: propIdsByShotId.get(row.id) || [],
     characters: allChars
       .filter(ch => (castIdsByShotId.get(row.id) || []).includes(ch.id))
       .map(ch => toSnakeCase(ch)),

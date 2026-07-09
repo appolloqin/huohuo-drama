@@ -313,3 +313,21 @@ export function episodeSceneLinkExists(episodeId: number, sceneId: number): bool
 export function insertEpisodeSceneLink(episodeId: number, sceneId: number, createdAt: string): void {
   db().insert(schema.episodeScenes).values({ episodeId, sceneId, createdAt }).run()
 }
+
+export function listEpisodePropLinks(episodeId: number) {
+  return db().select().from(schema.episodeProps).where(eq(schema.episodeProps.episodeId, episodeId)).all()
+}
+
+export function insertEpisodePropLink(episodeId: number, propId: number, createdAt: string): void {
+  db().insert(schema.episodeProps).values({ episodeId, propId, createdAt }).run()
+}
+
+export function episodePropLinkExists(episodeId: number, propId: number): boolean {
+  const rows = db().select().from(schema.episodeProps)
+    .where(and(
+      eq(schema.episodeProps.episodeId, episodeId),
+      eq(schema.episodeProps.propId, propId),
+    ))
+    .all()
+  return rows.length > 0
+}

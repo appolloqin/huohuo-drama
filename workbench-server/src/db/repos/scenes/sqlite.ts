@@ -12,6 +12,8 @@ export type NewSceneInput = {
   prompt: string
   storyboardCount?: number
   status?: string
+  sceneMode?: string | null
+  composeConfig?: string | null
   createdAt: string
   updatedAt: string
 }

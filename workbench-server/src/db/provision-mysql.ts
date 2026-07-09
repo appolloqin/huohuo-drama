@@ -214,6 +214,12 @@ async function applyLegacyColumnPatches(pool: Pool) {
   await appendTableColumnIfAbsent(pool, 'storyboards', 'video_prompt_blob_path', 'TEXT')
   await appendTableColumnIfAbsent(pool, 'storyboards', 'dialogue_blob_path', 'TEXT')
   await appendTableColumnIfAbsent(pool, 'agent_configs', 'system_prompt_blob_path', 'TEXT')
+  await appendTableColumnIfAbsent(pool, 'props', 'character_id', 'INT')
+  await appendTableColumnIfAbsent(pool, 'props', 'character_form_id', 'INT')
+  await appendTableColumnIfAbsent(pool, 'scenes', 'scene_mode', "VARCHAR(16) DEFAULT 'backdrop'")
+  await appendTableColumnIfAbsent(pool, 'scenes', 'compose_config', 'JSON')
+  await appendTableColumnIfAbsent(pool, 'image_generations', 'character_form_id', 'INT')
+  await appendTableColumnIfAbsent(pool, 'storyboard_characters', 'character_form_id', 'INT')
   if (await tableExists(pool, 'video_merges')) {
     await pool.execute(
       `UPDATE video_merges SET motion_pipeline = 'frame_slideshow'

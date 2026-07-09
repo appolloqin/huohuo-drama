@@ -46,25 +46,68 @@ export function deleteStoryboard(id: number): void {
   db().delete(schema.storyboards).where(eq(schema.storyboards.id, id)).run()
 }
 
+export type StoryboardCastBinding = {
+  characterId: number
+  characterFormId?: number | null
+}
+
 export function listStoryboardCharacterIds(storyboardId: number): number[] {
+  return listStoryboardCastBindings(storyboardId).map(link => link.characterId)
+}
+
+export function listStoryboardCastBindings(storyboardId: number): StoryboardCastBinding[] {
   return db().select().from(schema.storyboardCharacters)
     .where(eq(schema.storyboardCharacters.storyboardId, storyboardId))
     .all()
-    .map(link => link.characterId)
+    .map(link => ({
+      characterId: link.characterId,
+      characterFormId: link.characterFormId ?? null,
+    }))
 }
 
 export function replaceStoryboardCharacters(storyboardId: number, characterIds: number[]): void {
+  replaceStoryboardCastBindings(
+    storyboardId,
+    [...new Set(characterIds.filter(Boolean))].map(characterId => ({ characterId })),
+  )
+}
+
+export function replaceStoryboardCastBindings(storyboardId: number, bindings: StoryboardCastBinding[]): void {
   db().delete(schema.storyboardCharacters)
     .where(eq(schema.storyboardCharacters.storyboardId, storyboardId)).run()
-  const uniqueIds = [...new Set(characterIds.filter(Boolean))]
-  for (const characterId of uniqueIds) {
-    db().insert(schema.storyboardCharacters).values({ storyboardId, characterId }).run()
+  const seen = new Set<number>()
+  for (const binding of bindings) {
+    if (!binding.characterId || seen.has(binding.characterId)) continue
+    seen.add(binding.characterId)
+    db().insert(schema.storyboardCharacters).values({
+      storyboardId,
+      characterId: binding.characterId,
+      characterFormId: binding.characterFormId ?? null,
+    }).run()
+  }
+}
+
+export function listStoryboardPropIds(storyboardId: number): number[] {
+  return db().select().from(schema.storyboardProps)
+    .where(eq(schema.storyboardProps.storyboardId, storyboardId))
+    .all()
+    .map(link => link.propId)
+}
+
+export function replaceStoryboardProps(storyboardId: number, propIds: number[]): void {
+  db().delete(schema.storyboardProps)
+    .where(eq(schema.storyboardProps.storyboardId, storyboardId)).run()
+  const uniqueIds = [...new Set(propIds.filter(Boolean))]
+  for (const propId of uniqueIds) {
+    db().insert(schema.storyboardProps).values({ storyboardId, propId }).run()
   }
 }
 
 export function deleteStoryboardCharactersByStoryboard(storyboardId: number): void {
   db().delete(schema.storyboardCharacters)
     .where(eq(schema.storyboardCharacters.storyboardId, storyboardId)).run()
+  db().delete(schema.storyboardProps)
+    .where(eq(schema.storyboardProps.storyboardId, storyboardId)).run()
 }
 
 export function listStoryboardIdsByEpisode(episodeId: number): number[] {
@@ -90,6 +133,13 @@ export function listStoryboardCharacterLinksForIds(storyboardIds: number[]) {
   if (!storyboardIds.length) return []
   return db().select().from(schema.storyboardCharacters)
     .where(inArray(schema.storyboardCharacters.storyboardId, storyboardIds))
+    .all()
+}
+
+export function listStoryboardPropLinksForIds(storyboardIds: number[]) {
+  if (!storyboardIds.length) return []
+  return db().select().from(schema.storyboardProps)
+    .where(inArray(schema.storyboardProps.storyboardId, storyboardIds))
     .all()
 }
 

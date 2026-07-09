@@ -6,6 +6,8 @@ import * as accessRepo from '../../db/repos/access/index.js'
 export const dramaOwnedByUser = accessRepo.dramaOwnedByUser
 export const episodeAndDramaForUser = accessRepo.episodeAndDramaForUser
 export const characterDramaForUser = accessRepo.characterDramaForUser
+export const characterFormDramaForUser = accessRepo.characterFormDramaForUser
+export const propDramaForUser = accessRepo.propDramaForUser
 export const sceneDramaForUser = accessRepo.sceneDramaForUser
 export const storyboardEpisodeForUser = accessRepo.storyboardEpisodeForUser
 export const imageGenerationForUser = accessRepo.imageGenerationForUser

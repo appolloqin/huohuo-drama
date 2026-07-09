@@ -1,14 +1,11 @@
 import fs from 'fs'
 import path from 'path'
-import { fileURLToPath } from 'url'
-
-const __dirname = path.dirname(fileURLToPath(import.meta.url))
-const DATA_ROOT = process.env.DATA_PATH || path.resolve(__dirname, '../../../../workbench-data')
+import { resolveDataRoot } from '../../../common/media/data-root.js'
 
 export type NovelMemoryFileKey = 'world_bible' | 'character_sheets' | 'plot_ledger' | 'anchor'
 
 export function novelMemoryRoot(dramaId: number): string {
-  return path.join(DATA_ROOT, 'novel-memory', String(dramaId))
+  return path.join(resolveDataRoot(), 'novel-memory', String(dramaId))
 }
 
 export function novelMemoryPaths(dramaId: number) {

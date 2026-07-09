@@ -316,6 +316,26 @@ export const characters = sqliteTable('characters', {
   deletedAt: text('deleted_at'),
 })
 
+/** 角色衍生形态（变身、换装等），基于基础角色扩展资产库 */
+export const characterForms = sqliteTable('character_forms', {
+  id: integer('id').primaryKey({ autoIncrement: true }),
+  dramaId: integer('drama_id').notNull(),
+  characterId: integer('character_id').notNull(),
+  name: text('name').notNull(),
+  appearance: text('appearance'),
+  description: text('description'),
+  prompt: text('prompt'),
+  imageUrl: text('image_url'),
+  /** JSON 数组 */
+  referenceImages: text('reference_images'),
+  seedValue: text('seed_value'),
+  sortOrder: integer('sort_order'),
+  localPath: text('local_path'),
+  createdAt: text('created_at').notNull(),
+  updatedAt: text('updated_at').notNull(),
+  deletedAt: text('deleted_at'),
+})
+
 /** 可复用场景/布景，含文生图提示词 */
 export const scenes = sqliteTable('scenes', {
   id: integer('id').primaryKey({ autoIncrement: true }),
@@ -329,6 +349,10 @@ export const scenes = sqliteTable('scenes', {
   imageUrl: text('image_url'),
   status: text('status').default('pending'),
   localPath: text('local_path'),
+  /** backdrop | composed */
+  sceneMode: text('scene_mode').default('backdrop'),
+  /** JSON：生成时选用的角色/形态/道具 id 列表 */
+  composeConfig: text('compose_config'),
   createdAt: text('created_at').notNull(),
   updatedAt: text('updated_at').notNull(),
   deletedAt: text('deleted_at'),
@@ -350,10 +374,22 @@ export const episodeScenes = sqliteTable('episode_scenes', {
   createdAt: text('created_at').notNull(),
 })
 
+/** 分集与道具的多对多关联 */
+export const episodeProps = sqliteTable('episode_props', {
+  id: integer('id').primaryKey({ autoIncrement: true }),
+  episodeId: integer('episode_id').notNull(),
+  propId: integer('prop_id').notNull(),
+  createdAt: text('created_at').notNull(),
+})
+
 /** 项目级手持道具或陈设物 */
 export const props = sqliteTable('props', {
   id: integer('id').primaryKey({ autoIncrement: true }),
   dramaId: integer('drama_id').notNull(),
+  /** 可选专属角色 */
+  characterId: integer('character_id'),
+  /** 可选专属衍生形态 */
+  characterFormId: integer('character_form_id'),
   name: text('name').notNull(),
   type: text('type'),
   description: text('description'),
@@ -416,8 +452,17 @@ export const storyboards = sqliteTable('storyboards', {
 export const storyboardCharacters = sqliteTable('storyboard_characters', {
   storyboardId: integer('storyboard_id').notNull(),
   characterId: integer('character_id').notNull(),
+  characterFormId: integer('character_form_id'),
 }, (table) => ({
   pk: primaryKey({ columns: [table.storyboardId, table.characterId] }),
+}))
+
+/** 分镜与道具的多对多关联（联合主键） */
+export const storyboardProps = sqliteTable('storyboard_props', {
+  storyboardId: integer('storyboard_id').notNull(),
+  propId: integer('prop_id').notNull(),
+}, (table) => ({
+  pk: primaryKey({ columns: [table.storyboardId, table.propId] }),
 }))
 
 // ══════════════════════════════════════════════════════════════
@@ -431,6 +476,7 @@ export const imageGenerations = sqliteTable('image_generations', {
   dramaId: integer('drama_id'),
   sceneId: integer('scene_id'),
   characterId: integer('character_id'),
+  characterFormId: integer('character_form_id'),
   propId: integer('prop_id'),
   imageType: text('image_type'),
   frameType: text('frame_type'),

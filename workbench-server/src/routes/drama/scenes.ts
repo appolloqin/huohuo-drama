@@ -7,7 +7,7 @@ import { getAuthUser } from '../../common/auth/http-auth.js';
 import { dramaOwnedByUser, episodeAndDramaForUser, sceneDramaForUser } from '../../services/drama/drama-access-service.js';
 import { assertUserCanGenerate } from '../../services/credits/credits.js'
 import {
-  enqueueSceneBackdrop,
+  enqueueSceneImage,
   insertSceneRecord,
   patchSceneRecord,
   removeSceneRecord,
@@ -63,7 +63,7 @@ sceneRouter.post('/:id/generate-image', async (ctx) => {
   }
 
   try {
-    const result = await enqueueSceneBackdrop({
+    const result = await enqueueSceneImage({
       userId: authUser.id,
       userRole: authUser.role,
       sceneId,
@@ -72,6 +72,10 @@ sceneRouter.post('/:id/generate-image', async (ctx) => {
       location: scenePack.scene.location,
       time: scenePack.scene.time,
       prompt: scenePack.scene.prompt,
+      sceneMode: body.scene_mode,
+      characterFormIds: body.character_form_ids,
+      propIds: body.prop_ids,
+      characterIds: body.character_ids,
       dramaImageConfigId: epPack.episode.dramaImageConfigId,
       episodeMetadata: epPack.episode.metadata,
       size: body.size,
