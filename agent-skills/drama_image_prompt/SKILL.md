@@ -108,10 +108,11 @@ consistent lighting and color palette, no merged panels, no missing panels, no t
 句式骨架：
 
 ```
-[appearance], [personality], [role], cinematic portrait, [expression], high quality, detailed, character concept art, no text, no watermark
+[appearance], [personality], [role], portrait, [expression], high quality, detailed, character concept art, [project style], no text, no watermark
 ```
 
 - `expression` **必填**（如 `with a determined expression`），避免中性脸
+- `[project style]` 必须来自项目 `style`（真人写实 / 动漫等），禁止混用冲突风格词
 
 ---
 
@@ -122,7 +123,7 @@ consistent lighting and color palette, no merged panels, no missing panels, no t
 句式骨架：
 
 ```
-[location], [time], [lighting], [scene detail], cinematic scene, high quality, consistent art style, no people, no figures, no text, no watermark
+[location], [time], [lighting], [scene detail], high quality, consistent art style: [project style], no people, no figures, no text, no watermark
 ```
 
 ---

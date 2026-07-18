@@ -191,11 +191,16 @@ export async function upsertCharacterFormsWithDedup(
 ) {
   const timestamp = now()
   const results = { created: 0, merged: 0, skipped: 0 }
+  const skippedCharacterNames: string[] = []
 
   for (const input of forms) {
     const baseChar = await charactersRepo.findActiveCharacterByName(dramaId, input.character_name.trim())
     if (!baseChar) {
       results.skipped++
+      const skippedName = input.character_name.trim()
+      if (skippedName && !skippedCharacterNames.includes(skippedName)) {
+        skippedCharacterNames.push(skippedName)
+      }
       continue
     }
     await linkCharacterToEpisode(episodeId, baseChar.id)
@@ -225,8 +230,13 @@ export async function upsertCharacterFormsWithDedup(
     results.created++
   }
 
+  const skippedHint = skippedCharacterNames.length
+    ? `；未找到基础角色已跳过：${skippedCharacterNames.join('、')}（请先 save_dedup_characters 且 character_name 完全一致）`
+    : ''
+
   return {
-    message: `衍生形态保存完成：新增 ${results.created}，合并 ${results.merged}，跳过 ${results.skipped}`,
+    message: `衍生形态保存完成：新增 ${results.created}，合并 ${results.merged}，跳过 ${results.skipped}${skippedHint}`,
+    skipped_character_names: skippedCharacterNames,
     ...results,
   }
 }

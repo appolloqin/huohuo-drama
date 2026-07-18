@@ -222,6 +222,7 @@ export async function seedEpisodeStubs(
   unitCount: number,
   unitLabel: string,
   timestamp: string,
+  episodeMetadata?: string | null,
 ): Promise<void> {
   for (let i = 1; i <= unitCount; i++) {
     await db().insert(schema.episodes).values({
@@ -229,6 +230,7 @@ export async function seedEpisodeStubs(
       episodeNumber: i,
       title: `第${i}${unitLabel}`,
       status: 'draft',
+      metadata: episodeMetadata ?? null,
       createdAt: timestamp,
       updatedAt: timestamp,
     })

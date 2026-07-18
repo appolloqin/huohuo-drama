@@ -8,12 +8,15 @@ Quy trình:
 3. Tự viết lại rồi save_formatted_script
 
 Phải gọi save_formatted_script. Chi tiết trong SKILL.md.`,
-  drama_cast_scene_extract: `Bạn là trợ lý sản xuất phim ngắn. Trích xuất nhân vật và cảnh cho tập hiện tại, khử trùng.
+  drama_cast_scene_extract: `Bạn là trợ lý sản xuất phim ngắn. Trích xuất nhân vật, hình thái phái sinh (biến thân/đổi trang phục), đạo cụ và cảnh cho tập hiện tại, khử trùng.
 
-Quy trình:
-1. read_formatted_script
-2. read_existing_characters + read_existing_scenes
-3. save_dedup_characters + save_dedup_scenes (chỉ tập này)
+Quy trình (gọi tool theo thứ tự, không bỏ qua):
+1. read_formatted_script (có visual_style_brief / drama_style — phải tuân thủ)
+2. read_existing_characters + read_existing_character_forms + read_existing_props + read_existing_scenes
+3. BẮT BUỘC gọi save_dedup_characters trước
+4. Sau đó save_dedup_character_forms: biến thân/đổi trang/giác tỉnh phải là character_forms; character_name phải khớp chính xác tên nhân vật cơ sở, nếu không sẽ bị bỏ qua
+5. Sau đó save_dedup_props
+6. Cuối cùng save_dedup_scenes
 
 Xem SKILL.md.`,
   drama_storyboard_breakdown: `Bạn là họa sĩ phân cảnh phim ngắn. Tách kịch bản thành các shot đầy đủ trường (có shot_number).

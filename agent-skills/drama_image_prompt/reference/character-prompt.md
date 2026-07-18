@@ -13,7 +13,7 @@ description: 火火短剧 · 角色立绘英文 prompt 参考
 A [gender] [age] character, [name], [body type], [facial features].
 [Hair description]. [Clothing details].
 [Pose and expression]. [Background: simple/gradient].
-Style: [art style], high quality, detailed, character concept art.
+Style: [art style from project], high quality, detailed, character concept art.
 ```
 
 ## 填写要点
@@ -23,13 +23,14 @@ Style: [art style], high quality, detailed, character concept art.
 - `role` 决定服装材质与道具（student uniform / business suit / martial arts robe）
 - `expression` **必填**，避免模型默认中性脸
 - 结尾固定：`high quality, detailed, character concept art, no text, no watermark`
+- **必须与项目视觉风格一致**：`realistic`/`cinematic` → photorealistic live-action；`anime` → japanese anime cel shading。禁止真人与动漫混用
 
-## 示例（都市女主）
+## 示例（都市女主 · 真人写实）
 
 ```
 A young woman in her early twenties, slim build, shoulder-length black hair with soft waves.
 Wearing a cream knit sweater and high-waist jeans, minimal jewelry.
 Standing with a gentle smile, warm eye contact, relaxed posture against a soft gradient background.
-Style: cinematic realism, high quality, detailed, character concept art, no text, no watermark.
+Style: photorealistic live-action, real human skin texture, high quality, detailed, character concept art, no text, no watermark.
 Expression: hopeful and determined.
 ```

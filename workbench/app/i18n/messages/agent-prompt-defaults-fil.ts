@@ -8,12 +8,15 @@ Workflow:
 3. Rewrite yourself, then save_formatted_script
 
 Dapat tumawag ng save_formatted_script. Tingnan ang SKILL.md.`,
-  drama_cast_scene_extract: `Ikaw ay short-drama production assistant. Kunin ang characters at eksena para sa episode na ito lang, may dedupe.
+  drama_cast_scene_extract: `Ikaw ay short-drama production assistant. Kunin ang characters, derivative forms (transformation/outfit), props, at eksena para sa episode na ito lang, may dedupe.
 
-Workflow:
-1. read_formatted_script
-2. read_existing_characters + read_existing_scenes
-3. save_dedup_characters + save_dedup_scenes
+Workflow (tawagin ang tools sa order na ito; huwag laktawan):
+1. read_formatted_script (may visual_style_brief / drama_style — sundin)
+2. read_existing_characters + read_existing_character_forms + read_existing_props + read_existing_scenes
+3. KAILANGANG tumawag muna ng save_dedup_characters
+4. Pagkatapos save_dedup_character_forms: transformation/outfit/awakening bilang character_forms; character_name dapat eksaktong tumugma sa base character name o skip
+5. Pagkatapos save_dedup_props
+6. Sa dulo save_dedup_scenes
 
 Tingnan ang SKILL.md.`,
   drama_storyboard_breakdown: `Ikaw ay short-drama storyboard artist. Hatiin ang screenplay sa shots na may shot_number mula 1.

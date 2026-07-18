@@ -125,6 +125,8 @@
           :persisted-source-body="persistedSourceBody"
           :persisted-screenplay-body="persistedScreenplayBody"
           :cast-list="castList"
+          :character-form-list="characterFormList"
+          :prop-list="propList"
           :locations="locationRowsForEpisode"
           :assigned-voice-cast-count="assignedVoiceCastCount"
           :cast-preview-ready-count="castPreviewReadyCount"
@@ -485,13 +487,13 @@
 
       <!-- ===== PRODUCTION PANEL ===== -->
       <div v-else-if="workbenchStageKey === 'production'" class="panel-root">
-        <!-- Guard: need script -->
-        <div v-if="!persistedScreenplayBody || !shotRowsForEpisode.length" class="wizard-empty" style="flex:1">
+        <!-- Guard: script required for all production; storyboards only for shot tabs -->
+        <div v-if="!persistedScreenplayBody" class="wizard-empty" style="flex:1">
           <div class="vacant-art">
             <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"><polygon points="23 7 16 12 23 17 23 7"/><rect x="1" y="5" width="15" height="14" rx="2" ry="2"/></svg>
           </div>
           <div class="vacant-title">尚未准备就绪</div>
-          <div class="vacant-desc">{{ !persistedScreenplayBody ? '请先完成剧本编写' : '请先完成分镜拆解' }}</div>
+          <div class="vacant-desc">请先完成剧本编写</div>
           <button class="btn btn-primary" @click="workbenchStageKey = 'script'">前往剧本</button>
         </div>
 
@@ -545,7 +547,10 @@
                   <FieldHelp :text="currentAspectHelpText" />
               </div>
               <span v-if="castList.length > visiblePortraitCastRows.length" class="tag">旁白仅保留声音</span>
-              <div class="ml-auto flex gap-1">
+              <div class="ml-auto flex gap-1 items-center">
+                <label class="tag" style="cursor:pointer;user-select:none" title="勾选后先由文本模型提炼工业参考图提示词再生成（较慢，会扣文本积分）">
+                  <input v-model="castGenerateReferenceSheet" type="checkbox" style="margin-right:4px">工业参考图
+                </label>
                 <button class="btn btn-sm" @click="batchRequestCastPortraits">
                   <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="8.5" r="1.5"/><polyline points="21 15 16 10 5 21"/></svg>
                   批量生成
@@ -603,7 +608,10 @@
                   @update:model-value="persistEpisodeImageAspectRatio(imageAspectScope, $event)"
                 />
               </div>
-              <div class="ml-auto flex gap-1">
+              <div class="ml-auto flex gap-1 items-center">
+                <label class="tag" style="cursor:pointer;user-select:none" title="勾选后先由文本模型提炼工业参考图提示词再生成（较慢，会扣文本积分）">
+                  <input v-model="formGenerateReferenceSheet" type="checkbox" style="margin-right:4px">工业参考图
+                </label>
                 <button class="btn btn-sm" @click="openAssetCreateModal('characterForm')">新增形态</button>
                 <button class="btn btn-sm" @click="batchRequestFormPortraits">批量生成</button>
               </div>
@@ -658,7 +666,10 @@
                   @update:model-value="persistEpisodeImageAspectRatio(imageAspectScope, $event)"
                 />
               </div>
-              <div class="ml-auto flex gap-1">
+              <div class="ml-auto flex gap-1 items-center">
+                <label class="tag" style="cursor:pointer;user-select:none">
+                  <input v-model="propGenerateWhiteBackground" type="checkbox" style="margin-right:4px">白色背景
+                </label>
                 <button class="btn btn-sm" @click="openAssetCreateModal('prop')">新增道具</button>
                 <button class="btn btn-sm" @click="batchRequestPropImages">批量生成</button>
               </div>
@@ -769,6 +780,20 @@
                 </div>
               </div>
             </div>
+          </div>
+
+          <!-- Shot tabs need storyboards; asset tabs (cast/forms/props/scenes) do not -->
+          <div
+            v-else-if="!shotRowsForEpisode.length"
+            class="wizard-empty"
+            style="flex:1"
+          >
+            <div class="vacant-art">
+              <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"><polygon points="23 7 16 12 23 17 23 7"/><rect x="1" y="5" width="15" height="14" rx="2" ry="2"/></svg>
+            </div>
+            <div class="vacant-title">尚未准备就绪</div>
+            <div class="vacant-desc">请先完成分镜拆解后再进行配音、镜头与视频制作</div>
+            <button class="btn btn-primary" @click="workbenchStageKey = 'script'; screenplayStepIdx = 4">前往分镜拆解</button>
           </div>
 
           <!-- Sub: Dubbing -->
@@ -1664,6 +1689,9 @@ const audioProviderRows = ref([])
 const portraitRenderPendingIds = ref([])
 const formRenderPendingIds = ref([])
 const propRenderPendingIds = ref([])
+const propGenerateWhiteBackground = ref(false)
+const castGenerateReferenceSheet = ref(false)
+const formGenerateReferenceSheet = ref(false)
 const backdropRenderPendingIds = ref([])
 const sceneGenerateMode = ref('backdrop')
 const sceneGenSelectedFormIds = ref([])
@@ -3115,7 +3143,16 @@ function advanceRewriteWizardSkip() {
   toast.success('已跳过 AI 改写，当前将直接使用原始内容')
   screenplayStepIdx.value = 2
 }
-function invokeDramaCastSceneExtractAgent() { persistScreenplayDraft(); invokeWorkbenchAgent('drama_cast_scene_extract', '请从剧本中提取本集出场的角色、衍生形态（变身/换装）、道具与场景，提取时自动与项目已有数据进行去重合并', dramaId, activeEpisodeId.value, syncWorkbenchFromApi) }
+function invokeDramaCastSceneExtractAgent() {
+  persistScreenplayDraft()
+  invokeWorkbenchAgent(
+    'drama_cast_scene_extract',
+    '请从剧本中提取本集出场的角色、衍生形态（变身/换装/觉醒）、道具与场景。必须先 save_dedup_characters，再 save_dedup_character_forms（character_name 须与基础角色名完全一致），然后 save_dedup_props、save_dedup_scenes；提取时自动与项目已有数据去重合并',
+    dramaId,
+    activeEpisodeId.value,
+    syncWorkbenchFromApi,
+  )
+}
 function invokeDramaVoiceAssignAgent() { invokeWorkbenchAgent('drama_voice_assign', '请为所有角色分配合适的音色', dramaId, activeEpisodeId.value, syncWorkbenchFromApi) }
 async function batchGenerateCastPreviews() {
   const pending = castList.value.filter(c => (c.voice_id || c.voiceId) && !(c.voice_preview_url || c.voicePreviewUrl))
@@ -3156,8 +3193,12 @@ function pollUntilWorkbenchReady(check, attempts = 24, delay = 2500) {
 async function requestCastPortraitRender(id) {
   try {
     if (!castPortraitBusy(id)) portraitRenderPendingIds.value.push(id)
-    await characterAPI.generateImage(id, activeEpisodeId.value, { aspect_ratio: readImageAspectForScope('character') })
-    toast.success('角色图片生成中')
+    const opts = {
+      reference_sheet: castGenerateReferenceSheet.value,
+      ...(castGenerateReferenceSheet.value ? {} : { aspect_ratio: readImageAspectForScope('character') }),
+    }
+    await characterAPI.generateImage(id, activeEpisodeId.value, opts)
+    toast.success(castGenerateReferenceSheet.value ? '工业参考图生成中（含提示词提炼）' : '角色图片生成中')
     await syncWorkbenchFromApi()
     pollUntilWorkbenchReady(() => {
       const char = castList.value.find(c => c.id === id)
@@ -3174,8 +3215,12 @@ function batchRequestCastPortraits() {
   const ids = visiblePortraitCastRows.value.filter(c => !(c.image_url || c.imageUrl)).map(c => c.id)
   if (!ids.length) { toast.info('所有角色图片已生成'); return }
   portraitRenderPendingIds.value = [...new Set([...portraitRenderPendingIds.value, ...ids])]
-  characterAPI.batchImages(ids, activeEpisodeId.value, { aspect_ratio: readImageAspectForScope('character') }).then(async () => {
-    toast.success('角色图片批量生成中')
+  const opts = {
+    reference_sheet: castGenerateReferenceSheet.value,
+    ...(castGenerateReferenceSheet.value ? {} : { aspect_ratio: readImageAspectForScope('character') }),
+  }
+  characterAPI.batchImages(ids, activeEpisodeId.value, opts).then(async () => {
+    toast.success(castGenerateReferenceSheet.value ? '工业参考图批量生成中（含提示词提炼）' : '角色图片批量生成中')
     await syncWorkbenchFromApi()
     pollUntilWorkbenchReady(() => ids.every(id => {
       const char = castList.value.find(c => c.id === id)
@@ -3191,8 +3236,12 @@ function batchRequestCastPortraits() {
 async function requestFormPortraitRender(id) {
   try {
     if (!formPortraitBusy(id)) formRenderPendingIds.value.push(id)
-    await characterFormAPI.generateImage(id, activeEpisodeId.value, { aspect_ratio: readImageAspectForScope('character') })
-    toast.success('衍生形态图片生成中')
+    const opts = {
+      reference_sheet: formGenerateReferenceSheet.value,
+      ...(formGenerateReferenceSheet.value ? {} : { aspect_ratio: readImageAspectForScope('character') }),
+    }
+    await characterFormAPI.generateImage(id, activeEpisodeId.value, opts)
+    toast.success(formGenerateReferenceSheet.value ? '衍生形态工业参考图生成中（含提示词提炼）' : '衍生形态图片生成中')
     await syncWorkbenchFromApi()
     pollUntilWorkbenchReady(() => {
       const form = characterFormList.value.find(f => f.id === id)
@@ -3211,8 +3260,12 @@ function batchRequestFormPortraits() {
   const ids = characterFormList.value.filter(f => !(f.image_url || f.imageUrl)).map(f => f.id)
   if (!ids.length) { toast.info('所有衍生形态图片已生成'); return }
   formRenderPendingIds.value = [...new Set([...formRenderPendingIds.value, ...ids])]
-  characterFormAPI.batchImages(ids, activeEpisodeId.value, { aspect_ratio: readImageAspectForScope('character') }).then(async () => {
-    toast.success('衍生形态批量生成中')
+  const opts = {
+    reference_sheet: formGenerateReferenceSheet.value,
+    ...(formGenerateReferenceSheet.value ? {} : { aspect_ratio: readImageAspectForScope('character') }),
+  }
+  characterFormAPI.batchImages(ids, activeEpisodeId.value, opts).then(async () => {
+    toast.success(formGenerateReferenceSheet.value ? '衍生形态工业参考图批量生成中（含提示词提炼）' : '衍生形态批量生成中')
     await syncWorkbenchFromApi()
     pollUntilWorkbenchReady(() => ids.every(id => {
       const form = characterFormList.value.find(f => f.id === id)
@@ -3229,8 +3282,11 @@ function batchRequestFormPortraits() {
 async function requestPropImageRender(id) {
   try {
     if (!propImageBusy(id)) propRenderPendingIds.value.push(id)
-    await propAPI.generateImage(id, activeEpisodeId.value, { aspect_ratio: readImageAspectForScope('character') })
-    toast.success('道具图片生成中')
+    await propAPI.generateImage(id, activeEpisodeId.value, {
+      aspect_ratio: readImageAspectForScope('character'),
+      white_background: propGenerateWhiteBackground.value,
+    })
+    toast.success(propGenerateWhiteBackground.value ? '道具图片生成中（白色背景）' : '道具图片生成中')
     await syncWorkbenchFromApi()
     pollUntilWorkbenchReady(() => {
       const prop = propList.value.find(p => p.id === id)
@@ -3249,8 +3305,11 @@ function batchRequestPropImages() {
   const ids = propList.value.filter(p => !(p.image_url || p.imageUrl)).map(p => p.id)
   if (!ids.length) { toast.info('所有道具图片已生成'); return }
   propRenderPendingIds.value = [...new Set([...propRenderPendingIds.value, ...ids])]
-  propAPI.batchImages(ids, activeEpisodeId.value, { aspect_ratio: readImageAspectForScope('character') }).then(async () => {
-    toast.success('道具批量生成中')
+  propAPI.batchImages(ids, activeEpisodeId.value, {
+    aspect_ratio: readImageAspectForScope('character'),
+    white_background: propGenerateWhiteBackground.value,
+  }).then(async () => {
+    toast.success(propGenerateWhiteBackground.value ? '道具批量生成中（白色背景）' : '道具批量生成中')
     await syncWorkbenchFromApi()
     pollUntilWorkbenchReady(() => ids.every(id => {
       const prop = propList.value.find(p => p.id === id)

@@ -100,6 +100,7 @@ characterFormRouter.post('/:id/generate-image', async (ctx) => {
       episodeMetadata: epPack.episode.metadata,
       size: body.size,
       aspectRatio: body.aspect_ratio,
+      referenceSheet: !!(body.reference_sheet ?? body.referenceSheet),
     }))
   } catch (err: any) {
     return badRequest(ctx, err.message)
@@ -116,32 +117,37 @@ characterFormRouter.post('/batch-generate-images', async (ctx) => {
   const epPack = await episodeAndDramaForUser(Number(body.episode_id), gate.userId)
   if (!epPack) return notFound(ctx, 'Episode not found')
 
-  return success(ctx, await batchEnqueueCharacterFormPortraits({
-    userId: gate.userId,
-    userRole: gate.role,
-    episodeId: epPack.episode.id,
-    dramaId: epPack.episode.dramaId,
-    formIds: body.character_form_ids || body.form_ids || [],
-    dramaImageConfigId: epPack.episode.dramaImageConfigId,
-    episodeMetadata: epPack.episode.metadata,
-    size: body.size,
-    aspectRatio: body.aspect_ratio,
-    lookup: async (fid) => {
-      const pack = await characterFormDramaForUser(fid, gate.userId)
-      if (!pack) return null
-      const basePack = await characterDramaForUser(pack.form.characterId, gate.userId)
-      if (!basePack) return null
-      return {
-        formName: pack.form.name,
-        baseCharacterId: pack.form.characterId,
-        baseCharacterName: basePack.character.name,
-        appearance: pack.form.appearance,
-        description: pack.form.description,
-        prompt: pack.form.prompt,
-        dramaId: pack.form.dramaId,
-      }
-    },
-  }))
+  try {
+    return success(ctx, await batchEnqueueCharacterFormPortraits({
+      userId: gate.userId,
+      userRole: gate.role,
+      episodeId: epPack.episode.id,
+      dramaId: epPack.episode.dramaId,
+      formIds: body.character_form_ids || body.form_ids || [],
+      dramaImageConfigId: epPack.episode.dramaImageConfigId,
+      episodeMetadata: epPack.episode.metadata,
+      size: body.size,
+      aspectRatio: body.aspect_ratio,
+      referenceSheet: !!(body.reference_sheet ?? body.referenceSheet),
+      lookup: async (fid) => {
+        const pack = await characterFormDramaForUser(fid, gate.userId)
+        if (!pack) return null
+        const basePack = await characterDramaForUser(pack.form.characterId, gate.userId)
+        if (!basePack) return null
+        return {
+          formName: pack.form.name,
+          baseCharacterId: pack.form.characterId,
+          baseCharacterName: basePack.character.name,
+          appearance: pack.form.appearance,
+          description: pack.form.description,
+          prompt: pack.form.prompt,
+          dramaId: pack.form.dramaId,
+        }
+      },
+    }))
+  } catch (err: any) {
+    return badRequest(ctx, err.message)
+  }
 })
 
 export default characterFormRouter

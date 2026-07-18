@@ -4,10 +4,11 @@ type DramaStyleItem = {
   en: string
   group: string
   aliases?: string[]
+  preview?: string
 }
 
 export const DRAMA_STYLE_CATALOG: DramaStyleItem[] = [
-  { value: 'realistic', cn: '写实', en: 'Realistic', group: '基础', aliases: ['realism', '写实风'] },
+  { value: 'realistic', cn: '写实/真人', en: 'Realistic / Live-action', group: '基础', aliases: ['realism', '写实', '写实风', '真人', '真人写实', '实拍', 'photorealistic', 'live action'] },
   { value: 'cinematic', cn: '电影感', en: 'Cinematic', group: '基础', aliases: ['film still', '电影风格'] },
   { value: 'anime', cn: '动漫', en: 'Anime / Manga', group: '基础', aliases: ['二次元', '漫画', '日系动漫'] },
   { value: 'digital art', cn: '数字艺术', en: 'Digital Art', group: '基础', aliases: [] },
@@ -66,9 +67,21 @@ export function mergeDramaStyleCatalog(remote: any[] | null | undefined): DramaS
       en: String(item?.en || item?.value || '').trim(),
       group: String(item?.group || '其它').trim(),
       aliases: Array.isArray(item?.aliases) ? item.aliases.map((s: any) => String(s || '').trim()).filter(Boolean) : [],
+      preview: typeof item?.preview === 'string' ? item.preview.trim() : undefined,
     }))
     .filter((item) => !!item.value)
   return normalized.length ? normalized : DRAMA_STYLE_CATALOG
+}
+
+export function dramaStylePreviewUrl(preview?: string | null): string {
+  const path = String(preview || '').trim()
+  if (!path) return ''
+  return path.startsWith('/') ? path : `/${path}`
+}
+
+export function dramaStyleCardLabel(item: DramaStyleItem, lang: string): string {
+  if (lang === 'en') return item.en || item.cn
+  return item.cn || item.en
 }
 
 export function buildDramaStyleSelectOptionsFromCatalog(catalog: DramaStyleItem[]) {

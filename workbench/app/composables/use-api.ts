@@ -661,9 +661,9 @@ export const storyboardAPI = {
 export const characterAPI = {
   update: (id: number, data: any) => api.put(`/characters/${id}`, data),
   voiceSample: (id: number, episodeId: number) => api.post(`/characters/${id}/generate-voice-sample`, { episode_id: episodeId }),
-  generateImage: (id: number, episodeId: number, opts?: { aspect_ratio?: string }) =>
+  generateImage: (id: number, episodeId: number, opts?: { aspect_ratio?: string; reference_sheet?: boolean }) =>
     api.post(`/characters/${id}/generate-image`, { episode_id: episodeId, ...opts }),
-  batchImages: (ids: number[], episodeId: number, opts?: { aspect_ratio?: string }) =>
+  batchImages: (ids: number[], episodeId: number, opts?: { aspect_ratio?: string; reference_sheet?: boolean }) =>
     api.post('/characters/batch-generate-images', { character_ids: ids, episode_id: episodeId, ...opts }),
 }
 
@@ -675,9 +675,9 @@ export const characterFormAPI = {
   create: (data: any) => api.post('/character-forms', data),
   update: (id: number, data: any) => api.put(`/character-forms/${id}`, data),
   del: (id: number) => api.del(`/character-forms/${id}`),
-  generateImage: (id: number, episodeId: number, opts?: { aspect_ratio?: string }) =>
+  generateImage: (id: number, episodeId: number, opts?: { aspect_ratio?: string; reference_sheet?: boolean }) =>
     api.post(`/character-forms/${id}/generate-image`, { episode_id: episodeId, ...opts }),
-  batchImages: (ids: number[], episodeId: number, opts?: { aspect_ratio?: string }) =>
+  batchImages: (ids: number[], episodeId: number, opts?: { aspect_ratio?: string; reference_sheet?: boolean }) =>
     api.post('/character-forms/batch-generate-images', { character_form_ids: ids, episode_id: episodeId, ...opts }),
 }
 
@@ -689,9 +689,9 @@ export const propAPI = {
   create: (data: any) => api.post('/props', data),
   update: (id: number, data: any) => api.put(`/props/${id}`, data),
   del: (id: number) => api.del(`/props/${id}`),
-  generateImage: (id: number, episodeId: number, opts?: { aspect_ratio?: string }) =>
+  generateImage: (id: number, episodeId: number, opts?: { aspect_ratio?: string; white_background?: boolean }) =>
     api.post(`/props/${id}/generate-image`, { episode_id: episodeId, ...opts }),
-  batchImages: (ids: number[], episodeId: number, opts?: { aspect_ratio?: string }) =>
+  batchImages: (ids: number[], episodeId: number, opts?: { aspect_ratio?: string; white_background?: boolean }) =>
     api.post('/props/batch-generate-images', { prop_ids: ids, episode_id: episodeId, ...opts }),
 }
 

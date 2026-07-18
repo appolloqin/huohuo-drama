@@ -2,10 +2,16 @@
  * 火火 — 道具资源路由业务
  */
 import * as propsRepo from '../../db/repos/props/index.js'
+import * as dramasRepo from '../../db/repos/dramas/index.js'
 import { now } from '../../common/http/response.js'
+import { applyDramaStyleToPrompt } from '../../common/drama/drama-style.js'
 import { generateImage } from '../media/image-generation.js'
 import { resolveImageAspectRatio } from '../../common/media/image-aspect-presets.js'
 import { logTaskError, logTaskStart, logTaskSuccess } from '../../common/task/task-logger.js'
+import {
+  applyStyleReferenceToImageGeneration,
+  resolveDramaStyleReference,
+} from './drama-style-reference.js'
 
 const PROP_PATCH_KEYS: Record<string, string> = {
   name: 'name',
@@ -18,8 +24,47 @@ const PROP_PATCH_KEYS: Record<string, string> = {
   character_form_id: 'characterFormId',
 }
 
-function buildPropPrompt(name: string, type?: string | null, description?: string | null) {
-  return `${name}, ${type || '道具'}, ${description || '高质量物品特写, 白色背景'}`
+const PROP_WHITE_BACKGROUND = 'pure white background, 纯白背景, isolated object product shot, centered on white, no scenery, no people, no environment'
+
+function withPropWhiteBackground(prompt: string) {
+  const base = String(prompt || '').trim()
+  if (!base) return PROP_WHITE_BACKGROUND
+  if (/pure\s*white\s*background|white\s*background|纯白背景|白色背景/i.test(base)) {
+    return base
+  }
+  return `${base}, ${PROP_WHITE_BACKGROUND}`
+}
+
+function buildPropPrompt(
+  name: string,
+  type?: string | null,
+  description?: string | null,
+  dramaStyle?: string | null,
+) {
+  return applyDramaStyleToPrompt(
+    `${name}, ${type || '道具'}, ${description || '高质量物品特写'}, 物品特写`,
+    dramaStyle,
+    'zh',
+  )
+}
+
+function composePropImagePrompt(input: {
+  name: string
+  type?: string | null
+  description?: string | null
+  prompt?: string | null
+  dramaStyle?: string | null
+  whiteBackground?: boolean
+}) {
+  const base = input.prompt?.trim()
+    ? applyDramaStyleToPrompt(input.prompt, input.dramaStyle, 'en')
+    : buildPropPrompt(input.name, input.type, input.description, input.dramaStyle)
+  return input.whiteBackground ? withPropWhiteBackground(base) : base
+}
+
+async function resolveDramaStyle(dramaId: number) {
+  const drama = await dramasRepo.findDramaById(dramaId)
+  return drama?.style || null
 }
 
 export async function insertPropRecord(body: {
@@ -75,16 +120,30 @@ export async function enqueuePropImage(input: {
   size?: string | null
   aspectRatio?: string | null
   referenceImages?: string[]
+  whiteBackground?: boolean
 }) {
-  logTaskStart('PropImage', 'generate', { propId: input.propId, dramaId: input.dramaId })
+  logTaskStart('PropImage', 'generate', {
+    propId: input.propId,
+    dramaId: input.dramaId,
+    whiteBackground: !!input.whiteBackground,
+  })
 
   try {
-    const genId = await generateImage({
+    const dramaStyle = await resolveDramaStyle(input.dramaId)
+    const styleRef = await resolveDramaStyleReference(input.dramaId)
+    const genId = await generateImage(applyStyleReferenceToImageGeneration({
       userId: input.userId,
       userRole: input.userRole,
       propId: input.propId,
       dramaId: input.dramaId,
-      prompt: input.prompt || buildPropPrompt(input.name, input.type, input.description),
+      prompt: composePropImagePrompt({
+        name: input.name,
+        type: input.type,
+        description: input.description,
+        prompt: input.prompt,
+        dramaStyle,
+        whiteBackground: !!input.whiteBackground,
+      }),
       configId: input.dramaImageConfigId ?? undefined,
       referenceImages: input.referenceImages?.filter(Boolean) || [],
       size: resolveImageAspectRatio({
@@ -93,7 +152,7 @@ export async function enqueuePropImage(input: {
         episodeMetadata: input.episodeMetadata,
         scope: 'character',
       }),
-    })
+    }, styleRef))
     logTaskSuccess('PropImage', 'generate', { propId: input.propId, generationId: genId })
     return { image_generation_id: genId }
   } catch (err: any) {
@@ -118,6 +177,7 @@ export async function batchEnqueuePropImages(input: {
   episodeMetadata?: string | null
   size?: string | null
   aspectRatio?: string | null
+  whiteBackground?: boolean
 }) {
   const startedIds: number[] = []
   const size = resolveImageAspectRatio({
@@ -127,19 +187,28 @@ export async function batchEnqueuePropImages(input: {
     scope: 'character',
   })
 
+  const dramaStyle = await resolveDramaStyle(input.dramaId)
+  const styleRef = await resolveDramaStyleReference(input.dramaId)
   for (const propId of input.propIds) {
     const prop = await input.lookup(propId)
     if (!prop || prop.dramaId !== input.dramaId) continue
     try {
-      const genId = await generateImage({
+      const genId = await generateImage(applyStyleReferenceToImageGeneration({
         userId: input.userId,
         userRole: input.userRole,
         propId,
         dramaId: prop.dramaId,
-        prompt: prop.prompt || buildPropPrompt(prop.name, prop.type, prop.description),
+        prompt: composePropImagePrompt({
+          name: prop.name,
+          type: prop.type,
+          description: prop.description,
+          prompt: prop.prompt,
+          dramaStyle,
+          whiteBackground: !!input.whiteBackground,
+        }),
         configId: input.dramaImageConfigId ?? undefined,
         size,
-      })
+      }, styleRef))
       startedIds.push(genId)
     } catch {}
   }

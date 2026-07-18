@@ -192,10 +192,44 @@
                 <input v-model.number="createFormDraft.total_episodes" class="input" type="number" min="1" max="100" />
               </label>
               <label class="field">
-                <span class="field-label">{{ tm.index.visualStyle }}</span>
-                <BaseSelect v-model="createFormDraft.style" :options="dramaStyleOptions" :placeholder="tm.index.stylePlaceholder" searchable />
+                <span class="field-label">{{ tm.index.screenOrientation }}</span>
+                <div class="orientation-tabs">
+                  <button
+                    type="button"
+                    :class="['orientation-tab', { active: createFormDraft.screen_orientation === 'portrait' }]"
+                    @click="createFormDraft.screen_orientation = 'portrait'"
+                  >{{ tm.index.screenPortrait }}</button>
+                  <button
+                    type="button"
+                    :class="['orientation-tab', { active: createFormDraft.screen_orientation === 'landscape' }]"
+                    @click="createFormDraft.screen_orientation = 'landscape'"
+                  >{{ tm.index.screenLandscape }}</button>
+                </div>
+                <span class="field-hint">{{ tm.index.screenOrientationHint }}</span>
               </label>
             </div>
+            <label class="field">
+              <span class="field-label">{{ tm.index.visualStyle }}</span>
+              <div class="style-picker-grid">
+                <button
+                  v-for="item in dramaStyleRows"
+                  :key="item.value"
+                  type="button"
+                  :class="['style-picker-card', { active: createFormDraft.style === item.value }]"
+                  @click="createFormDraft.style = item.value"
+                >
+                  <img
+                    v-if="dramaStylePreviewUrl(item.preview)"
+                    :src="dramaStylePreviewUrl(item.preview)"
+                    :alt="dramaStyleCardLabel(item, lang)"
+                    class="style-picker-thumb"
+                    loading="lazy"
+                  />
+                  <div v-else class="style-picker-thumb style-picker-thumb-fallback"></div>
+                  <span class="style-picker-label">{{ dramaStyleCardLabel(item, lang) }}</span>
+                </button>
+              </div>
+            </label>
             <label class="field">
               <span class="field-label">{{ tm.index.projectSynopsis }}</span>
               <textarea
@@ -320,8 +354,9 @@ import { useCreditsGate } from '~/composables/use-credits-gate'
 import { useI18n, tx } from '~/composables/use-i18n'
 import {
   DRAMA_STYLE_CATALOG,
-  buildDramaStyleSelectOptionsFromCatalog,
+  dramaStyleCardLabel,
   dramaStyleLabelFromCatalog,
+  dramaStylePreviewUrl,
   mergeDramaStyleCatalog,
 } from '~/common/drama/dramaStyle'
 import { formatNovelCharCount } from '~/common/novel/novelCharCount'
@@ -349,7 +384,16 @@ const { homeProjectsReady } = useSessionCache()
 // ── 新建项目弹窗 ──────────────────────────────────────────────
 const newProjectModalOpen = ref(false)
 const draftKind = ref('drama')
-const createFormDraft = ref({ title: '', total_episodes: 1, total_chapters: 10, style: '', novel_genre: '', premise: '', description: '' })
+const createFormDraft = ref({
+  title: '',
+  total_episodes: 1,
+  total_chapters: 10,
+  style: 'realistic',
+  screen_orientation: 'portrait',
+  novel_genre: '',
+  premise: '',
+  description: '',
+})
 const premiseKeywordLine = ref('')
 const premiseGenBusy = ref(false)
 const dramaStyleRows = ref(DRAMA_STYLE_CATALOG)
@@ -413,8 +457,6 @@ const kindFilterTabs = computed(() => [
 ])
 
 const visibleHomeRows = computed(() => homeProjectRows.value)
-
-const dramaStyleOptions = computed(() => buildDramaStyleSelectOptionsFromCatalog(dramaStyleRows.value))
 const novelGenreOptions = novelGenreSelectOptions()
 
 function resolveRowKind(d) {
@@ -563,12 +605,22 @@ async function submitCreateForm() {
           title: createFormDraft.value.title,
           project_type: 'drama',
           total_episodes: createFormDraft.value.total_episodes || 1,
+          screen_orientation: createFormDraft.value.screen_orientation || 'portrait',
           style: createFormDraft.value.style || undefined,
           description: createFormDraft.value.description?.trim() || undefined,
         }
     const d = await dramaAPI.create(payload)
     newProjectModalOpen.value = false
-    createFormDraft.value = { title: '', total_episodes: 1, total_chapters: 10, style: '', novel_genre: '', premise: '', description: '' }
+    createFormDraft.value = {
+      title: '',
+      total_episodes: 1,
+      total_chapters: 10,
+      style: 'realistic',
+      screen_orientation: 'portrait',
+      novel_genre: '',
+      premise: '',
+      description: '',
+    }
     premiseKeywordLine.value = ''
     navigateTo(`/drama/${d.id}`)
   } catch (e) {
@@ -925,7 +977,82 @@ onActivated(() => {
 .empty-caption { font-size: 12px; color: var(--text-3); max-width: 220px; line-height: 1.6; }
 
 /* Modal */
-.modal { padding: 32px; width: min(500px, 100%); box-shadow: var(--shadow-elevated); animation: scaleIn 0.2s var(--ease-out); }
+.modal { padding: 32px; width: min(560px, 100%); box-shadow: var(--shadow-elevated); animation: scaleIn 0.2s var(--ease-out); }
+.field-hint {
+  font-size: 11px;
+  color: var(--text-3);
+  line-height: 1.45;
+}
+.orientation-tabs {
+  display: flex;
+  gap: 8px;
+}
+.orientation-tab {
+  flex: 1;
+  height: 36px;
+  border-radius: var(--radius);
+  border: 1px solid var(--border);
+  background: var(--bg-1);
+  color: var(--text-2);
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.18s;
+}
+.orientation-tab.active {
+  background: var(--accent-bg);
+  border-color: rgba(76,125,255,0.25);
+  color: var(--accent-text);
+}
+.style-picker-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(108px, 1fr));
+  gap: 10px;
+  max-height: 220px;
+  overflow-y: auto;
+  padding: 2px;
+}
+.style-picker-card {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 6px;
+  border-radius: var(--radius);
+  border: 1px solid var(--border);
+  background: var(--bg-1);
+  cursor: pointer;
+  text-align: left;
+  transition: border-color 0.18s, box-shadow 0.18s, transform 0.18s;
+}
+.style-picker-card:hover {
+  border-color: var(--accent);
+  transform: translateY(-1px);
+}
+.style-picker-card.active {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 1px rgba(76,125,255,0.18);
+  background: var(--accent-bg);
+}
+.style-picker-thumb {
+  width: 100%;
+  aspect-ratio: 16 / 9;
+  object-fit: cover;
+  border-radius: calc(var(--radius) - 2px);
+  background: var(--bg-2);
+}
+.style-picker-thumb-fallback {
+  background: linear-gradient(135deg, var(--bg-2), var(--bg-3));
+}
+.style-picker-label {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--text-1);
+  line-height: 1.3;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
 .modal-header { margin-bottom: 24px; }
 .modal-header-row {
   display: flex;

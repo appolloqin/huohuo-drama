@@ -2,6 +2,7 @@ import { Hono } from 'hono'
 import { success, badRequest, notFound, created } from '../../common/http/response.js'
 import { getAuthUser } from '../../common/auth/http-auth.js'
 import { getDramaStyleCatalog } from '../../common/drama/drama-style.js'
+import { ensureDramaStylePreviews } from '../../services/drama/drama-style-previews.js'
 import { isNovelProject } from '../../common/novel/novel-meta.js'
 import { assertUserCanGenerate } from '../../services/credits/credits.js'
 import { sseResponse } from '../../common/http/sse-stream.js'
@@ -56,6 +57,7 @@ projectCatalogRouter.get('/stats', async (c) => {
 })
 
 projectCatalogRouter.get('/styles', async (c) => {
+  await ensureDramaStylePreviews()
   return success(c, getDramaStyleCatalog())
 })
 

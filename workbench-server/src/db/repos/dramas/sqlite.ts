@@ -125,13 +125,20 @@ export function hardDeleteDrama(id: number): void {
   db().delete(schema.dramas).where(eq(schema.dramas.id, id)).run()
 }
 
-export function seedEpisodeStubs(dramaId: number, unitCount: number, unitLabel: string, timestamp: string): void {
+export function seedEpisodeStubs(
+  dramaId: number,
+  unitCount: number,
+  unitLabel: string,
+  timestamp: string,
+  episodeMetadata?: string | null,
+): void {
   for (let i = 1; i <= unitCount; i++) {
     db().insert(schema.episodes).values({
       dramaId,
       episodeNumber: i,
       title: `第${i}${unitLabel}`,
       status: 'draft',
+      metadata: episodeMetadata ?? null,
       createdAt: timestamp,
       updatedAt: timestamp,
     }).run()

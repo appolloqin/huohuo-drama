@@ -12,6 +12,7 @@ import {
   listActiveCharacters,
   listActiveScenes,
   listShotsForEpisode,
+  resolveDramaStyleById,
 } from '../helpers/image-prompt-builder.js'
 
 export function buildDramaImagePromptToolkit(episodeId: number, dramaId: number) {
@@ -29,11 +30,13 @@ export function buildDramaImagePromptToolkit(episodeId: number, dramaId: number)
     execute: async ({ character_id }) => {
       const castRow = await charactersRepo.findCharacterById(character_id)
       if (!castRow) return { error: 'Character not found' }
+      const dramaStyle = await resolveDramaStyleById(dramaId)
 
       return {
         character_id: castRow.id,
         character_name: castRow.name,
-        prompt: buildCharacterImagePrompt(castRow),
+        prompt: buildCharacterImagePrompt(castRow, dramaStyle),
+        drama_style: dramaStyle,
       }
     },
   })
@@ -52,11 +55,13 @@ export function buildDramaImagePromptToolkit(episodeId: number, dramaId: number)
     execute: async ({ scene_id }) => {
       const locationRow = await scenesRepo.findSceneById(scene_id)
       if (!locationRow) return { error: 'Scene not found' }
+      const dramaStyle = await resolveDramaStyleById(dramaId)
 
       return {
         scene_id: locationRow.id,
         location: locationRow.location,
-        prompt: buildSceneImagePrompt(locationRow),
+        prompt: buildSceneImagePrompt(locationRow, dramaStyle),
+        drama_style: dramaStyle,
       }
     },
   })
@@ -87,7 +92,10 @@ export function buildDramaImagePromptToolkit(episodeId: number, dramaId: number)
       mode: z.string(),
       reference_legend: z.string().optional(),
     }),
-    execute: async (gridSpec) => composeDramaImagePromptBundle(gridSpec),
+    execute: async (gridSpec) => {
+      const dramaStyle = await resolveDramaStyleById(dramaId)
+      return composeDramaImagePromptBundle({ ...gridSpec, dramaStyle })
+    },
   })
 
   return {

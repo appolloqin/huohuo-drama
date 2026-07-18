@@ -11,8 +11,12 @@ import { generateImage } from '../media/image-generation.js'
 import { extractGridTiles } from './grid-split.js'
 import { createAgent } from '../../agents/index.js'
 import { logTaskError, logTaskPayload, logTaskProgress } from '../../common/task/task-logger.js'
-import { normalizeDramaStyle } from '../../common/drama/drama-style.js'
+import { applyDramaStyleToPrompt, normalizeDramaStyle } from '../../common/drama/drama-style.js'
 import { now } from '../../common/http/response.js'
+import {
+  applyStyleReferenceToImageGeneration,
+  resolveDramaStyleReference,
+} from './drama-style-reference.js'
 
 function posLabel(i: number, rows: number, cols: number) {
   const r = Math.floor(i / cols), c = i % cols
@@ -146,13 +150,17 @@ function composeFallbackDramaImagePrompt(
       const refs = buildStoryboardReferenceHints(sb, referenceAssets, storyboardCharacterIds)
       return `${cellLabel(i, rows, cols)}: ${refs.length ? `参考${refs.join('、')}，` : ''}${desc}`
     })
-    return [
-      `${rows}x${cols} grid layout, consistent art style, ${style},`,
-      legend ? `参考图映射：${legend}` : '',
-      '当画面涉及角色或场景时，优先使用对应的图片编号来约束一致性。',
-      ...cells,
-      'high quality, cinematic lighting, no text, no watermark',
-    ].filter(Boolean).join('\n')
+    return applyDramaStyleToPrompt(
+      [
+        `${rows}x${cols} grid layout,`,
+        legend ? `参考图映射：${legend}` : '',
+        '当画面涉及角色或场景时，优先使用对应的图片编号来约束一致性。',
+        ...cells,
+        'high quality, no text, no watermark',
+      ].filter(Boolean).join('\n'),
+      style,
+      'en',
+    )
   }
 
   if (mode === 'first_last') {
@@ -168,13 +176,17 @@ function composeFallbackDramaImagePrompt(
         : `${action ? `${action}, ` : ''}closing moment, subtle motion change`
       return `${cellLabel(i, rows, cols)}: ${refs.length ? `参考${refs.join('、')}，` : ''}${desc}, ${frameHint}`
     })
-    return [
-      `${rows}x${cols} grid layout, consistent art style, ${style},`,
-      legend ? `参考图映射：${legend}` : '',
-      'first/last frame visual rhythm, alternating opening and closing beats across the grid,',
-      ...cells,
-      'continuous motion implied between left and right, high quality, no text',
-    ].filter(Boolean).join('\n')
+    return applyDramaStyleToPrompt(
+      [
+        `${rows}x${cols} grid layout,`,
+        legend ? `参考图映射：${legend}` : '',
+        'first/last frame visual rhythm, alternating opening and closing beats across the grid,',
+        ...cells,
+        'continuous motion implied between left and right, high quality, no text',
+      ].filter(Boolean).join('\n'),
+      style,
+      'en',
+    )
   }
 
   if (mode === 'multi_ref') {
@@ -196,16 +208,24 @@ function composeFallbackDramaImagePrompt(
     const cells = Array.from({ length: totalCells }, (_, i) => {
       return `${cellLabel(i, rows, cols)}: ${legend ? `参考${legend}，` : ''}${desc}, ${angles[i % angles.length]}`
     })
-    return [
-      `${rows}x${cols} grid layout, same scene different angles and compositions, ${style},`,
-      legend ? `参考图映射：${legend}` : '',
-      `main scene: ${desc},`,
-      ...cells,
-      'consistent lighting and color palette, high quality, no text',
-    ].filter(Boolean).join('\n')
+    return applyDramaStyleToPrompt(
+      [
+        `${rows}x${cols} grid layout, same scene different angles and compositions,`,
+        legend ? `参考图映射：${legend}` : '',
+        `main scene: ${desc},`,
+        ...cells,
+        'consistent lighting and color palette, high quality, no text',
+      ].filter(Boolean).join('\n'),
+      style,
+      'en',
+    )
   }
 
-  return `${rows}x${cols} grid, ${style}, storyboard frames, high quality`
+  return applyDramaStyleToPrompt(
+    `${rows}x${cols} grid, storyboard frames, high quality`,
+    style,
+    'en',
+  )
 }
 
 function buildGridCellPrompts(
@@ -498,7 +518,8 @@ export async function enqueueGridImageGeneration(input: {
   const actualRows = rows
   const size = `${cellW * actualCols}x${cellH * actualRows}`
 
-  const genId = await generateImage({
+  const styleRef = dramaId ? await resolveDramaStyleReference(dramaId) : {}
+  const genId = await generateImage(applyStyleReferenceToImageGeneration({
     userId,
     userRole,
     dramaId,
@@ -506,7 +527,7 @@ export async function enqueueGridImageGeneration(input: {
     size,
     frameType: `grid_${mode}_${actualRows}x${actualCols}`,
     referenceImages,
-  })
+  }, styleRef))
 
   logTaskProgress('GridGenerate', 'reference-images', {
     dramaId,

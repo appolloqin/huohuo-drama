@@ -2,6 +2,7 @@
  * 单集短剧完整生产流水线：剧本 → 提取 → 分镜 → 素材 → 视频 → 合成 → 集级合并
  */
 import * as charactersRepo from '../../db/repos/characters/index.js'
+import * as dramasRepo from '../../db/repos/dramas/index.js'
 import * as episodesRepo from '../../db/repos/episodes/index.js'
 import * as imageGenerationsRepo from '../../db/repos/image-generations/index.js'
 import * as scenesRepo from '../../db/repos/scenes/index.js'
@@ -15,6 +16,12 @@ import { generateImage } from '../media/image-generation.js'
 import { generateVideo } from '../media/video-generation.js'
 import { resolveImageAspectRatio, resolveVideoAspectRatio } from '../../common/media/image-aspect-presets.js'
 import { enhanceVideoPrompt, readVideoGenOptionsFromMetadata } from '../../common/media/video-gen-options.js'
+import { applyDramaStyleToPrompt } from '../../common/drama/drama-style.js'
+import {
+  applyStyleReferenceToImageGeneration,
+  applyStyleReferenceToVideoGeneration,
+  resolveDramaStyleReference,
+} from './drama-style-reference.js'
 import { readProductionPipeline, mergeEpisodeMetadata, type ProductionPipeline } from '../../common/drama/episode-meta.js'
 import {
   collectSlideshowKeyframePaths,
@@ -348,6 +355,7 @@ export async function runDramaEpisodePipeline(args: {
   logTaskStart('DramaPipeline', 'episode', { episodeId, dramaId, episodeNumber: ep.episodeNumber })
 
   const configOpts = { userId, role: userRole }
+  const styleRef = await resolveDramaStyleReference(dramaId)
   await assertUserServiceConfigReady(userId, userRole, 'text')
 
   checkStop(shouldStop)
@@ -401,7 +409,7 @@ export async function runDramaEpisodePipeline(args: {
   if (!storyboardsBefore.length) {
     report('extract', 'start')
     await assertUserCanGenerate(userId, userRole)
-    await runAgent('drama_cast_scene_extract', '请从剧本中提取所有角色和场景信息，提取时自动与项目已有数据进行去重合并', episodeId, dramaId, configOpts)
+    await runAgent('drama_cast_scene_extract', '请从剧本中提取本集出场的角色、衍生形态（变身/换装/觉醒）、道具与场景。必须先 save_dedup_characters，再 save_dedup_character_forms（character_name 须与基础角色名完全一致），然后 save_dedup_props、save_dedup_scenes；提取时自动与项目已有数据去重合并', episodeId, dramaId, configOpts)
     report('extract', 'done')
   }
 
@@ -440,6 +448,7 @@ export async function runDramaEpisodePipeline(args: {
   checkStop(shouldStop)
   const visualChars = freshChars.filter(c => !isNarratorCharacter(c))
   const pendingCharIds = visualChars.filter(c => !c.imageUrl).map(c => c.id)
+  const dramaStyle = (await dramasRepo.findDramaById(dramaId))?.style || null
   if (pendingCharIds.length) {
     report('char_images', 'start')
     await assertEpisodeMediaConfigReady(userId, userRole, 'image', ep.dramaImageConfigId)
@@ -447,8 +456,12 @@ export async function runDramaEpisodePipeline(args: {
       checkStop(shouldStop)
       await assertUserCanGenerate(userId, userRole)
       const ch = freshChars.find(c => c.id === charId)!
-      const prompt = `${ch.name}, ${ch.appearance || ch.description || '人物立绘'}, 高质量, 正面, 白色背景`
-      const genId = await generateImage({
+      const prompt = applyDramaStyleToPrompt(
+        `${ch.name}, ${ch.appearance || ch.description || '人物立绘'}, 高质量, 正面, 白色背景`,
+        dramaStyle,
+        'zh',
+      )
+      const genId = await generateImage(applyStyleReferenceToImageGeneration({
         userId,
         userRole,
         characterId: charId,
@@ -456,7 +469,7 @@ export async function runDramaEpisodePipeline(args: {
         prompt,
         configId: ep.dramaImageConfigId ?? undefined,
         size: resolveImageAspectRatio({ episodeMetadata: ep.metadata, scope: 'character' }),
-      })
+      }, styleRef))
       await waitForImageGeneration(genId, shouldStop)
     }
     report('char_images', 'done')
@@ -475,9 +488,13 @@ export async function runDramaEpisodePipeline(args: {
     for (const scene of pendingScenes) {
       checkStop(shouldStop)
       await assertUserCanGenerate(userId, userRole)
-      const prompt = scene.prompt || `${scene.location}, ${scene.time || ''}, 高质量场景, 电影感`
+      const prompt = applyDramaStyleToPrompt(
+        scene.prompt || `${scene.location}, ${scene.time || ''}, 高质量场景`,
+        dramaStyle,
+        scene.prompt ? 'en' : 'zh',
+      )
       await scenesRepo.updateScene(scene.id, { status: 'processing', updatedAt: now() })
-      const genId = await generateImage({
+      const genId = await generateImage(applyStyleReferenceToImageGeneration({
         userId,
         userRole,
         sceneId: scene.id,
@@ -486,7 +503,7 @@ export async function runDramaEpisodePipeline(args: {
         configId: ep.dramaImageConfigId ?? undefined,
         referenceImages: refChars.length ? refChars : undefined,
         size: resolveImageAspectRatio({ episodeMetadata: ep.metadata, scope: 'scene' }),
-      })
+      }, styleRef))
       await waitForImageGeneration(genId, shouldStop)
     }
     report('scene_images', 'done')
@@ -523,7 +540,7 @@ export async function runDramaEpisodePipeline(args: {
           const frameIndex = collectSlideshowKeyframePaths(freshSb).length
           const scene = scenesAfter.find(s => s.id === freshSb.sceneId)
           const refs = await collectShotReferenceImages(freshSb, charsAfter, scene?.imageUrl)
-          const genId = await generateImage({
+          const genId = await generateImage(applyStyleReferenceToImageGeneration({
             userId,
             userRole,
             storyboardId: freshSb.id,
@@ -533,7 +550,7 @@ export async function runDramaEpisodePipeline(args: {
             configId: ep.dramaImageConfigId ?? undefined,
             referenceImages: refs.length ? refs : undefined,
             size: resolveImageAspectRatio({ episodeMetadata: ep.metadata, scope: 'shot' }),
-          })
+          }, styleRef))
           await waitForImageGeneration(genId, shouldStop)
           freshSb = (await getStoryboards(episodeId)).find(s => s.id === sb.id)!
         }
@@ -553,7 +570,7 @@ export async function runDramaEpisodePipeline(args: {
         await assertUserCanGenerate(userId, userRole)
         const scene = scenesAfter.find(s => s.id === sb.sceneId)
         const refs = await collectShotReferenceImages(sb, charsAfter, scene?.imageUrl)
-        const genId = await generateImage({
+        const genId = await generateImage(applyStyleReferenceToImageGeneration({
           userId,
           userRole,
           storyboardId: sb.id,
@@ -563,7 +580,7 @@ export async function runDramaEpisodePipeline(args: {
           configId: ep.dramaImageConfigId ?? undefined,
           referenceImages: refs.length ? refs : undefined,
           size: resolveImageAspectRatio({ episodeMetadata: ep.metadata, scope: 'shot' }),
-        })
+        }, styleRef))
         await waitForImageGeneration(genId, shouldStop)
       }
       report('shot_images', 'done')
@@ -617,7 +634,7 @@ export async function runDramaEpisodePipeline(args: {
         params.userId = userId
         params.userRole = userRole
         params.configId = ep.dramaVideoConfigId ?? undefined
-        const genId = await generateVideo(params)
+        const genId = await generateVideo(applyStyleReferenceToVideoGeneration(params, styleRef))
         await waitForVideoGeneration(genId, shouldStop)
       }
       report('videos', 'done')
