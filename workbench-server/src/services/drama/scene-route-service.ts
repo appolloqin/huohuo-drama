@@ -3,13 +3,19 @@
  */
 import * as charactersRepo from '../../db/repos/characters/index.js'
 import * as characterFormsRepo from '../../db/repos/character-forms/index.js'
+import * as dramasRepo from '../../db/repos/dramas/index.js'
 import * as episodesRepo from '../../db/repos/episodes/index.js'
 import * as propsRepo from '../../db/repos/props/index.js'
 import * as scenesRepo from '../../db/repos/scenes/index.js'
 import { now } from '../../common/http/response.js'
+import { applyDramaStyleToPrompt } from '../../common/drama/drama-style.js'
 import { generateImage } from '../media/image-generation.js'
 import { resolveImageAspectRatio } from '../../common/media/image-aspect-presets.js'
 import { logTaskError, logTaskStart, logTaskSuccess } from '../../common/task/task-logger.js'
+import {
+  applyStyleReferenceToImageGeneration,
+  resolveDramaStyleReference,
+} from './drama-style-reference.js'
 
 export type SceneComposeConfig = {
   character_form_ids?: number[]
@@ -135,17 +141,19 @@ function buildScenePrompt(input: {
   characterNames: string[]
   propNames: string[]
   formNames: string[]
+  dramaStyle?: string | null
 }) {
   const place = `${input.location}, ${input.time || ''}`.trim()
   const propText = input.propNames.length ? `，道具：${input.propNames.join('、')}` : ''
   const castText = [...input.formNames, ...input.characterNames].filter(Boolean).join('、')
 
-  if (input.mode === 'composed') {
-    return input.basePrompt
-      || `${place}，人物合成场景${castText ? `，角色：${castText}` : ''}${propText}，高质量，电影感，角色与道具自然融入环境`
-  }
-  return input.basePrompt
-    || `${place}，空镜背景场景，无人物${propText}，高质量环境布景，电影感`
+  const raw = input.mode === 'composed'
+    ? (input.basePrompt
+      || `${place}，人物合成场景${castText ? `，角色：${castText}` : ''}${propText}，高质量，角色与道具自然融入环境`)
+    : (input.basePrompt
+      || `${place}，空镜背景场景，无人物${propText}，高质量环境布景`)
+
+  return applyDramaStyleToPrompt(raw, input.dramaStyle, input.basePrompt ? 'en' : 'zh')
 }
 
 async function collectSceneReferenceImages(input: {
@@ -232,6 +240,7 @@ export async function enqueueSceneImage(input: {
   const forms = formIds.length ? await characterFormsRepo.listCharacterFormsByIds(formIds) : []
   const chars = characterIds.length ? await charactersRepo.listCharactersByIds(characterIds) : []
   const props = propIds.length ? await propsRepo.listPropsByIds(propIds) : []
+  const drama = await dramasRepo.findDramaById(input.dramaId)
 
   const scenePrompt = buildScenePrompt({
     mode,
@@ -241,6 +250,7 @@ export async function enqueueSceneImage(input: {
     characterNames: chars.map(c => c.name),
     propNames: props.map(p => p.name),
     formNames: forms.map(f => f.name),
+    dramaStyle: drama?.style,
   })
 
   const referenceImages = await collectSceneReferenceImages({
@@ -259,7 +269,8 @@ export async function enqueueSceneImage(input: {
   })
 
   try {
-    const genId = await generateImage({
+    const styleRef = await resolveDramaStyleReference(input.dramaId)
+    const genId = await generateImage(applyStyleReferenceToImageGeneration({
       userId: input.userId,
       userRole: input.userRole,
       sceneId: input.sceneId,
@@ -273,7 +284,7 @@ export async function enqueueSceneImage(input: {
         episodeMetadata: input.episodeMetadata,
         scope: 'scene',
       }),
-    })
+    }, styleRef))
     logTaskSuccess('SceneImage', 'generate', { sceneId: input.sceneId, generationId: genId, mode })
     return { image_generation_id: genId, scene_mode: mode, compose_config: composeConfig }
   } catch (err: any) {

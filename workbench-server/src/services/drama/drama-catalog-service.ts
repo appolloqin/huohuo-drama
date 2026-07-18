@@ -4,7 +4,12 @@ import * as dramaAssetsRepo from '../../db/repos/drama-assets/index.js'
 import { now } from '../../common/http/response.js'
 import { toSnakeCase, toSnakeCaseArray } from '../../common/http/transform.js'
 import { computeEpisodeListStats, listDramaEpisodes, type EpisodeListFilter } from './episode-service.js'
-import { normalizeDramaStyle } from '../../common/drama/drama-style.js'
+import { dramaStyleReferenceImagePath, normalizeDramaStyle } from '../../common/drama/drama-style.js'
+import {
+  defaultEpisodeImageSizesForOrientation,
+  mergeDramaMetadata,
+  normalizeScreenOrientation,
+} from '../../common/drama/drama-meta.js'
 import { isNovelProject, mergeNovelMetadata, parseNovelMetadata } from '../../common/novel/novel-meta.js'
 import { dramaOwnedByUser } from './drama-access-service.js'
 
@@ -111,6 +116,13 @@ export async function createUserProject(userId: number, body: Record<string, any
       novel_genre: typeof body.novel_genre === 'string' ? body.novel_genre : (body.genre || undefined),
       outline: typeof body.outline === 'string' ? body.outline : undefined,
     })
+  } else {
+    const orientation = normalizeScreenOrientation(body.screen_orientation)
+    const styleReferenceImage = dramaStyleReferenceImagePath(style)
+    metadata = mergeDramaMetadata(metadata, {
+      screen_orientation: orientation,
+      ...(styleReferenceImage ? { style_reference_image: styleReferenceImage } : {}),
+    })
   }
 
   const insertResult = await dramasRepo.insertDrama({
@@ -132,7 +144,14 @@ export async function createUserProject(userId: number, body: Record<string, any
 
   const unitTotal = body.total_episodes || (creatingNovel ? (body.total_chapters || 10) : 1)
   const unitSuffix = creatingNovel ? '章' : '集'
-  await dramasRepo.seedEpisodeStubs(newProject.id, unitTotal, unitSuffix, ts)
+  const episodeMetadata = creatingNovel
+    ? null
+    : JSON.stringify({
+      image_sizes: defaultEpisodeImageSizesForOrientation(
+        normalizeScreenOrientation(body.screen_orientation),
+      ),
+    })
+  await dramasRepo.seedEpisodeStubs(newProject.id, unitTotal, unitSuffix, ts, episodeMetadata)
 
   return toSnakeCase(newProject)
 }
@@ -191,7 +210,24 @@ export async function assembleProjectDetailPayload(
 export async function updateOwnedProjectMetadata(userId: number, dramaId: number, body: Record<string, unknown>) {
   if (!(await dramaOwnedByUser(dramaId, userId))) return false
   const updates = buildProjectMetadataPatch(body)
-  if (body.style !== undefined) updates.style = normalizeDramaStyle(body.style as string) || null
+  const needsMetadataMerge = body.style !== undefined || body.screen_orientation !== undefined
+  if (needsMetadataMerge) {
+    const drama = await dramasRepo.findDramaById(dramaId)
+    const metaPatch: Record<string, unknown> = {}
+    if (body.screen_orientation !== undefined) {
+      metaPatch.screen_orientation = normalizeScreenOrientation(body.screen_orientation)
+    }
+    if (body.style !== undefined) {
+      const normalizedStyle = normalizeDramaStyle(body.style as string) || null
+      updates.style = normalizedStyle
+      const styleReferenceImage = dramaStyleReferenceImagePath(normalizedStyle)
+      if (styleReferenceImage) metaPatch.style_reference_image = styleReferenceImage
+      else metaPatch.style_reference_image = undefined
+    }
+    updates.metadata = mergeDramaMetadata(drama?.metadata, metaPatch)
+  } else if (body.style !== undefined) {
+    updates.style = normalizeDramaStyle(body.style as string) || null
+  }
   await dramasRepo.updateDrama(dramaId, updates)
   return true
 }

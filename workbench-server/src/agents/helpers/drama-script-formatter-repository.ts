@@ -1,5 +1,8 @@
 import * as episodesRepo from '../../db/repos/episodes/index.js'
+import * as dramasRepo from '../../db/repos/dramas/index.js'
 import { now } from '../../common/http/response.js'
+import { resolveScreenOrientation } from '../../common/drama/drama-meta.js'
+import type { ScreenOrientation } from '../../common/drama/drama-meta.js'
 
 export async function fetchEpisodeDraftContent(episodeId: number) {
   const episode = await episodesRepo.findEpisodeById(episodeId)
@@ -20,9 +23,21 @@ export async function fetchEpisodeDraftContent(episodeId: number) {
   }
 }
 
-export function composeDramaScriptFormatDirective(source: string, extra?: string) {
+export async function resolveEpisodeScreenOrientation(episodeId: number): Promise<ScreenOrientation> {
+  const episode = await episodesRepo.findEpisodeById(episodeId)
+  if (!episode) return 'portrait'
+  const drama = await dramasRepo.findDramaById(episode.dramaId)
+  return resolveScreenOrientation(drama?.metadata)
+}
+
+export function composeDramaScriptFormatDirective(
+  source: string,
+  extra?: string,
+  orientation: ScreenOrientation = 'portrait',
+) {
+  const aspectNote = orientation === 'landscape' ? '横屏 16:9' : '竖屏 9:16'
   const guidance = extra?.trim() ? `\n\n补充要求：\n${extra.trim()}` : ''
-  return `请将以下内容改写为格式化剧本。
+  return `请将以下内容改写为格式化剧本（按项目画幅：${aspectNote}）。
 
 格式规范：
 - 场景头：## S编号 | 内景/外景 · 地点 | 时间段

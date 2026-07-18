@@ -80,9 +80,10 @@ export async function seedEpisodeStubs(
   unitCount: number,
   unitLabel: string,
   timestamp: string,
+  episodeMetadata?: string | null,
 ): Promise<void> {
-  if (isMysqlDriver()) return mysql.seedEpisodeStubs(dramaId, unitCount, unitLabel, timestamp)
-  sqlite.seedEpisodeStubs(dramaId, unitCount, unitLabel, timestamp)
+  if (isMysqlDriver()) return mysql.seedEpisodeStubs(dramaId, unitCount, unitLabel, timestamp, episodeMetadata)
+  sqlite.seedEpisodeStubs(dramaId, unitCount, unitLabel, timestamp, episodeMetadata)
 }
 
 export async function listEpisodesByDrama(dramaId: number): Promise<EpisodeRow[]> {

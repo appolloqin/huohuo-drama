@@ -198,7 +198,7 @@
         </div>
       </div>
       <div class="bar-end">
-        <span v-if="castList.length" class="glyph-tally">{{ castList.length }} 角色 · {{ locations.length }} 场景</span>
+        <span v-if="castList.length" class="glyph-tally">{{ castList.length }} 角色 · {{ characterFormList.length }} 衍生 · {{ propList.length }} 道具 · {{ locations.length }} 场景</span>
         <button v-if="castList.length" class="btn btn-sm" :disabled="agentBusy" @click="$emit('extract')">重新提取</button>
       </div>
     </div>
@@ -206,24 +206,26 @@
       <div class="vacant-art">
         <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
       </div>
-      <div class="vacant-title">从剧本提取角色与场景</div>
-      <div class="vacant-desc">AI 自动分析剧本，提取角色信息和场景列表，与项目已有数据智能去重合并</div>
+      <div class="vacant-title">从剧本提取角色、衍生、道具与场景</div>
+      <div class="vacant-desc">AI 自动分析剧本，提取角色、变身/换装形态、关键道具与场景，与项目已有数据智能去重合并</div>
       <button class="btn btn-primary" @click="$emit('extract')">开始提取</button>
     </div>
     <div v-else-if="agentBusy && agentBusyType === 'drama_cast_scene_extract'" class="wizard-loading">
       <Loader2 :size="24" class="animate-spin" style="color:var(--accent)" />
-      <div class="wait-msg">正在提取角色和场景...</div>
+      <div class="wait-msg">正在提取角色、衍生形态、道具与场景...</div>
     </div>
     <div v-else class="parse-stage">
       <aside class="card parse-summary">
         <div class="parse-summary-kicker">Extraction Board</div>
         <div class="parse-summary-title">角色与场景结果</div>
-        <div class="parse-summary-desc">从剧本里提取出的角色和场景已经入库。这里先确认命名、定位和描述是否可直接进入后续制作。</div>
+        <div class="parse-summary-desc">从剧本里提取出的角色、衍生形态、道具和场景已经入库。这里先确认命名、定位和描述是否可直接进入后续制作。</div>
         <div class="parse-summary-stats">
           <div class="parse-summary-stat"><span>角色</span><strong>{{ castList.length }}</strong></div>
+          <div class="parse-summary-stat"><span>衍生</span><strong>{{ characterFormList.length }}</strong></div>
+          <div class="parse-summary-stat"><span>道具</span><strong>{{ propList.length }}</strong></div>
           <div class="parse-summary-stat"><span>场景</span><strong>{{ locations.length }}</strong></div>
         </div>
-        <div class="parse-summary-note">如果角色描述过于简短，后续分配音色和生成形象时建议先补充人物特征。</div>
+        <div class="parse-summary-note">如果角色描述过于简短，后续分配音色和生成形象时建议先补充人物特征。变身/换装请确认已出现在「衍生」统计中。</div>
       </aside>
       <div class="card parse-card">
         <div class="parse-card-head">
@@ -239,6 +241,42 @@
                 <span class="tag">{{ c.role || '角色' }}</span>
               </div>
               <div class="parse-meta wrap">{{ c.description || c.appearance || c.personality || '暂无描述' }}</div>
+            </div>
+          </div>
+        </div>
+      </div>
+      <div v-if="characterFormList.length" class="card parse-card">
+        <div class="parse-card-head">
+          <span>衍生形态</span>
+          <span class="tag tag-accent">{{ characterFormList.length }}</span>
+        </div>
+        <div class="parse-list">
+          <div v-for="f in characterFormList" :key="f.id" class="parse-row">
+            <div class="cast-avatar">{{ f.name?.[0] || '?' }}</div>
+            <div class="parse-info">
+              <div class="parse-name-row">
+                <div class="parse-name">{{ f.name }}</div>
+                <span class="tag">{{ resolveFormBaseCharacterName(f) }}</span>
+              </div>
+              <div class="parse-meta wrap">{{ f.appearance || f.description || '暂无描述' }}</div>
+            </div>
+          </div>
+        </div>
+      </div>
+      <div v-if="propList.length" class="card parse-card">
+        <div class="parse-card-head">
+          <span>道具</span>
+          <span class="tag tag-accent">{{ propList.length }}</span>
+        </div>
+        <div class="parse-list">
+          <div v-for="p in propList" :key="p.id" class="parse-row">
+            <div class="set-marker">📦</div>
+            <div class="parse-info">
+              <div class="parse-name-row">
+                <div class="parse-name">{{ p.name }}</div>
+                <span v-if="p.type" class="tag">{{ p.type }}</span>
+              </div>
+              <div class="parse-meta wrap">{{ p.description || p.prompt || '暂无描述' }}</div>
             </div>
           </div>
         </div>
@@ -381,6 +419,8 @@ const props = defineProps({
   persistedSourceBody: { type: String, default: '' },
   persistedScreenplayBody: { type: String, default: '' },
   castList: { type: Array, default: () => [] },
+  characterFormList: { type: Array, default: () => [] },
+  propList: { type: Array, default: () => [] },
   locations: { type: Array, default: () => [] },
   assignedVoiceCastCount: { type: Number, default: 0 },
   castPreviewReadyCount: { type: Number, default: 0 },
@@ -396,6 +436,11 @@ const rawDraft = defineModel('rawDraft', { type: String, default: '' })
 const formattedScript = defineModel('formattedScript', { type: String, default: '' })
 const rawUrl = defineModel('rawUrl', { type: String, default: '' })
 
+function resolveFormBaseCharacterName(form) {
+  const charId = form.character_id || form.characterId
+  const char = props.castList.find(c => c.id === charId)
+  return char?.name || form.character_name || form.characterName || '角色形态'
+}
 const rawGenOpen = ref(false)
 const rawGenPrompt = ref('')
 const rawGenBusy = ref(false)

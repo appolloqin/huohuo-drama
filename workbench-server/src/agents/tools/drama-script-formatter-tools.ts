@@ -6,6 +6,7 @@ import { createTool } from '@mastra/core/tools'
 import {
   composeDramaScriptFormatDirective,
   fetchEpisodeDraftContent,
+  resolveEpisodeScreenOrientation,
   writeEpisodeScreenplayContent,
 } from '../helpers/drama-script-formatter-repository.js'
 
@@ -34,7 +35,11 @@ export function buildDramaScriptFormatterToolkit(episodeId: number) {
     execute: async ({ instructions }) => {
       const draftPayload = await fetchEpisodeDraftContent(episodeId)
       if (!draftPayload.ok) return { error: draftPayload.error }
-      const formatBrief = composeDramaScriptFormatDirective(draftPayload.content, instructions)
+      const formatBrief = composeDramaScriptFormatDirective(
+        draftPayload.content,
+        instructions,
+        await resolveEpisodeScreenOrientation(episodeId),
+      )
       return {
         source_content: draftPayload.content,
         instruction: formatBrief,

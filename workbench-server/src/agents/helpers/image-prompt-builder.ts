@@ -1,10 +1,12 @@
 import * as charactersRepo from '../../db/repos/characters/index.js'
+import * as dramasRepo from '../../db/repos/dramas/index.js'
 import * as episodesRepo from '../../db/repos/episodes/index.js'
 import * as scenesRepo from '../../db/repos/scenes/index.js'
+import { applyDramaStyleToPrompt, normalizeDramaStyle } from '../../common/drama/drama-style.js'
 
 const PROMPT_SUFFIX = {
-  character: 'cinematic portrait, high quality, consistent art style, no text, no watermark',
-  scene: 'cinematic scene, atmospheric lighting, high quality, consistent art style, no text, no watermark',
+  character: 'portrait, high quality, detailed character concept art, no text, no watermark',
+  scene: 'atmospheric lighting, high quality, empty background scene, no people, no figures, no text, no watermark',
 } as const
 
 export async function listActiveCharacters(dramaId: number) {
@@ -29,12 +31,20 @@ export async function listActiveScenes(dramaId: number) {
   }))
 }
 
-export function buildCharacterImagePrompt(character: {
-  appearance?: string | null
-  description?: string | null
-  role?: string | null
-  personality?: string | null
-}) {
+export async function resolveDramaStyleById(dramaId: number) {
+  const drama = await dramasRepo.findDramaById(dramaId)
+  return normalizeDramaStyle(drama?.style) || null
+}
+
+export function buildCharacterImagePrompt(
+  character: {
+    appearance?: string | null
+    description?: string | null
+    role?: string | null
+    personality?: string | null
+  },
+  dramaStyle?: string | null,
+) {
   const traits = [
     character.appearance,
     character.description,
@@ -42,16 +52,19 @@ export function buildCharacterImagePrompt(character: {
     character.personality ? `personality: ${character.personality}` : '',
   ].filter(Boolean)
 
-  return `${traits.join(', ')}, ${PROMPT_SUFFIX.character}`
+  return applyDramaStyleToPrompt(`${traits.join(', ')}, ${PROMPT_SUFFIX.character}`, dramaStyle, 'en')
 }
 
-export function buildSceneImagePrompt(scene: {
-  location?: string | null
-  time?: string | null
-  prompt?: string | null
-}) {
+export function buildSceneImagePrompt(
+  scene: {
+    location?: string | null
+    time?: string | null
+    prompt?: string | null
+  },
+  dramaStyle?: string | null,
+) {
   const traits = [scene.location, scene.time, scene.prompt].filter(Boolean)
-  return `${traits.join(', ')}, ${PROMPT_SUFFIX.scene}`
+  return applyDramaStyleToPrompt(`${traits.join(', ')}, ${PROMPT_SUFFIX.scene}`, dramaStyle, 'en')
 }
 
 export async function listShotsForEpisode(episodeId: number, shotIds: number[]) {
@@ -84,11 +97,21 @@ function shotDescriptor(shot: GridShotInput, legend?: string) {
   return `${legendPrefix}${shot.description}${location}${shotType}`
 }
 
-function buildGridShell(rows: number, cols: number, legend?: string, descriptions: string[] = []) {
+function buildGridShell(
+  rows: number,
+  cols: number,
+  legend?: string,
+  descriptions: string[] = [],
+  dramaStyle?: string | null,
+) {
   const totalCells = rows * cols
   const legendPrefix = legend ? `参考图映射：${legend}, ` : ''
   const summary = descriptions.length ? `${descriptions.join(' | ')}, ` : ''
-  return `${rows}x${cols} grid layout, exactly ${totalCells} visible panels, consistent art style, cinematic quality, ${legendPrefix}${summary}no merged panels, no missing panels, no text, no watermark`
+  return applyDramaStyleToPrompt(
+    `${rows}x${cols} grid layout, exactly ${totalCells} visible panels, ${legendPrefix}${summary}no merged panels, no missing panels, no text, no watermark`,
+    dramaStyle,
+    'en',
+  )
 }
 
 export function composeDramaImagePromptBundle(input: {
@@ -97,8 +120,9 @@ export function composeDramaImagePromptBundle(input: {
   cols: number
   mode: string
   reference_legend?: string
+  dramaStyle?: string | null
 }) {
-  const { shots, rows, cols, mode, reference_legend } = input
+  const { shots, rows, cols, mode, reference_legend, dramaStyle } = input
   if (!shots.length) {
     return { error: 'No shots provided', grid_prompt: '', cell_prompts: [] as Array<Record<string, unknown>> }
   }
@@ -110,10 +134,14 @@ export function composeDramaImagePromptBundle(input: {
     const cellPrompts = Array.from({ length: totalCells }, (_, index) => ({
       shot_number: anchor.shot_number,
       frame_type: 'reference',
-      prompt: `格${index + 1}：${shotDescriptor(anchor, reference_legend)}, cinematic lighting, consistent with other cells in the ${rows}x${cols} grid`,
+      prompt: applyDramaStyleToPrompt(
+        `格${index + 1}：${shotDescriptor(anchor, reference_legend)}, consistent with other cells in the ${rows}x${cols} grid`,
+        dramaStyle,
+        'en',
+      ),
     }))
     return {
-      grid_prompt: buildGridShell(rows, cols, reference_legend, [anchor.description]),
+      grid_prompt: buildGridShell(rows, cols, reference_legend, [anchor.description], dramaStyle),
       cell_prompts: cellPrompts,
     }
   }
@@ -126,11 +154,15 @@ export function composeDramaImagePromptBundle(input: {
       return {
         shot_number: shot.shot_number,
         frame_type: isOpening ? 'first_frame' : 'last_frame',
-        prompt: `格${index + 1}：${shotDescriptor(shot, reference_legend)}, ${motion}`,
+        prompt: applyDramaStyleToPrompt(
+          `格${index + 1}：${shotDescriptor(shot, reference_legend)}, ${motion}`,
+          dramaStyle,
+          'en',
+        ),
       }
     })
     return {
-      grid_prompt: buildGridShell(rows, cols, reference_legend, shots.map(shot => shot.description)),
+      grid_prompt: buildGridShell(rows, cols, reference_legend, shots.map(shot => shot.description), dramaStyle),
       cell_prompts: cellPrompts,
     }
   }
@@ -140,12 +172,16 @@ export function composeDramaImagePromptBundle(input: {
     return {
       shot_number: shot.shot_number,
       frame_type: 'first_frame',
-      prompt: `格${index + 1}：${shotDescriptor(shot, reference_legend)}, opening scene`,
+      prompt: applyDramaStyleToPrompt(
+        `格${index + 1}：${shotDescriptor(shot, reference_legend)}, opening scene`,
+        dramaStyle,
+        'en',
+      ),
     }
   })
 
   return {
-    grid_prompt: buildGridShell(rows, cols, reference_legend, shots.map(shot => shot.description)),
+    grid_prompt: buildGridShell(rows, cols, reference_legend, shots.map(shot => shot.description), dramaStyle),
     cell_prompts: cellPrompts,
   }
 }

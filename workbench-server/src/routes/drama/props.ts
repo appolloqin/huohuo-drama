@@ -94,6 +94,7 @@ propRouter.post('/:id/generate-image', async (ctx) => {
       episodeMetadata: epPack.episode.metadata,
       size: body.size,
       aspectRatio: body.aspect_ratio,
+      whiteBackground: !!(body.white_background ?? body.whiteBackground),
     }))
   } catch (err: any) {
     return badRequest(ctx, err.message)
@@ -119,6 +120,7 @@ propRouter.post('/batch-generate-images', async (ctx) => {
     episodeMetadata: epPack.episode.metadata,
     size: body.size,
     aspectRatio: body.aspect_ratio,
+    whiteBackground: !!(body.white_background ?? body.whiteBackground),
     lookup: async (pid) => {
       const pack = await propDramaForUser(pid, gate.userId)
       if (!pack) return null

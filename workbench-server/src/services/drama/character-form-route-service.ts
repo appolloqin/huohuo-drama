@@ -3,10 +3,21 @@
  */
 import * as characterFormsRepo from '../../db/repos/character-forms/index.js'
 import * as charactersRepo from '../../db/repos/characters/index.js'
+import * as dramasRepo from '../../db/repos/dramas/index.js'
 import { now } from '../../common/http/response.js'
+import { applyDramaStyleToPrompt } from '../../common/drama/drama-style.js'
 import { generateImage } from '../media/image-generation.js'
 import { resolveImageAspectRatio } from '../../common/media/image-aspect-presets.js'
 import { logTaskError, logTaskStart, logTaskSuccess } from '../../common/task/task-logger.js'
+import {
+  buildSimpleCharacterPortraitPrompt,
+  CHARACTER_REFERENCE_SHEET_DEFAULT_ASPECT,
+  refineCharacterReferenceSheetPrompt,
+} from './character-reference-sheet-prompt.js'
+import {
+  applyStyleReferenceToImageGeneration,
+  resolveDramaStyleReference,
+} from './drama-style-reference.js'
 
 const FORM_PATCH_KEYS: Record<string, string> = {
   name: 'name',
@@ -18,8 +29,79 @@ const FORM_PATCH_KEYS: Record<string, string> = {
   sort_order: 'sortOrder',
 }
 
-function buildFormPortraitPrompt(formName: string, baseName: string, look?: string | null, bio?: string | null) {
-  return `${baseName}·${formName}, ${look || bio || '人物立绘'}, 高质量, 正面, 白色背景`
+async function resolveDramaStyle(dramaId: number) {
+  const drama = await dramasRepo.findDramaById(dramaId)
+  return drama?.style || null
+}
+
+function resolveFormGenAspect(input: {
+  size?: string | null
+  aspectRatio?: string | null
+  episodeMetadata?: string | null
+  referenceSheet?: boolean
+}) {
+  const explicit = input.size || input.aspectRatio
+  return resolveImageAspectRatio({
+    bodySize: input.size,
+    bodyAspectRatio: input.aspectRatio
+      || (!explicit && input.referenceSheet ? CHARACTER_REFERENCE_SHEET_DEFAULT_ASPECT : null),
+    episodeMetadata: input.referenceSheet && !explicit ? null : input.episodeMetadata,
+    scope: 'character',
+  })
+}
+
+async function resolveFormImagePrompt(input: {
+  formName: string
+  baseCharacterName: string
+  appearance?: string | null
+  description?: string | null
+  prompt?: string | null
+  baseAppearance?: string | null
+  dramaStyle?: string | null
+  referenceSheet?: boolean
+  userId: number
+  userRole: string
+  formId?: number
+}) {
+  if (input.referenceSheet) {
+    const refined = await refineCharacterReferenceSheetPrompt(
+      {
+        name: input.baseCharacterName,
+        formName: input.formName,
+        baseCharacterName: input.baseCharacterName,
+        appearance: input.appearance,
+        baseAppearance: input.baseAppearance,
+        description: input.description,
+        dramaStyle: input.dramaStyle,
+      },
+      {
+        userId: input.userId,
+        role: input.userRole,
+        reason: '衍生形态工业参考图提示词提炼',
+        resourceType: 'character_form',
+        resourceId: input.formId,
+      },
+    )
+    if (input.formId) {
+      await characterFormsRepo.updateCharacterForm(input.formId, {
+        prompt: refined,
+        updatedAt: now(),
+      })
+    }
+    return refined
+  }
+
+  if (input.prompt?.trim()) {
+    return applyDramaStyleToPrompt(input.prompt, input.dramaStyle, 'en')
+  }
+  return buildSimpleCharacterPortraitPrompt({
+    name: input.baseCharacterName,
+    formName: input.formName,
+    baseCharacterName: input.baseCharacterName,
+    appearance: input.appearance,
+    description: input.description,
+    dramaStyle: input.dramaStyle,
+  })
 }
 
 export async function insertCharacterFormRecord(body: {
@@ -80,37 +162,44 @@ export async function enqueueCharacterFormPortrait(input: {
   episodeMetadata?: string | null
   size?: string | null
   aspectRatio?: string | null
+  referenceSheet?: boolean
 }) {
   logTaskStart('CharacterFormImage', 'generate', {
     formId: input.formId,
     characterId: input.baseCharacterId,
     episodeId: input.episodeId,
+    referenceSheet: !!input.referenceSheet,
   })
 
   const baseChar = await charactersRepo.findCharacterById(input.baseCharacterId)
   const refImages = baseChar?.imageUrl ? [String(baseChar.imageUrl).trim()] : []
+  const dramaStyle = await resolveDramaStyle(input.dramaId)
+  const styleRef = await resolveDramaStyleReference(input.dramaId)
 
   try {
-    const genId = await generateImage({
+    const prompt = await resolveFormImagePrompt({
+      formName: input.formName,
+      baseCharacterName: input.baseCharacterName,
+      appearance: input.appearance,
+      description: input.description,
+      prompt: input.prompt,
+      baseAppearance: baseChar?.appearance,
+      dramaStyle,
+      referenceSheet: !!input.referenceSheet,
+      userId: input.userId,
+      userRole: input.userRole,
+      formId: input.formId,
+    })
+    const genId = await generateImage(applyStyleReferenceToImageGeneration({
       userId: input.userId,
       userRole: input.userRole,
       characterFormId: input.formId,
       dramaId: input.dramaId,
-      prompt: input.prompt || buildFormPortraitPrompt(
-        input.formName,
-        input.baseCharacterName,
-        input.appearance,
-        input.description,
-      ),
+      prompt,
       configId: input.dramaImageConfigId ?? undefined,
       referenceImages: refImages.filter(Boolean),
-      size: resolveImageAspectRatio({
-        bodySize: input.size,
-        bodyAspectRatio: input.aspectRatio,
-        episodeMetadata: input.episodeMetadata,
-        scope: 'character',
-      }),
-    })
+      size: resolveFormGenAspect(input),
+    }, styleRef))
     logTaskSuccess('CharacterFormImage', 'generate', { formId: input.formId, generationId: genId })
     return { image_generation_id: genId }
   } catch (err: any) {
@@ -138,39 +227,52 @@ export async function batchEnqueueCharacterFormPortraits(input: {
   episodeMetadata?: string | null
   size?: string | null
   aspectRatio?: string | null
+  referenceSheet?: boolean
 }) {
   const startedIds: number[] = []
-  const size = resolveImageAspectRatio({
-    bodySize: input.size,
-    bodyAspectRatio: input.aspectRatio,
-    episodeMetadata: input.episodeMetadata,
-    scope: 'character',
-  })
+  const errors: string[] = []
+  const size = resolveFormGenAspect(input)
 
+  const dramaStyle = await resolveDramaStyle(input.dramaId)
+  const styleRef = await resolveDramaStyleReference(input.dramaId)
   for (const formId of input.formIds) {
     const form = await input.lookup(formId)
     if (!form || form.dramaId !== input.dramaId) continue
     try {
       const baseChar = await charactersRepo.findCharacterById(form.baseCharacterId)
       const refImages = baseChar?.imageUrl ? [String(baseChar.imageUrl).trim()] : []
-      const genId = await generateImage({
+      const prompt = await resolveFormImagePrompt({
+        formName: form.formName,
+        baseCharacterName: form.baseCharacterName,
+        appearance: form.appearance,
+        description: form.description,
+        prompt: form.prompt,
+        baseAppearance: baseChar?.appearance,
+        dramaStyle,
+        referenceSheet: !!input.referenceSheet,
+        userId: input.userId,
+        userRole: input.userRole,
+        formId,
+      })
+      const genId = await generateImage(applyStyleReferenceToImageGeneration({
         userId: input.userId,
         userRole: input.userRole,
         characterFormId: formId,
         dramaId: form.dramaId,
-        prompt: form.prompt || buildFormPortraitPrompt(
-          form.formName,
-          form.baseCharacterName,
-          form.appearance,
-          form.description,
-        ),
+        prompt,
         configId: input.dramaImageConfigId ?? undefined,
         referenceImages: refImages.filter(Boolean),
         size,
-      })
+      }, styleRef))
       startedIds.push(genId)
-    } catch {}
+    } catch (err: any) {
+      errors.push(`${form.formName}: ${err?.message || '失败'}`)
+    }
   }
 
-  return { image_generation_ids: startedIds, count: startedIds.length }
+  if (input.referenceSheet && !startedIds.length && errors.length) {
+    throw new Error(errors.slice(0, 3).join('；'))
+  }
+
+  return { image_generation_ids: startedIds, count: startedIds.length, errors }
 }

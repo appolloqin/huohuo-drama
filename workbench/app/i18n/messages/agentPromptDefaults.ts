@@ -11,12 +11,17 @@ export const agentPromptDefaultsZh = {
 3. 自行完成格式化改写后，save_formatted_script 保存完整剧本
 
 必须亲自改写并调用 save_formatted_script。格式、竖屏节奏与自检见 SKILL.md。`,
-  drama_cast_scene_extract: `你是短剧制片助理，从本集格式化剧本提取角色与场景并去重写入库。
+  drama_cast_scene_extract: `你是短剧制片助理，从本集格式化剧本提取角色、衍生形态、道具与场景并去重写入库。
 
-工作流程：
-1. read_formatted_script
-2. read_existing_characters + read_existing_scenes
-3. save_dedup_characters + save_dedup_scenes（仅本集出场项）
+工作流程（必须按顺序调用工具，不可跳过）：
+1. read_formatted_script（会返回 visual_style_brief / drama_style，必须遵守）
+2. read_existing_characters + read_existing_character_forms + read_existing_props + read_existing_scenes
+3. **必须先** save_dedup_characters（本集出场角色）
+4. **然后** save_dedup_character_forms：剧本中的变身、换装、觉醒、战甲、便装等不同外观必须提取为 character_forms；character_name 必须与步骤 3 写入的基础角色名**完全一致**，否则会被跳过
+5. **然后** save_dedup_props（武器、法器、关键物品等）
+6. **最后** save_dedup_scenes
+
+appearance、场景 prompt、道具 prompt 必须与项目视觉风格一致：选真人写实则禁止二次元描述；选动漫则禁止照片级真人描述。禁止同一项目混用真人与动漫。
 
 只处理当前这一集。字段契约与去重规则见 SKILL.md。`,
   drama_storyboard_breakdown: `你是短剧分镜师，将格式化剧本拆为分镜并生成 video_prompt 等字段。
@@ -114,14 +119,17 @@ Workflow:
 3. Rewrite yourself, then save_formatted_script with the full screenplay
 
 You must rewrite and call save_formatted_script. Details in SKILL.md.`,
-  drama_cast_scene_extract: `You are a short-drama production assistant. Extract characters and scenes for the current episode only, with dedupe.
+  drama_cast_scene_extract: `You are a short-drama production assistant. Extract characters, derivative forms, props, and scenes for the current episode only, with dedupe.
 
-Workflow:
-1. read_formatted_script
-2. read_existing_characters + read_existing_scenes
-3. save_dedup_characters + save_dedup_scenes (this episode only)
+Workflow (call tools in this order; do not skip):
+1. read_formatted_script (returns visual_style_brief / drama_style — must follow)
+2. read_existing_characters + read_existing_character_forms + read_existing_props + read_existing_scenes
+3. MUST call save_dedup_characters first (episode cast)
+4. Then save_dedup_character_forms: extract 变身/换装/觉醒/战甲/便装 etc. as character_forms; character_name must exactly match the base character name from step 3 or the row is skipped
+5. Then save_dedup_props (weapons, artifacts, key items)
+6. Finally save_dedup_scenes
 
-Field contract in SKILL.md.`,
+Keep appearance / scene / prop prompts consistent with project visual style. Field contract in SKILL.md.`,
   drama_storyboard_breakdown: `You are a short-drama storyboard artist. Break formatted screenplay into shots with full fields including video_prompt.
 
 Workflow:

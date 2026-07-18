@@ -4,6 +4,8 @@
 import { z } from 'zod'
 import { createTool } from '@mastra/core/tools'
 import { logTaskProgress, logTaskSuccess } from '../../common/task/task-logger.js'
+import { formatDramaStyleBriefForAgent, normalizeDramaStyle } from '../../common/drama/drama-style.js'
+import * as dramasRepo from '../../db/repos/dramas/index.js'
 import {
   fetchScreenplayForCastSceneExtract,
   queryProjectCastCatalog,
@@ -24,12 +26,19 @@ export function buildDramaCastSceneExtractToolkit(episodeId: number, dramaId: nu
     execute: async () => {
       const screenplay = await fetchScreenplayForCastSceneExtract(episodeId)
       if (!screenplay.ok) return { error: screenplay.error }
+      const drama = await dramasRepo.findDramaById(dramaId)
+      const dramaStyle = normalizeDramaStyle(drama?.style) || null
       logTaskSuccess('DramaCastSceneExtract', 'read-script', {
         episodeId,
         dramaId,
         scriptLength: screenplay.script.length,
+        dramaStyle,
       })
-      return { script: screenplay.script }
+      return {
+        script: screenplay.script,
+        drama_style: dramaStyle,
+        visual_style_brief: formatDramaStyleBriefForAgent(dramaStyle),
+      }
     },
   })
 
@@ -147,7 +156,7 @@ export function buildDramaCastSceneExtractToolkit(episodeId: number, dramaId: nu
   const mergeCharacterFormsTool = createTool({
     id: 'save_dedup_character_forms',
     description:
-      'Save derivative character forms (觉醒态, 战甲, 便装等). Requires base character_name that already exists in cast. Dedup by character + form name.',
+      'Save derivative character forms (觉醒态, 战甲, 便装, 变身/换装等). MUST call save_dedup_characters first. character_name must exactly match an existing base character name — rows whose character_name is not found are SKIPPED (returned in skipped_character_names). Dedup by character + form name.',
     inputSchema: z.object({
       character_forms: z.array(z.object({
         character_name: z.string(),

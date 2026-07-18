@@ -588,8 +588,42 @@
         </div>
         <div class="dialog-body">
           <label class="field">
+            <span class="field-label">{{ tm.drama.screenOrientation }}</span>
+            <div class="orientation-tabs">
+              <button
+                type="button"
+                :class="['orientation-tab', { active: styleOrientationPick === 'portrait' }]"
+                @click="styleOrientationPick = 'portrait'"
+              >{{ tm.drama.screenPortrait }}</button>
+              <button
+                type="button"
+                :class="['orientation-tab', { active: styleOrientationPick === 'landscape' }]"
+                @click="styleOrientationPick = 'landscape'"
+              >{{ tm.drama.screenLandscape }}</button>
+            </div>
+            <span class="field-hint">{{ tm.drama.screenOrientationHint }}</span>
+          </label>
+          <label class="field">
             <span class="field-label">{{ tm.drama.visualStyleField }}</span>
-            <BaseSelect v-model="stylePickValue" :options="dramaStyleSelectOptions" :placeholder="tm.index.stylePlaceholder" searchable />
+            <div class="style-picker-grid">
+              <button
+                v-for="item in dramaStyleCatalog"
+                :key="item.value"
+                type="button"
+                :class="['style-picker-card', { active: stylePickValue === item.value }]"
+                @click="stylePickValue = item.value"
+              >
+                <img
+                  v-if="dramaStylePreviewUrl(item.preview)"
+                  :src="dramaStylePreviewUrl(item.preview)"
+                  :alt="dramaStyleCardLabel(item, lang)"
+                  class="style-picker-thumb"
+                  loading="lazy"
+                />
+                <div v-else class="style-picker-thumb style-picker-thumb-fallback"></div>
+                <span class="style-picker-label">{{ dramaStyleCardLabel(item, lang) }}</span>
+              </button>
+            </div>
             <span class="field-hint">{{ tm.drama.styleCurrentPrefix }}{{ resolveDramaStyleLabel(drama?.style) || tm.drama.styleUnset }}</span>
           </label>
         </div>
@@ -613,10 +647,12 @@ import { useCreditsGate } from '~/composables/use-credits-gate'
 import { useI18n, tx } from '~/composables/use-i18n'
 import {
   DRAMA_STYLE_CATALOG,
-  buildDramaStyleSelectOptionsFromCatalog,
+  dramaStyleCardLabel,
   dramaStyleLabelFromCatalog,
+  dramaStylePreviewUrl,
   mergeDramaStyleCatalog,
 } from '~/common/drama/dramaStyle'
+import { readDramaScreenOrientation } from '~/common/drama/dramaOrientation'
 import { chapterDisplayTitle } from '~/common/novel/novelChapter'
 import { countNovelChars, formatNovelCharCount } from '~/common/novel/novelCharCount'
 import { buildChapterListBlocks, parseVolumeRangesFromOutline } from '~/common/novel/novelVolume'
@@ -732,6 +768,7 @@ const episodeCreateBusy = ref(false)
 const stylePickerOpen = ref(false)
 const styleSaveBusy = ref(false)
 const stylePickValue = ref('')
+const styleOrientationPick = ref('portrait')
 const createEpisodeTitle = ref('')
 const createEpisodePipeline = ref('ai_video')
 const titleDraft = ref('')
@@ -904,8 +941,6 @@ const imageConfigSelectOptions = computed(() => imageConfigRows.value.map(c => (
 const videoConfigSelectOptions = computed(() => videoConfigRows.value.map(c => ({ label: formatProviderConfigLabel(c), value: c.id })))
 const audioConfigSelectOptions = computed(() => audioConfigRows.value.map(c => ({ label: formatProviderConfigLabel(c), value: c.id })))
 const episodeCreateReady = computed(() => !!(episodeImageCfgId.value && episodeVideoCfgId.value && episodeAudioCfgId.value))
-const dramaStyleSelectOptions = computed(() => buildDramaStyleSelectOptionsFromCatalog(dramaStyleCatalog.value))
-
 function parseDramaMetadata(raw) {
   if (!raw) return {}
   if (typeof raw === 'object') return raw
@@ -1208,6 +1243,7 @@ function revealCreateEpisodeSheet() {
 
 function revealStylePicker() {
   stylePickValue.value = String(drama.value?.style || '')
+  styleOrientationPick.value = readDramaScreenOrientation(drama.value)
   stylePickerOpen.value = true
   void reloadStyleCatalog()
 }
@@ -1216,8 +1252,18 @@ async function persistDramaStyle() {
   if (!drama.value?.id) return
   try {
     styleSaveBusy.value = true
-    await dramaAPI.update(drama.value.id, { style: stylePickValue.value || null })
-    if (drama.value) drama.value.style = stylePickValue.value || null
+    await dramaAPI.update(drama.value.id, {
+      style: stylePickValue.value || null,
+      screen_orientation: styleOrientationPick.value,
+    })
+    if (drama.value) {
+      drama.value.style = stylePickValue.value || null
+      const meta = drama.value.metadata && typeof drama.value.metadata === 'string'
+        ? JSON.parse(drama.value.metadata)
+        : {}
+      meta.screen_orientation = styleOrientationPick.value
+      drama.value.metadata = JSON.stringify(meta)
+    }
     stylePickerOpen.value = false
     toast.success(tm.value.drama.toastStyleUpdated)
   } catch (e) {
@@ -2086,6 +2132,65 @@ onUnmounted(() => {
 }
 .style-dialog {
   max-width: 620px;
+}
+.orientation-tabs {
+  display: flex;
+  gap: 8px;
+}
+.orientation-tab {
+  flex: 1;
+  height: 36px;
+  border-radius: var(--radius);
+  border: 1px solid var(--border);
+  background: var(--bg-1);
+  color: var(--text-2);
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+}
+.orientation-tab.active {
+  background: var(--accent-bg);
+  border-color: rgba(76,125,255,0.25);
+  color: var(--accent-text);
+}
+.style-picker-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(108px, 1fr));
+  gap: 10px;
+  max-height: 260px;
+  overflow-y: auto;
+}
+.style-picker-card {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 6px;
+  border-radius: var(--radius);
+  border: 1px solid var(--border);
+  background: var(--bg-1);
+  cursor: pointer;
+  text-align: left;
+}
+.style-picker-card.active {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 1px rgba(76,125,255,0.18);
+  background: var(--accent-bg);
+}
+.style-picker-thumb {
+  width: 100%;
+  aspect-ratio: 16 / 9;
+  object-fit: cover;
+  border-radius: calc(var(--radius) - 2px);
+  background: var(--bg-2);
+}
+.style-picker-thumb-fallback {
+  background: linear-gradient(135deg, var(--bg-2), var(--bg-3));
+}
+.style-picker-label {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--text-1);
+  line-height: 1.3;
 }
 .dialog-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; }
 .dialog-head-trailing { display: flex; align-items: center; gap: 8px; flex-shrink: 0; }

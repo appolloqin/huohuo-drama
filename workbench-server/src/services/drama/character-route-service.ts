@@ -2,11 +2,21 @@
  * 火火 — 角色资源路由业务（立绘生成、音色试听、软删除）
  */
 import * as charactersRepo from '../../db/repos/characters/index.js'
+import * as dramasRepo from '../../db/repos/dramas/index.js'
 import { now } from '../../common/http/response.js'
 import { generateVoiceSample } from '../media/tts-generation.js'
 import { generateImage } from '../media/image-generation.js'
 import { resolveImageAspectRatio } from '../../common/media/image-aspect-presets.js'
 import { logTaskError, logTaskStart, logTaskSuccess } from '../../common/task/task-logger.js'
+import {
+  buildSimpleCharacterPortraitPrompt,
+  CHARACTER_REFERENCE_SHEET_DEFAULT_ASPECT,
+  refineCharacterReferenceSheetPrompt,
+} from './character-reference-sheet-prompt.js'
+import {
+  applyStyleReferenceToImageGeneration,
+  resolveDramaStyleReference,
+} from './drama-style-reference.js'
 
 /** snake_case 请求字段 → Drizzle camelCase 列名 */
 const CAST_PATCH_KEYS: Record<string, string> = {
@@ -21,9 +31,64 @@ const CAST_PATCH_KEYS: Record<string, string> = {
   local_path: 'localPath',
 }
 
-/** 角色立绘默认正向提示词 */
-function buildPortraitPrompt(castName: string, look?: string | null, bio?: string | null) {
-  return `${castName}, ${look || bio || '人物立绘'}, 高质量, 正面, 白色背景`
+async function resolveDramaStyle(dramaId: number) {
+  const drama = await dramasRepo.findDramaById(dramaId)
+  return drama?.style || null
+}
+
+async function resolveCharacterImagePrompt(input: {
+  name: string
+  role?: string | null
+  appearance?: string | null
+  description?: string | null
+  personality?: string | null
+  dramaStyle?: string | null
+  referenceSheet?: boolean
+  userId: number
+  userRole: string
+}) {
+  if (!input.referenceSheet) {
+    return buildSimpleCharacterPortraitPrompt({
+      name: input.name,
+      role: input.role,
+      appearance: input.appearance,
+      description: input.description,
+      personality: input.personality,
+      dramaStyle: input.dramaStyle,
+    })
+  }
+  return refineCharacterReferenceSheetPrompt(
+    {
+      name: input.name,
+      role: input.role,
+      appearance: input.appearance,
+      description: input.description,
+      personality: input.personality,
+      dramaStyle: input.dramaStyle,
+    },
+    {
+      userId: input.userId,
+      role: input.userRole,
+      reason: '角色工业参考图提示词提炼',
+      resourceType: 'character',
+    },
+  )
+}
+
+function resolveCharacterGenAspect(input: {
+  size?: string | null
+  aspectRatio?: string | null
+  episodeMetadata?: string | null
+  referenceSheet?: boolean
+}) {
+  const explicit = input.size || input.aspectRatio
+  return resolveImageAspectRatio({
+    bodySize: input.size,
+    bodyAspectRatio: input.aspectRatio
+      || (!explicit && input.referenceSheet ? CHARACTER_REFERENCE_SHEET_DEFAULT_ASPECT : null),
+    episodeMetadata: input.referenceSheet && !explicit ? null : input.episodeMetadata,
+    scope: 'character',
+  })
 }
 
 export async function patchCharacterRecord(castId: number, patch: Record<string, any>) {
@@ -85,34 +150,46 @@ export async function enqueueCharacterPortrait(input: {
   dramaId: number
   episodeId: number
   name: string
+  role?: string | null
   appearance?: string | null
   description?: string | null
+  personality?: string | null
   dramaImageConfigId?: number | null
   episodeMetadata?: string | null
   size?: string | null
   aspectRatio?: string | null
+  referenceSheet?: boolean
 }) {
   logTaskStart('CharacterImage', 'generate', {
     characterId: input.characterId,
     episodeId: input.episodeId,
     dramaId: input.dramaId,
+    referenceSheet: !!input.referenceSheet,
   })
 
   try {
-    const genId = await generateImage({
+    const dramaStyle = await resolveDramaStyle(input.dramaId)
+    const styleRef = await resolveDramaStyleReference(input.dramaId)
+    const prompt = await resolveCharacterImagePrompt({
+      name: input.name,
+      role: input.role,
+      appearance: input.appearance,
+      description: input.description,
+      personality: input.personality,
+      dramaStyle,
+      referenceSheet: !!input.referenceSheet,
+      userId: input.userId,
+      userRole: input.userRole,
+    })
+    const genId = await generateImage(applyStyleReferenceToImageGeneration({
       userId: input.userId,
       userRole: input.userRole,
       characterId: input.characterId,
       dramaId: input.dramaId,
-      prompt: buildPortraitPrompt(input.name, input.appearance, input.description),
+      prompt,
       configId: input.dramaImageConfigId ?? undefined,
-      size: resolveImageAspectRatio({
-        bodySize: input.size,
-        bodyAspectRatio: input.aspectRatio,
-        episodeMetadata: input.episodeMetadata,
-        scope: 'character',
-      }),
-    })
+      size: resolveCharacterGenAspect(input),
+    }, styleRef))
     logTaskSuccess('CharacterImage', 'generate', { characterId: input.characterId, generationId: genId })
     return { image_generation_id: genId }
   } catch (err: any) {
@@ -127,42 +204,66 @@ export async function batchEnqueueCharacterPortraits(input: {
   episodeId: number
   dramaId: number
   characterIds: number[]
-  lookup: (id: number) => Promise<{ name: string; appearance?: string | null; description?: string | null; dramaId: number } | null>
+  lookup: (id: number) => Promise<{
+    name: string
+    role?: string | null
+    appearance?: string | null
+    description?: string | null
+    personality?: string | null
+    dramaId: number
+  } | null>
   dramaImageConfigId?: number | null
   episodeMetadata?: string | null
   size?: string | null
   aspectRatio?: string | null
+  referenceSheet?: boolean
 }) {
   const startedIds: number[] = []
-  const size = resolveImageAspectRatio({
-    bodySize: input.size,
-    bodyAspectRatio: input.aspectRatio,
-    episodeMetadata: input.episodeMetadata,
-    scope: 'character',
-  })
+  const errors: string[] = []
+  const size = resolveCharacterGenAspect(input)
 
+  const dramaStyle = await resolveDramaStyle(input.dramaId)
+  const styleRef = await resolveDramaStyleReference(input.dramaId)
   for (const castId of input.characterIds) {
     const cast = await input.lookup(castId)
     if (!cast || cast.dramaId !== input.dramaId) continue
     try {
-      const genId = await generateImage({
+      const prompt = await resolveCharacterImagePrompt({
+        name: cast.name,
+        role: cast.role,
+        appearance: cast.appearance,
+        description: cast.description,
+        personality: cast.personality,
+        dramaStyle,
+        referenceSheet: !!input.referenceSheet,
+        userId: input.userId,
+        userRole: input.userRole,
+      })
+      const genId = await generateImage(applyStyleReferenceToImageGeneration({
         userId: input.userId,
         userRole: input.userRole,
         characterId: castId,
         dramaId: cast.dramaId,
-        prompt: buildPortraitPrompt(cast.name, cast.appearance, cast.description),
+        prompt,
         configId: input.dramaImageConfigId ?? undefined,
         size,
-      })
+      }, styleRef))
       startedIds.push(genId)
-    } catch {}
+    } catch (err: any) {
+      errors.push(`${cast.name}: ${err?.message || '失败'}`)
+    }
   }
 
   logTaskSuccess('CharacterImage', 'batch-generate', {
     episodeId: input.episodeId,
     requested: input.characterIds.length,
     started: startedIds.length,
+    referenceSheet: !!input.referenceSheet,
   })
 
-  return { count: startedIds.length, ids: startedIds }
+  if (input.referenceSheet && !startedIds.length && errors.length) {
+    throw new Error(errors.slice(0, 3).join('；'))
+  }
+
+  return { count: startedIds.length, ids: startedIds, errors }
 }
