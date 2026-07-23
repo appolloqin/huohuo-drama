@@ -1,35 +1,58 @@
 import type { AgentConfigRow, EpisodeRow, StoryboardRow } from '../../db/repos/types.js'
-import { persistNovelChapterContentToDisk } from '../novel/novel-chapter-content-storage.js'
+import { resolveNovelEpisodeProse } from '../novel/novel-chapter-content-storage.js'
 import {
   persistInlineOrBlob,
   resolveInlineOrBlob,
 } from './text-blob-storage.js'
 
-export type EpisodeTextPatchOptions = {
-  /** 小说正文只落盘，DB 不存 inline content */
-  novelContentDiskOnly?: boolean
-  dramaId?: number
+function isNovelChapterBlobPath(blobPath: string | null | undefined): boolean {
+  const p = (blobPath || '').trim()
+  return p.startsWith('novel-memory/') || p.startsWith('storage/novels/')
 }
 
+/**
+ * Hydrate episode text fields.
+ * 仅小说正文（novel-memory / 旧 storage/novels，或尚无 blob 的空 content）走 NovelChapterStore；
+ * 短剧 content / script / formatted 一律通用 text-blob，互不串写。
+ */
 export function hydrateEpisodeRow<T extends EpisodeRow>(row: T): T {
+  const dramaId = Number(row.dramaId)
+  const episodeId = Number(row.id)
+  const chapterNumber = Number(row.episodeNumber)
+  const blobPath = row.contentBlobPath
+  const hasInline = !!String(row.content || '').trim()
+  const useNovelStore =
+    Number.isFinite(dramaId)
+    && Number.isFinite(chapterNumber)
+    && chapterNumber > 0
+    && (isNovelChapterBlobPath(blobPath) || (!hasInline && !String(blobPath || '').trim()))
+
+  const content = useNovelStore
+    ? resolveNovelEpisodeProse({
+        dramaId,
+        episodeId,
+        chapterNumber,
+        inline: row.content,
+        blobPath,
+      })
+    : resolveInlineOrBlob(row.content, blobPath)
+
   return {
     ...row,
-    content: resolveInlineOrBlob(row.content, row.contentBlobPath),
+    content,
     scriptContent: resolveInlineOrBlob(row.scriptContent, row.scriptBlobPath),
     formattedScript: resolveInlineOrBlob(row.formattedScript, row.formattedScriptBlobPath),
   }
 }
 
+/** 仅处理短剧/通用 inline-or-blob 字段；小说 content 勿走此函数 */
 export function applyEpisodeTextPatch(
   id: number,
   patch: Record<string, unknown>,
-  options?: EpisodeTextPatchOptions,
 ): Record<string, unknown> {
   const next = { ...patch }
   if ('content' in patch) {
-    const p = options?.novelContentDiskOnly && options.dramaId
-      ? persistNovelChapterContentToDisk(options.dramaId, id, patch.content as string | null)
-      : persistInlineOrBlob('episodes', id, 'content', patch.content as string | null)
+    const p = persistInlineOrBlob('episodes', id, 'content', patch.content as string | null)
     next.content = p.inline
     next.contentBlobPath = p.blobPath
   }

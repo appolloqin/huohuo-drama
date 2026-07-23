@@ -17,9 +17,11 @@ import {
 } from '../common/storage/text-blob-storage.js'
 import { migrateLegacyWorkbenchDataStorage } from '../common/media/data-root.js'
 import {
-  novelChapterContentRelativePath,
+  findNovelMemoryChapterRelativePath,
   persistNovelChapterContentToDisk,
+  resolveNovelEpisodeContent,
 } from '../common/novel/novel-chapter-content-storage.js'
+import { splitProseAndChangeRecord } from '../common/novel/novel-change-record.js'
 import { countNovelChars } from '../common/novel/novel-char-limit.js'
 import { mergeEpisodeMetadata } from '../common/drama/episode-meta.js'
 import { parseJsonColumnObject } from '../common/db/parse-json-column.js'
@@ -270,7 +272,7 @@ export function externalizeLargeTextSqlite(sqlite: Database.Database): void {
   backfillNovelProseCharCountSqlite(sqlite)
 }
 
-/** 正文落盘后补写 metadata.prose_char_count，供列表字数统计 */
+/** 正文落盘后补写 metadata.prose_char_count（只计读者正文，不含【变更记录】） */
 export function backfillNovelProseCharCountSqlite(sqlite: Database.Database): void {
   const dramasTable = sqlite.prepare(
     `SELECT 1 AS ok FROM sqlite_master WHERE type='table' AND name='dramas' LIMIT 1`,
@@ -278,7 +280,7 @@ export function backfillNovelProseCharCountSqlite(sqlite: Database.Database): vo
   if (!dramasTable) return
 
   const rows = sqlite.prepare(`
-    SELECT e.id, e.content, e.content_blob_path, e.metadata
+    SELECT e.id, e.drama_id, e.episode_number, e.content, e.content_blob_path, e.metadata
     FROM episodes e
     INNER JOIN dramas d ON d.id = e.drama_id
     WHERE d.project_type = 'novel'
@@ -288,6 +290,8 @@ export function backfillNovelProseCharCountSqlite(sqlite: Database.Database): vo
       )
   `).all() as Array<{
     id: number
+    drama_id: number
+    episode_number: number
     content: string | null
     content_blob_path: string | null
     metadata: string | null
@@ -295,19 +299,53 @@ export function backfillNovelProseCharCountSqlite(sqlite: Database.Database): vo
 
   const stmt = sqlite.prepare('UPDATE episodes SET metadata = ? WHERE id = ?')
   for (const row of rows) {
+    const chapterNumber = Number(row.episode_number) || 0
+    const full = chapterNumber > 0
+      ? resolveNovelEpisodeContent({
+          dramaId: row.drama_id,
+          episodeId: row.id,
+          chapterNumber,
+          inline: row.content,
+          blobPath: row.content_blob_path,
+        })
+      : resolveInlineOrBlob(row.content, row.content_blob_path)
+    if (!full?.trim()) continue
+
+    const { prose, changeBlock } = splitProseAndChangeRecord(full)
+    const proseCharCount = countNovelChars(prose)
     const parsed = parseJsonColumnObject(row.metadata)
     const cached = Number(parsed.prose_char_count)
-    if (Number.isFinite(cached) && cached > 0 && !row.content?.trim()) continue
+    const metaPatch: Record<string, unknown> = { prose_char_count: proseCharCount }
+    if (changeBlock && !String(parsed.causal_change_record || '').trim()) {
+      metaPatch.causal_change_record = changeBlock
+    }
+    if (cached === proseCharCount && !('causal_change_record' in metaPatch)) continue
 
-    const text = resolveInlineOrBlob(row.content, row.content_blob_path)
-    if (!text?.trim()) continue
-
-    const metadata = mergeEpisodeMetadata(row.metadata, { prose_char_count: countNovelChars(text) })
+    const metadata = mergeEpisodeMetadata(row.metadata, metaPatch)
     stmt.run(metadata, row.id)
   }
 }
 
-/** 小说正文统一落盘 storage/novels/…，DB 只保留 content_blob_path */
+function novelProseMetaPatch(
+  fullText: string,
+  existingMetadata: string | Record<string, unknown> | null | undefined,
+): Record<string, unknown> {
+  const { prose, changeBlock } = splitProseAndChangeRecord(fullText)
+  const parsed = parseJsonColumnObject(
+    typeof existingMetadata === 'string' || existingMetadata == null
+      ? existingMetadata
+      : existingMetadata,
+  )
+  const metaPatch: Record<string, unknown> = {
+    prose_char_count: countNovelChars(prose),
+  }
+  if (changeBlock && !String(parsed.causal_change_record || '').trim()) {
+    metaPatch.causal_change_record = changeBlock
+  }
+  return metaPatch
+}
+
+/** 小说正文落盘 novel-memory/…/chapters，DB 只保留 content_blob_path（禁止 storage/novels） */
 export function externalizeNovelEpisodeContentSqlite(sqlite: Database.Database): void {
   const dramasTable = sqlite.prepare(
     `SELECT 1 AS ok FROM sqlite_master WHERE type='table' AND name='dramas' LIMIT 1`,
@@ -315,17 +353,15 @@ export function externalizeNovelEpisodeContentSqlite(sqlite: Database.Database):
   if (!dramasTable) return
 
   const rows = sqlite.prepare(`
-    SELECT e.id, e.drama_id, e.content, e.content_blob_path, e.metadata
+    SELECT e.id, e.drama_id, e.episode_number, e.content, e.content_blob_path, e.metadata
     FROM episodes e
     INNER JOIN dramas d ON d.id = e.drama_id
     WHERE d.project_type = 'novel'
-      AND (
-        (e.content IS NOT NULL AND trim(e.content) != '')
-        OR (e.content_blob_path IS NOT NULL AND trim(e.content_blob_path) != '')
-      )
+      AND (e.deleted_at IS NULL OR e.deleted_at = '')
   `).all() as Array<{
     id: number
     drama_id: number
+    episode_number: number
     content: string | null
     content_blob_path: string | null
     metadata: string | null
@@ -333,23 +369,39 @@ export function externalizeNovelEpisodeContentSqlite(sqlite: Database.Database):
 
   const stmt = sqlite.prepare('UPDATE episodes SET content = ?, content_blob_path = ?, metadata = ? WHERE id = ?')
   for (const row of rows) {
-    const canonical = novelChapterContentRelativePath(row.drama_id, row.id)
-    if (!row.content?.trim() && row.content_blob_path?.trim() === canonical) {
-      if (resolveInlineOrBlob(null, row.content_blob_path)?.trim()) continue
-    }
+    const chapterNumber = Number(row.episode_number) || 0
+    if (chapterNumber <= 0) continue
 
-    const text = resolveInlineOrBlob(row.content, row.content_blob_path)
+    const text = resolveNovelEpisodeContent({
+      dramaId: row.drama_id,
+      episodeId: row.id,
+      chapterNumber,
+      inline: row.content,
+      blobPath: row.content_blob_path,
+    })
     if (!text?.trim()) continue
 
-    const p = persistNovelChapterContentToDisk(row.drama_id, row.id, text)
-    const verified = resolveInlineOrBlob(null, p.blobPath)
-    if (!verified?.trim()) {
-      sqlite.prepare('UPDATE episodes SET content_blob_path = ?, metadata = ? WHERE id = ?')
-        .run(p.blobPath, mergeEpisodeMetadata(row.metadata, { prose_char_count: countNovelChars(text) }), row.id)
-      continue
-    }
-    const metadata = mergeEpisodeMetadata(row.metadata, { prose_char_count: countNovelChars(text) })
-    stmt.run(p.inline, p.blobPath, metadata, row.id)
+    const { prose, changeBlock } = splitProseAndChangeRecord(text)
+    // 磁盘粘连了【变更记录】时重写为仅正文
+    const p = persistNovelChapterContentToDisk({
+      dramaId: row.drama_id,
+      episodeId: row.id,
+      chapterNumber,
+      value: changeBlock ? text : prose,
+    })
+    if (!p.blobPath) continue
+
+    const memoryPath = findNovelMemoryChapterRelativePath(row.drama_id, chapterNumber) || p.blobPath
+    const parsed = parseJsonColumnObject(row.metadata)
+    const cached = Number(parsed.prose_char_count)
+    const proseCount = countNovelChars(prose)
+    const pathOk = !row.content?.trim() && row.content_blob_path?.trim() === memoryPath
+    const countOk = cached === proseCount
+    const recordOk = !changeBlock || !!String(parsed.causal_change_record || '').trim()
+    if (pathOk && countOk && recordOk && !changeBlock) continue
+
+    const metadata = mergeEpisodeMetadata(row.metadata, novelProseMetaPatch(text, row.metadata))
+    stmt.run(null, memoryPath, metadata, row.id)
   }
 }
 
@@ -490,46 +542,56 @@ export async function externalizeNovelEpisodeContentMysql(pool: Pool): Promise<v
   if (!(tableRows as RowDataPacket[]).length) return
 
   const [rows] = await pool.execute<RowDataPacket[]>(`
-    SELECT e.id, e.drama_id, e.content, e.content_blob_path, e.metadata
+    SELECT e.id, e.drama_id, e.episode_number, e.content, e.content_blob_path, e.metadata
     FROM episodes e
     INNER JOIN dramas d ON d.id = e.drama_id
     WHERE d.project_type = 'novel'
-      AND (
-        (e.content IS NOT NULL AND trim(e.content) != '')
-        OR (e.content_blob_path IS NOT NULL AND trim(e.content_blob_path) != '')
-      )
+      AND e.deleted_at IS NULL
   `)
 
   for (const row of rows as Array<Record<string, string | number | null>>) {
     const id = row.id as number
     const dramaId = row.drama_id as number
-    const canonical = novelChapterContentRelativePath(dramaId, id)
+    const chapterNumber = Number(row.episode_number) || 0
+    if (chapterNumber <= 0) continue
+
     const inline = row.content as string | null
     const blobPath = row.content_blob_path as string | null
     const metadataRaw = row.metadata
-    if (!inline?.trim() && blobPath?.trim() === canonical) {
-      if (resolveInlineOrBlob(null, blobPath)?.trim()) continue
-    }
 
-    const text = resolveInlineOrBlob(inline, blobPath)
+    const text = resolveNovelEpisodeContent({
+      dramaId,
+      episodeId: id,
+      chapterNumber,
+      inline,
+      blobPath,
+    })
     if (!text?.trim()) continue
 
-    const p = persistNovelChapterContentToDisk(dramaId, id, text)
-    const metadata = mergeEpisodeMetadata(
-      typeof metadataRaw === 'string' ? metadataRaw : (metadataRaw as Record<string, unknown> | null),
-      { prose_char_count: countNovelChars(text) },
-    )
-    const verified = resolveInlineOrBlob(null, p.blobPath)
-    if (!verified?.trim()) {
-      await pool.execute(
-        'UPDATE `episodes` SET `content_blob_path` = ?, `metadata` = ? WHERE `id` = ?',
-        [p.blobPath, metadata, id],
-      )
-      continue
-    }
+    const { prose, changeBlock } = splitProseAndChangeRecord(text)
+    const p = persistNovelChapterContentToDisk({
+      dramaId,
+      episodeId: id,
+      chapterNumber,
+      value: changeBlock ? text : prose,
+    })
+    if (!p.blobPath) continue
+
+    const memoryPath = findNovelMemoryChapterRelativePath(dramaId, chapterNumber) || p.blobPath
+    const metaBase =
+      typeof metadataRaw === 'string' ? metadataRaw : (metadataRaw as Record<string, unknown> | null)
+    const parsed = parseJsonColumnObject(metaBase)
+    const cached = Number(parsed.prose_char_count)
+    const proseCount = countNovelChars(prose)
+    const pathOk = !inline?.trim() && blobPath?.trim() === memoryPath
+    const countOk = cached === proseCount
+    const recordOk = !changeBlock || !!String(parsed.causal_change_record || '').trim()
+    if (pathOk && countOk && recordOk && !changeBlock) continue
+
+    const metadata = mergeEpisodeMetadata(metaBase, novelProseMetaPatch(text, metaBase))
     await pool.execute(
       'UPDATE `episodes` SET `content` = ?, `content_blob_path` = ?, `metadata` = ? WHERE `id` = ?',
-      [p.inline, p.blobPath, metadata, id],
+      [null, memoryPath, metadata, id],
     )
   }
 }
@@ -542,7 +604,7 @@ export async function backfillNovelProseCharCountMysql(pool: Pool): Promise<void
   if (!(tableRows as RowDataPacket[]).length) return
 
   const [rows] = await pool.execute<RowDataPacket[]>(`
-    SELECT e.id, e.content, e.content_blob_path, e.metadata
+    SELECT e.id, e.drama_id, e.episode_number, e.content, e.content_blob_path, e.metadata
     FROM episodes e
     INNER JOIN dramas d ON d.id = e.drama_id
     WHERE d.project_type = 'novel'
@@ -554,22 +616,36 @@ export async function backfillNovelProseCharCountMysql(pool: Pool): Promise<void
 
   for (const row of rows as Array<Record<string, string | number | null>>) {
     const id = row.id as number
+    const dramaId = row.drama_id as number
+    const chapterNumber = Number(row.episode_number) || 0
     const inline = row.content as string | null
     const blobPath = row.content_blob_path as string | null
     const metadataRaw = row.metadata
-    const parsed = parseJsonColumnObject(
-      typeof metadataRaw === 'string' ? metadataRaw : (metadataRaw as Record<string, unknown> | null),
-    )
+    const metaBase =
+      typeof metadataRaw === 'string' ? metadataRaw : (metadataRaw as Record<string, unknown> | null)
+
+    const full = chapterNumber > 0
+      ? resolveNovelEpisodeContent({
+          dramaId,
+          episodeId: id,
+          chapterNumber,
+          inline,
+          blobPath,
+        })
+      : resolveInlineOrBlob(inline, blobPath)
+    if (!full?.trim()) continue
+
+    const { prose, changeBlock } = splitProseAndChangeRecord(full)
+    const proseCharCount = countNovelChars(prose)
+    const parsed = parseJsonColumnObject(metaBase)
     const cached = Number(parsed.prose_char_count)
-    if (Number.isFinite(cached) && cached > 0 && !inline?.trim()) continue
+    const metaPatch: Record<string, unknown> = { prose_char_count: proseCharCount }
+    if (changeBlock && !String(parsed.causal_change_record || '').trim()) {
+      metaPatch.causal_change_record = changeBlock
+    }
+    if (cached === proseCharCount && !('causal_change_record' in metaPatch)) continue
 
-    const text = resolveInlineOrBlob(inline, blobPath)
-    if (!text?.trim()) continue
-
-    const metadata = mergeEpisodeMetadata(
-      typeof metadataRaw === 'string' ? metadataRaw : (metadataRaw as Record<string, unknown> | null),
-      { prose_char_count: countNovelChars(text) },
-    )
+    const metadata = mergeEpisodeMetadata(metaBase, metaPatch)
     await pool.execute('UPDATE `episodes` SET `metadata` = ? WHERE `id` = ?', [metadata, id])
   }
 }
