@@ -17,7 +17,9 @@
     "migrate:sqlite-to-mysql": "tsx scripts/migrate-sqlite-to-mysql.ts",
     "migrate:sqlite-to-mysql:dry": "tsx scripts/migrate-sqlite-to-mysql.ts --dry-run",
     "smoke:api": "node scripts/smoke-api.mjs",
-    "smoke:flow": "node scripts/smoke-api.mjs --full"
+    "smoke:flow": "node scripts/smoke-api.mjs --full",
+    "smoke:novel-chapter": "tsx scripts/smoke-novel-chapter.mjs",
+    "smoke:novel-chapter": "tsx scripts/smoke-novel-chapter.mjs"
   },
   "keywords": [],
   "author": "",

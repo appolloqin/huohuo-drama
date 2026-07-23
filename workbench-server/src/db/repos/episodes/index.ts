@@ -2,17 +2,19 @@ import { isMysqlDriver } from '../../driver.js'
 import type { CharacterRow, DbRunResult, EpisodeRow, SceneRow, StoryboardRow, VideoMergeRow } from '../types.js'
 import { isNovelProject } from '../../../common/novel/novel-meta.js'
 import { countNovelChars } from '../../../common/novel/novel-char-limit.js'
+import { splitProseAndChangeRecord } from '../../../common/novel/novel-change-record.js'
 import { mergeEpisodeMetadata } from '../../../common/drama/episode-meta.js'
+import { persistNovelChapterContentToDisk } from '../../../common/novel/novel-chapter-content-storage.js'
 import { applyEpisodeTextPatch, hydrateEpisodeRow } from '../../../common/storage/text-blob-repo.js'
 import * as dramasRepo from '../dramas/index.js'
 import type { EpisodeListFilter, EpisodeStatsRow, NewEpisodeInput } from './sqlite.js'
 import * as mysql from './mysql.js'
 import * as sqlite from './sqlite.js'
 
-async function resolveNovelContentDiskOnly(
+async function resolveNovelChapterContext(
   episodeId: number,
   dramaIdHint?: number,
-): Promise<{ novelContentDiskOnly: boolean; dramaId: number } | null> {
+): Promise<{ dramaId: number; chapterNumber: number; existingMetadata: string | null } | null> {
   const row = isMysqlDriver()
     ? await mysql.findEpisodeById(episodeId)
     : sqlite.findEpisodeById(episodeId)
@@ -20,15 +22,50 @@ async function resolveNovelContentDiskOnly(
   const dramaId = dramaIdHint ?? row.dramaId
   const drama = await dramasRepo.findDramaById(dramaId)
   if (!drama || !isNovelProject(drama)) return null
-  return { novelContentDiskOnly: true, dramaId }
+  const chapterNumber = Number(row.episodeNumber) || 0
+  if (chapterNumber <= 0) return null
+  return {
+    dramaId,
+    chapterNumber,
+    existingMetadata: row.metadata ?? null,
+  }
+}
+
+function saveNovelContentPatch(args: {
+  dramaId: number
+  episodeId: number
+  chapterNumber: number
+  content: string | null
+  existingMetadata: string | null | undefined
+}): { content: null; contentBlobPath: string | null; metadata: string } {
+  const raw = args.content ?? ''
+  const { prose, changeBlock } = splitProseAndChangeRecord(raw)
+  const p = persistNovelChapterContentToDisk({
+    dramaId: args.dramaId,
+    episodeId: args.episodeId,
+    chapterNumber: args.chapterNumber,
+    value: prose || null,
+  })
+  const proseCharCount = countNovelChars(prose)
+  const metaPatch: Record<string, unknown> = { prose_char_count: proseCharCount }
+  if (changeBlock) metaPatch.causal_change_record = changeBlock
+  return {
+    content: null,
+    contentBlobPath: p.blobPath,
+    metadata: mergeEpisodeMetadata(args.existingMetadata, metaPatch),
+  }
 }
 
 function attachProseCharCountMetadata(
   patch: Record<string, unknown>,
   existingMetadata: string | null | undefined,
+  contentForCount?: string | null,
 ): Record<string, unknown> {
-  if (!('content' in patch)) return patch
-  const proseCharCount = countNovelChars(typeof patch.content === 'string' ? patch.content : '')
+  const raw = contentForCount !== undefined
+    ? contentForCount
+    : ('content' in patch ? patch.content : undefined)
+  if (contentForCount === undefined && !('content' in patch)) return patch
+  const proseCharCount = countNovelChars(typeof raw === 'string' ? raw : '')
   const baseMeta = 'metadata' in patch ? patch.metadata : existingMetadata
   return {
     ...patch,
@@ -56,17 +93,29 @@ export async function insertEpisode(input: NewEpisodeInput): Promise<DbRunResult
     : sqlite.insertEpisode({ ...rest, content: null, scriptContent: null, formattedScript: null })
   const id = Number(result.lastInsertRowid)
   if (id > 0 && (content != null || scriptContent != null || formattedScript != null)) {
-    const novelOpts = await resolveNovelContentDiskOnly(id, rest.dramaId)
-    let patch = applyEpisodeTextPatch(
-      id,
-      { content, scriptContent, formattedScript },
-      novelOpts ?? undefined,
-    )
-    if (content != null) {
-      patch = attachProseCharCountMetadata(
-        { ...patch, content },
-        rest.metadata as string | null | undefined,
-      )
+    const novelCtx = content != null ? await resolveNovelChapterContext(id, rest.dramaId) : null
+    let patch: Record<string, unknown>
+    if (novelCtx && content != null) {
+      const saved = saveNovelContentPatch({
+        dramaId: novelCtx.dramaId,
+        episodeId: id,
+        chapterNumber: novelCtx.chapterNumber,
+        content: typeof content === 'string' ? content : null,
+        existingMetadata: (rest.metadata as string | null | undefined) ?? novelCtx.existingMetadata,
+      })
+      patch = applyEpisodeTextPatch(id, { scriptContent, formattedScript })
+      patch.content = saved.content
+      patch.contentBlobPath = saved.contentBlobPath
+      patch.metadata = saved.metadata
+    } else {
+      patch = applyEpisodeTextPatch(id, { content, scriptContent, formattedScript })
+      if (content != null) {
+        patch = attachProseCharCountMetadata(
+          patch,
+          rest.metadata as string | null | undefined,
+          typeof content === 'string' ? content : null,
+        )
+      }
     }
     if (isMysqlDriver()) await mysql.updateEpisode(id, patch)
     else sqlite.updateEpisode(id, patch)
@@ -80,15 +129,48 @@ export async function findEpisodeById(id: number): Promise<EpisodeRow | null> {
 }
 
 export async function updateEpisode(id: number, patch: Record<string, unknown>): Promise<void> {
-  const novelOpts = 'content' in patch ? await resolveNovelContentDiskOnly(id) : null
-  let next = applyEpisodeTextPatch(id, patch, novelOpts ?? undefined)
-  if ('content' in patch) {
-    const row = await findEpisodeRowRaw(id)
-    next = attachProseCharCountMetadata(
-      { ...next, content: patch.content },
-      'metadata' in patch ? patch.metadata as string | null | undefined : row?.metadata,
-    )
+  const novelCtx = 'content' in patch ? await resolveNovelChapterContext(id) : null
+  let next: Record<string, unknown>
+
+  if (novelCtx && 'content' in patch) {
+    // 上层已经 novel-chapter-service 落盘：只同步 DB 列，勿再用 null content 覆盖磁盘
+    const alreadyOnDisk = 'contentBlobPath' in patch && patch.content === null
+    if (alreadyOnDisk) {
+      const { content: _drop, ...restPatch } = patch
+      next = applyEpisodeTextPatch(id, restPatch)
+      next.content = null
+      next.contentBlobPath = patch.contentBlobPath
+      if ('metadata' in patch) next.metadata = patch.metadata
+    } else {
+      const row = await findEpisodeRowRaw(id)
+      const saved = saveNovelContentPatch({
+        dramaId: novelCtx.dramaId,
+        episodeId: id,
+        chapterNumber: novelCtx.chapterNumber,
+        content: typeof patch.content === 'string' ? patch.content : null,
+        existingMetadata:
+          'metadata' in patch
+            ? (patch.metadata as string | null | undefined)
+            : (row?.metadata ?? novelCtx.existingMetadata),
+      })
+      const { content: _drop, ...restPatch } = patch
+      next = applyEpisodeTextPatch(id, restPatch)
+      next.content = saved.content
+      next.contentBlobPath = saved.contentBlobPath
+      next.metadata = saved.metadata
+    }
+  } else {
+    next = applyEpisodeTextPatch(id, patch)
+    if ('content' in patch) {
+      const row = await findEpisodeRowRaw(id)
+      next = attachProseCharCountMetadata(
+        next,
+        'metadata' in patch ? patch.metadata as string | null | undefined : row?.metadata,
+        typeof patch.content === 'string' ? patch.content : null,
+      )
+    }
   }
+
   if (isMysqlDriver()) return mysql.updateEpisode(id, next)
   sqlite.updateEpisode(id, next)
 }

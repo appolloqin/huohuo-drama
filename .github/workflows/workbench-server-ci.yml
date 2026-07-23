@@ -27,6 +27,7 @@ jobs:
       - run: npm ci
       - run: npm run typecheck
       - run: npm run check:layers
+      - run: npm run smoke:novel-chapter
 
   smoke-sqlite:
     runs-on: ubuntu-latest

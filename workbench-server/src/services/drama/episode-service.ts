@@ -9,6 +9,7 @@ import { isNovelProject } from '../../common/novel/novel-meta.js'
 import { logTaskError } from '../../common/task/task-logger.js'
 import { generateEpisodeRawContent } from './episode-raw-content.js'
 import { refreshNovelChapterContinuityIfNeeded } from '../novel/novel-chapter-pipeline.js'
+import { saveChapterContent } from '../novel/novel-chapter-service.js'
 import { mergeEpisodeMetadata, readProductionPipeline, type ProductionPipeline } from '../../common/drama/episode-meta.js'
 import { isValidAspectRatio, type ImageAspectRatio } from '../../common/media/image-aspect-presets.js'
 import { normalizeVideoGenOptions } from '../../common/media/video-gen-options.js'
@@ -252,6 +253,25 @@ export async function updateOwnedEpisode(
   }
 
   const drizzleUpdates = translateEpisodePatchFields(updates)
+
+  // 小说正文：经 novel-chapter-service 落盘，再交给 repo 写 blob_path（避免短剧 blob 路径）
+  if (
+    isNovelProject(ownedEpisode.drama)
+    && 'content' in updates
+  ) {
+    const saved = saveChapterContent({
+      dramaId: ownedEpisode.drama.id,
+      episodeId: id,
+      chapterNumber: ownedEpisode.episode.episodeNumber,
+      content: typeof updates.content === 'string' ? updates.content : null,
+      existingMetadata:
+        (drizzleUpdates.metadata as string | undefined) ?? ownedEpisode.episode.metadata,
+    })
+    drizzleUpdates.content = saved.content
+    drizzleUpdates.contentBlobPath = saved.contentBlobPath
+    drizzleUpdates.metadata = saved.metadata
+  }
+
   await episodesRepo.updateEpisode(id, drizzleUpdates)
 
   if (
