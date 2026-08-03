@@ -28,6 +28,31 @@ export type NovelContinuityLedger = NovelContinuityFields & {
   content_hash?: string
 }
 
+/**
+ * 章末缝合契约（存于 episodes.metadata.chapter_end_snapshot）。
+ * 比 15 维账本更短，专供下章开篇对齐：时间/地点/人物/刚发生/未闭合。
+ */
+export type ChapterEndSnapshot = {
+  chapter_number: number
+  /** 章末时辰/日光（如：正午，日头在树梢正中） */
+  time: string
+  /** 章末地点/场景 */
+  place: string
+  /** 在场或刚相关的人物 */
+  cast: string
+  /** 章末刚发生的关键事件（一句） */
+  last_event: string
+  /** 未闭合线索（可空） */
+  open_threads?: string
+  /**
+   * 本章已闭合的交付/收束情节原子（分号分隔），供下章同场合勿再演。
+   * 例：交付:糠饼；递药
+   */
+  closed_beats?: string
+  updated_at: string
+  content_hash?: string
+}
+
 /** 全书「当前状态」快照（存于 dramas.metadata.continuity_state） */
 export type NovelGlobalContinuityState = NovelContinuityFields & {
   as_of_chapter: number
@@ -122,6 +147,55 @@ export function normalizeContinuityLedger(raw: unknown, chapterNumber: number): 
     updated_at: typeof src.updated_at === 'string' ? src.updated_at : new Date().toISOString(),
     content_hash: typeof src.content_hash === 'string' ? src.content_hash : undefined,
   }
+}
+
+function cleanSnapField(v: unknown, max = 120): string | undefined {
+  if (typeof v !== 'string') return undefined
+  const t = v.replace(/\s+/g, ' ').trim()
+  if (!t || t === '无' || t === '持平' || t === '未明示') return undefined
+  return [...t].length > max ? `${[...t].slice(0, max).join('')}…` : t
+}
+
+export function normalizeChapterEndSnapshot(raw: unknown, chapterNumber: number): ChapterEndSnapshot | null {
+  if (!raw || typeof raw !== 'object') return null
+  const src = raw as Record<string, unknown>
+  const time = cleanSnapField(src.time, 80)
+  const place = cleanSnapField(src.place, 80)
+  const cast = cleanSnapField(src.cast, 80)
+  const last_event = cleanSnapField(src.last_event, 160)
+  if (!time && !place && !cast && !last_event) return null
+  const num = Number.isFinite(Number(src.chapter_number)) ? Number(src.chapter_number) : chapterNumber
+  return {
+    chapter_number: num,
+    time: time || '未明示',
+    place: place || '未明示',
+    cast: cast || '未明示',
+    last_event: last_event || '未明示',
+    open_threads: cleanSnapField(src.open_threads, 120),
+    closed_beats: cleanSnapField(src.closed_beats, 200),
+    updated_at: typeof src.updated_at === 'string' ? src.updated_at : new Date().toISOString(),
+    content_hash: typeof src.content_hash === 'string' ? src.content_hash : undefined,
+  }
+}
+
+export function formatChapterEndSnapshotBlock(
+  snap: ChapterEndSnapshot,
+  opts?: { title?: string },
+): string {
+  const title = opts?.title
+    ?? `【上章末状态契约（第${snap.chapter_number}章末）——开篇必须承接，禁止倒退】`
+  return [
+    title,
+    `时间：${snap.time}`,
+    `地点：${snap.place}`,
+    `人物：${snap.cast}`,
+    `刚发生：${snap.last_event}`,
+    snap.open_threads ? `未闭合：${snap.open_threads}` : '',
+    snap.closed_beats
+      ? `已闭合情节（同场合勿再演交付；换日/换场/写明新一次可写）：${snap.closed_beats}`
+      : '',
+    '硬性：开篇时辰/地点/在场不得早于或矛盾于上表；禁止晨光重开已到正午的一日；同场合禁止把「已闭合情节」再掏出/递给一遍（换时空可另写）。',
+  ].filter(Boolean).join('\n')
 }
 
 export function normalizeGlobalContinuityState(raw: unknown): NovelGlobalContinuityState | null {

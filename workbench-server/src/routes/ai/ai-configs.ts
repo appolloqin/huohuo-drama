@@ -5,6 +5,10 @@ import { requireAdmin } from '../../middleware/auth.js'
 import { runProviderConnectivityProbe } from './ai-config-probe.js'
 import { getUserAiConfigReadiness } from '../../services/ai/user-ai-config-resolve.js'
 import * as aiConfigService from '../../services/ai/ai-config-service.js'
+import {
+  getUserTextAuditModelSettings,
+  saveUserTextAuditModelSettings,
+} from '../../services/ai/text-audit-model.js'
 
 const serviceConfigRouter = new Hono()
 
@@ -55,10 +59,28 @@ serviceConfigRouter.put('/user-default-models', async (c) => {
   }
 })
 
+serviceConfigRouter.get('/text-audit-model', async (c) => {
+  const user = getAuthUser(c)
+  return success(c, await getUserTextAuditModelSettings(user.id))
+})
+
+serviceConfigRouter.put('/text-audit-model', async (c) => {
+  const user = getAuthUser(c)
+  const body = await c.req.json().catch(() => ({})) as { enabled?: unknown; model?: unknown }
+  try {
+    return success(c, await saveUserTextAuditModelSettings(user.id, {
+      enabled: typeof body.enabled === 'boolean' ? body.enabled : undefined,
+      model: typeof body.model === 'string' ? body.model : undefined,
+    }))
+  } catch (err: any) {
+    return badRequest(c, err.message || '保存失败')
+  }
+})
+
 serviceConfigRouter.get('/preset', async (c) => {
   const user = getAuthUser(c)
   if (user.role === 'admin') {
-    return success(c, await aiConfigService.listEffectivePresets())
+    return success(c, await aiConfigService.listEffectivePresetsForUser(user.id))
   }
   return success(c, await aiConfigService.listUserEffectivePresets(user.id))
 })

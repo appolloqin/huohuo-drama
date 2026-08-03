@@ -28,6 +28,9 @@ export {
   writeCausalChain,
   ensureCausalChain,
   updateCausalChainFromChapter,
+  parseCausalChainAsOfChapter,
+  resolveCausalOriginForChapter,
+  formatCausalOriginInjectBlock,
 } from './causal-chain-manager.js'
 export {
   runCausalChainAudit,

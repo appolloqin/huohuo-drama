@@ -11,6 +11,7 @@ export {
   ensureAnchor,
   buildAnchorEchoPromptBlock,
   stripLeadingAnchorEcho,
+  isStaleStoryStartAnchor,
   updateAnchorFromSummary,
   DEFAULT_ANCHOR,
 } from './novel-anchor.js'

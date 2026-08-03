@@ -1,4 +1,4 @@
-/** 第 1 章写作固定注入：修炼体系 / 大陆 / 门派 */
+/** 第 1 章写作固定注入：有真实世界观块时展开；无则不注入修真占位 */
 import { NOVEL_OUTLINE_WORLD_SECTION } from '../../agents/novel-defaults.js'
 import { extractWorldRules } from '../../services/novel/novel-memory/novel-memory-parser.js'
 import { NovelMemoryManager } from '../../services/novel/novel-memory/novel-memory-manager.js'
@@ -16,6 +16,16 @@ export function extractOutlineWorldBlock(outline: string, maxChars = 2800): stri
   return section.length <= maxChars ? section : `${section.slice(0, maxChars)}…`
 }
 
+/** 是否存在可注入的真实世界观（大纲或 world_bible），非修真占位 */
+export function hasRealWorldBlock(args: { outline?: string; dramaId?: number }): boolean {
+  if (extractOutlineWorldBlock(args.outline || '')) return true
+  if (args.dramaId && NovelMemoryManager.exists(args.dramaId)) {
+    const mgr = new NovelMemoryManager(args.dramaId)
+    if (extractWorldRules(mgr.readWorld(), 2800).trim()) return true
+  }
+  return false
+}
+
 function pickWorldLines(section: string): { cultivation: string; regions: string; factions: string } {
   const lines = section.split('\n')
   let cultivation = ''
@@ -29,7 +39,7 @@ function pickWorldLines(section: string): { cultivation: string; regions: string
   return { cultivation, regions, factions }
 }
 
-/** 第 1 章固定世界观注入块（大纲优先，其次 world_bible.md） */
+/** 第 1 章世界观注入块；无真实块时返回空字符串（勿注入修真占位） */
 export function buildChapter1WorldIntroBlock(args: {
   outline?: string
   dramaId?: number
@@ -39,13 +49,7 @@ export function buildChapter1WorldIntroBlock(args: {
     const mgr = new NovelMemoryManager(args.dramaId)
     raw = extractWorldRules(mgr.readWorld(), 2800)
   }
-  if (!raw) {
-    return [
-      '【第1章须介绍的世界观】',
-      '全书大纲或 world_bible.md 中暂无【世界观设定】；请先完善大纲后再写第1章。',
-      '若仍须写作：正文前段须自然交代修炼境界体系、故事所在大陆/地域、主要门派势力，且全书须保持名称一致。',
-    ].join('\n')
-  }
+  if (!raw) return ''
 
   const { cultivation, regions, factions } = pickWorldLines(raw)
   const bullets = [

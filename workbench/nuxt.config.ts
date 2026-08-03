@@ -48,17 +48,35 @@ export default defineNuxtConfig({
         '/api': {
           target: 'http://127.0.0.1:18555',
           changeOrigin: true,
+          // 小说流式生成可能数分钟；0=不限时。ECONNRESET 多数是上游进程重启/崩溃，不是这里超时。
+          timeout: 0,
+          proxyTimeout: 0,
           configure: (proxyInstance) => {
-            proxyInstance.on('proxyRes', (proxyRes) => {
+            proxyInstance.on('proxyRes', (proxyRes, _req, res) => {
               const ct = String(proxyRes.headers['content-type'] || '')
               if (ct.includes('text/event-stream')) {
                 proxyRes.headers['cache-control'] = 'no-cache, no-transform'
                 proxyRes.headers['x-accel-buffering'] = 'no'
+                // 上游（tsx watch 重启等）异常断开时，立刻结束浏览器侧挂起请求
+                proxyRes.on('close', () => {
+                  if ((proxyRes as any).errored && res && !res.writableEnded) {
+                    try { res.destroy((proxyRes as any).errored) } catch { /* ignore */ }
+                  }
+                })
+              }
+            })
+            proxyInstance.on('error', (err, _req, res) => {
+              console.error('[vite-proxy /api]', err?.message || err)
+              if (res && !res.headersSent && typeof (res as any).writeHead === 'function') {
+                try {
+                  ;(res as any).writeHead(502, { 'Content-Type': 'text/plain; charset=utf-8' })
+                  ;(res as any).end('Bad gateway (upstream reset)')
+                } catch { /* ignore */ }
               }
             })
           },
         },
-        '/static': { target: 'http://127.0.0.1:18555', changeOrigin: true },
+        '/static': { target: 'http://127.0.0.1:18555', changeOrigin: true, timeout: 0, proxyTimeout: 0 },
       },
     },
   },

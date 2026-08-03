@@ -1,5 +1,6 @@
 import crypto from 'crypto'
 import { countNovelChars } from '../../common/novel/novel-char-limit.js'
+import { NOVEL_AI_TRANSITION_TELLS } from '../../common/novel/novel-ai-tells.js'
 
 export type AiDetectionSignal = {
   key: string
@@ -65,17 +66,16 @@ export type AiDetectionResult = {
   suggestions?: AiDetectionSuggestion[]
 }
 
-const SIGNAL_THRESHOLD = 0.55
+/** 修改建议展示门槛（原 0.55 过高：用词 72% 以外的次高维常被整表吞掉） */
+const SUGGESTION_THRESHOLD = 0.38
+/** @deprecated 使用 SUGGESTION_THRESHOLD */
+const SIGNAL_THRESHOLD = SUGGESTION_THRESHOLD
 
-const AI_TRANSITIONS = [
-  '然而', '因此', '随后', '与此同时', '不禁', '竟然', '仿佛', '宛如',
-  '缓缓', '微微', '淡淡', '静静', '默默', '不由得', '忍不住',
-  '眼中闪过', '心头一紧', '于是乎', '紧接着', '刹那间', '话音刚落',
-  '心中暗道', '嘴角微微', '空气仿佛', '时间仿佛',
-]
+const AI_TRANSITIONS = [...NOVEL_AI_TRANSITION_TELLS]
 
+/** 议论文套话连接词；勿收「最后/首先」——网文叙事高频，易误伤 */
 const AI_CONNECTORS = [
-  '首先', '其次', '再次', '最后', '总之', '综上所述', '一方面', '另一方面',
+  '总之', '综上所述', '一方面', '另一方面',
   '由此可见', '毫无疑问', '不得不说', '与此同时',
 ]
 
@@ -107,24 +107,86 @@ function countPhraseMatches(text: string, phrases: string[]): number {
   return count
 }
 
+/** 统计子串出现次数 */
+function countSubstringOccurrences(text: string, needle: string): number {
+  if (!needle) return 0
+  let n = 0
+  let i = 0
+  while ((i = text.indexOf(needle, i)) !== -1) {
+    n++
+    i += needle.length
+  }
+  return n
+}
+
+/**
+ * 短语重复：只量机械 AI 套话密度（了一 / —— / 。他），不量普通人名/物件二字组。
+ * 旧版全量 bigram 会把「秦卫国」拆成「秦卫」「卫国」刷到 60%+，去 AI 味空转且误导改专名。
+ */
+function mechanicalPhraseRepetitionScore(text: string): number {
+  const charCount = countNovelChars(text)
+  if (charCount < 20) return 0.5
+  const leYi = countSubstringOccurrences(text, '了一')
+  const emDash = countSubstringOccurrences(text, '——')
+    + countSubstringOccurrences(text, '---')
+  const pronounStart = (text.match(/[。！？][他她]/g) || []).length
+  const hits = leYi + emDash + pronounStart
+  const dens = hits / Math.max(charCount / 400, 1)
+  if (dens >= 4) return 0.85
+  if (dens >= 2.5) return 0.68
+  if (dens >= 1.5) return 0.52
+  if (dens >= 0.9) return 0.38
+  if (dens >= 0.45) return 0.28
+  return 0.16
+}
+
+/** @deprecated 兼容旧名；语义已改为机械套话密度 */
 function bigramRepetitionScore(text: string): number {
-  const chars = [...text.replace(/\s/g, '')]
-  if (chars.length < 20) return 0.5
-  const bigrams = new Map<string, number>()
-  for (let i = 0; i < chars.length - 1; i++) {
-    const bg = chars[i] + chars[i + 1]
-    bigrams.set(bg, (bigrams.get(bg) || 0) + 1)
+  return mechanicalPhraseRepetitionScore(text)
+}
+
+/**
+ * 高频专名（3～4 字）覆盖的二字组 — 供去 AI 味精修跳过专名目标。
+ * 用「整词出现次数」而非滑窗：避免把整句重复切段误当成专名。
+ */
+export function collectNameCoveredBigrams(text: string, minCount = 4): Set<string> {
+  const compact = text.replace(/\s/g, '')
+  const covered = new Set<string>()
+  if (compact.length < 6) return covered
+
+  const candidates = new Map<string, number>()
+  // 候选：正文中连续 3～4 个汉字；按整串 indexOf 计数（步长 1）
+  const re = /[\u4e00-\u9fff]{3,4}/g
+  let m: RegExpExecArray | null
+  const seenAt = new Set<string>()
+  while ((m = re.exec(compact)) !== null) {
+    const s = m[0]
+    // 同一位置只记一次候选键；计数另算
+    if (seenAt.has(`${m.index}:${s}`)) continue
+    seenAt.add(`${m.index}:${s}`)
+    if (!candidates.has(s)) {
+      candidates.set(s, countSubstringOccurrences(compact, s))
+    }
   }
-  let weighted = 0
-  let total = 0
-  for (const [, c] of bigrams) {
-    total++
-    if (c >= 4) weighted += 1
-    else if (c === 3) weighted += 0.7
-    else if (c === 2) weighted += 0.35
+  // 凝聚度：真名「秦卫国」次数应接近其二字组次数；内容滑片通常更碎
+  for (const [name, c] of candidates) {
+    if (c < minCount) continue
+    const chars = [...name]
+    let cohesive = true
+    for (let j = 0; j < chars.length - 1; j++) {
+      const bg = chars[j]! + chars[j + 1]!
+      const bgc = countSubstringOccurrences(compact, bg)
+      if (bgc > c * 1.35 + 2) {
+        cohesive = false
+        break
+      }
+    }
+    if (!cohesive) continue
+    for (let j = 0; j < chars.length - 1; j++) {
+      covered.add(chars[j]! + chars[j + 1]!)
+    }
   }
-  if (total === 0) return 0.5
-  return Math.min(1, weighted / (total * 0.12))
+  return covered
 }
 
 function lexicalPatternScore(text: string): number {
@@ -340,34 +402,36 @@ function findUniformParagraphSuggestion(text: string, signalVal: number): AiDete
 
 function findRepeatedBigramSuggestions(text: string, signalVal: number): AiDetectionSuggestion[] {
   if (signalVal < SIGNAL_THRESHOLD) return []
-  const chars = [...text.replace(/\s/g, '')]
-  if (chars.length < 20) return []
-  const bigrams = new Map<string, { count: number; firstIndex: number }>()
-  for (let i = 0; i < chars.length - 1; i++) {
-    const bg = chars[i] + chars[i + 1]
-    const rec = bigrams.get(bg) || { count: 0, firstIndex: i }
-    rec.count++
-    bigrams.set(bg, rec)
+  const tells: Array<{ needle: string; count: number }> = [
+    { needle: '了一', count: countSubstringOccurrences(text, '了一') },
+    { needle: '——', count: countSubstringOccurrences(text, '——') },
+  ]
+  const pronounHits = [...text.matchAll(/[。！？]([他她])/g)]
+  if (pronounHits.length >= 4) {
+    const ch = pronounHits[0]?.[1] || '他'
+    tells.push({ needle: `。${ch}`, count: pronounHits.length })
   }
-  return [...bigrams.entries()]
-    .filter(([, v]) => v.count >= 4)
-    .sort((a, b) => b[1].count - a[1].count)
+  return tells
+    .filter(t => t.count >= 4)
+    .sort((a, b) => b.count - a.count)
     .slice(0, 2)
-    .map(([bigram, rec]) => {
-      const index = findBigramIndexInText(text, bigram)
-      return buildSuggestion(text, index, index + bigram.length, {
+    .map((t) => {
+      const index = text.indexOf(t.needle)
+      const at = index >= 0 ? index : 0
+      return buildSuggestion(text, at, at + t.needle.length, {
         kind: 'phrase_repetition',
         signal_key: 'phrase_repetition',
-        bigram,
-        count: rec.count,
-        match_text: bigram,
+        bigram: t.needle,
+        count: t.count,
+        match_text: t.needle,
       })
     })
 }
 
 function findColloquialSuggestion(text: string, signalVal: number): AiDetectionSuggestion | null {
   if (signalVal < SIGNAL_THRESHOLD) return null
-  const dialogueRe = /「([^」]{4,80})」/g
+  // 同时认直角引号与中文双引号（生成已统一为 “”）
+  const dialogueRe = /[「“]([^」”]{4,80})[」”]/g
   let match: RegExpExecArray | null
   while ((match = dialogueRe.exec(text)) !== null) {
     const inner = match[1]
@@ -379,6 +443,15 @@ function findColloquialSuggestion(text: string, signalVal: number): AiDetectionS
         match_text: match[0],
       })
     }
+  }
+  // 无对白可点时，找一段偏书面的叙述（避免总钉开篇 50 字造成误解）
+  const literary = text.match(/[^。！？\n]{20,72}(?:仿佛|宛如|微微|缓缓|不禁|悄无)[^。！？\n]{0,24}/)
+  if (literary && literary.index != null) {
+    return buildSuggestion(text, literary.index, literary.index + literary[0].length, {
+      kind: 'colloquial',
+      signal_key: 'colloquial_markers',
+      match_text: literary[0],
+    })
   }
   return buildSuggestion(text, 0, Math.min(text.length, 50), {
     kind: 'colloquial',
@@ -400,17 +473,27 @@ function findPunctuationSuggestion(text: string, signalVal: number): AiDetection
 }
 
 function findLexicalSuggestion(text: string, signalVal: number): AiDetectionSuggestion | null {
-  if (signalVal < SIGNAL_THRESHOLD) return null
+  if (signalVal < SUGGESTION_THRESHOLD) return null
   const chars = [...text.replace(/\s/g, '')]
   if (chars.length < 30) return null
-  const ratio = new Set(chars).size / chars.length
-  if (ratio >= 0.22 && ratio <= 0.48) return null
+  // 注意：lexicalPatternScore 在字种比 0.28～0.42 时反而最高（0.72），
+  // 旧逻辑在此区间 return null，导致「用词分布最高却无修改建议」。
+  const abstract = text.match(
+    /[^。！？\n]{0,16}(?:微微|缓缓|猛地|仿佛|宛如|不禁|悄然|似乎)[^。！？\n]{0,28}/,
+  )
+  if (abstract && abstract.index != null) {
+    return buildSuggestion(text, abstract.index, abstract.index + abstract[0].length, {
+      kind: 'lexical',
+      signal_key: 'lexical_pattern',
+      match_text: abstract[0].slice(0, 56),
+    })
+  }
   const index = Math.floor(text.length / 3)
   const end = Math.min(text.length, index + 48)
   return buildSuggestion(text, index, end, {
     kind: 'lexical',
     signal_key: 'lexical_pattern',
-    match_text: text.slice(index, end),
+    match_text: text.slice(index, end).replace(/\s+/g, ' ').slice(0, 56),
   })
 }
 
@@ -488,6 +571,9 @@ export function buildAiDetectionSuggestions(
 
   items.push(...findPerplexitySuggestions(trimmed, opts || {}))
 
+  // 最高维若仍无定位建议，补一条，避免面板「只有条、没有改哪里」
+  ensureTopSignalSuggestions(trimmed, signals, items)
+
   const seen = new Set<string>()
   const deduped: AiDetectionSuggestion[] = []
   for (const item of items) {
@@ -497,6 +583,62 @@ export function buildAiDetectionSuggestions(
     deduped.push(item)
   }
   return deduped.slice(0, 12)
+}
+
+function fallbackSuggestionForSignal(text: string, signalKey: string): AiDetectionSuggestion | null {
+  const kindMap: Partial<Record<string, AiDetectionSuggestionKind>> = {
+    sentence_uniformity: 'sentence_uniformity',
+    paragraph_uniformity: 'paragraph_uniformity',
+    transition_patterns: 'transition_phrase',
+    logical_connectors: 'logical_connector',
+    lexical_pattern: 'lexical',
+    phrase_repetition: 'phrase_repetition',
+    punctuation_rhythm: 'punctuation',
+    colloquial_markers: 'colloquial',
+  }
+  const kind = kindMap[signalKey]
+  if (!kind) return null
+  let specific: AiDetectionSuggestion | null = null
+  if (signalKey === 'lexical_pattern') specific = findLexicalSuggestion(text, 1)
+  else if (signalKey === 'sentence_uniformity') specific = findUniformSentenceSuggestion(text, 1)
+  else if (signalKey === 'paragraph_uniformity') specific = findUniformParagraphSuggestion(text, 1)
+  else if (signalKey === 'colloquial_markers') specific = findColloquialSuggestion(text, 1)
+  else if (signalKey === 'punctuation_rhythm') specific = findPunctuationSuggestion(text, 1)
+  else if (signalKey === 'phrase_repetition') {
+    // 无机械套话命中时不要造空「短语重复」建议（会显示「」重复 0 次）
+    return findRepeatedBigramSuggestions(text, 1)[0] || null
+  }
+  if (specific) return specific
+  const index = Math.floor(text.length / 4)
+  const end = Math.min(text.length, index + 48)
+  const slice = text.slice(index, end).replace(/\s+/g, ' ').slice(0, 48)
+  if (!slice.trim()) return null
+  return buildSuggestion(text, index, end, {
+    kind,
+    signal_key: signalKey,
+    match_text: slice,
+  })
+}
+
+function ensureTopSignalSuggestions(
+  text: string,
+  signals: AiDetectionSignal[],
+  items: AiDetectionSuggestion[],
+  maxAdd = 3,
+) {
+  const covered = new Set(items.map(i => i.signal_key))
+  const ranked = signals.slice().sort((a, b) => b.score - a.score)
+  let added = 0
+  for (const s of ranked) {
+    if (added >= maxAdd) break
+    if (s.score < SUGGESTION_THRESHOLD) break
+    if (covered.has(s.key)) continue
+    const tip = fallbackSuggestionForSignal(text, s.key)
+    if (!tip) continue
+    items.push(tip)
+    covered.add(s.key)
+    added += 1
+  }
 }
 
 function colloquialMarkerScore(text: string): number {

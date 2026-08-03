@@ -39,20 +39,25 @@ export function applyMiniMaxTextRequestParams(
   body: Record<string, unknown>,
   cfg: MiniMaxTextConfig,
   thinkingEnabled: boolean,
+  opts?: { reasoningSplit?: boolean },
 ): void {
   if (!isMiniMaxTextConfig(cfg)) return
 
   delete body.enable_thinking
-  body.reasoning_split = true
+  // 网关/extraBody 可能误开 thinking，此处最终覆盖
+  const reasoningSplit = opts?.reasoningSplit !== false
+  body.reasoning_split = reasoningSplit
 
   if (isMiniMaxM3Model(cfg.model)) {
     body.thinking = { type: thinkingEnabled ? 'adaptive' : 'disabled' }
   } else if (isMiniMaxM2Family(cfg.model)) {
+    // M2 无法关思考；reasoning_split=false 时思考进 content，靠后端剥离
     if (!thinkingEnabled) delete body.thinking
   }
 
   const maxTokens = Number(body.max_tokens ?? body.max_completion_tokens)
   if (Number.isFinite(maxTokens) && maxTokens > 0) {
     body.max_completion_tokens = maxTokens
+    // 部分网关只认 max_completion_tokens；保留 max_tokens 兼容
   }
 }

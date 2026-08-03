@@ -8,14 +8,18 @@
  *    - 同样覆盖 text / image / video / audio；走服务目录 + 积分
  *
  * 生效规则：积分开 → 火火一键生效；积分关且用户已配火火 BYOK → 火火一键生效；否则默认模型生效。
- * 火火一键生效时，全部用例以火火 preset 为主（忽略集级 configId）。
+ * 火火一键生效时，默认全部服务走火火；用户可按服务关闭（user_ai_preset_configs.enabled=0）回退默认模型。
+ * 火火一键生效且该服务仍启用时，忽略集级 configId。
  */
 import * as aiConfigsRepo from '../../db/repos/ai-service-configs/index.js'
 import * as userPresetRepo from '../../db/repos/user-ai-preset-configs/index.js'
 import { logTaskProgress } from '../../common/task/task-logger.js'
 import { getPlatformServicePreset, getEffectiveAgentModelName } from './ai-config-service.js'
 import { getHuohuoPresetPolicy, shouldSkipCreditBilling, userHasByokApiKey } from './huohuo-preset-policy.js'
+import { presetRowEnabled } from './huohuo-preset-enable.js'
 import type { AIConfig, ConfigResolveOpts, ServiceType } from './ai.js'
+
+export { presetRowEnabled } from './huohuo-preset-enable.js'
 
 export const SERVICE_TYPE_LABELS: Record<ServiceType, string> = {
   text: '文本',
@@ -240,7 +244,16 @@ export type MediaConfigSource = ConfigSource
 
 const CATALOG_SERVICE_TYPES: CatalogServiceType[] = ['text', 'image', 'video', 'audio']
 
-/** 火火一键是否对该账号生效（生效时全部服务以火火 preset 为主） */
+/** 该用户是否对某服务启用火火 preset（关则回退默认模型） */
+export async function isHuohuoPresetServiceEnabled(
+  userId: number,
+  serviceType: CatalogServiceType,
+): Promise<boolean> {
+  const row = await userPresetRepo.findUserPreset(userId, serviceType)
+  return presetRowEnabled(row)
+}
+
+/** 火火一键是否对该账号生效（生效时默认全部服务以火火 preset 为主，可按服务关闭） */
 export async function isHuohuoPresetEffective(userId: number, role?: string): Promise<boolean> {
   if (role === 'admin') return false
   const policy = await getHuohuoPresetPolicy()
@@ -252,26 +265,32 @@ export async function isHuohuoPresetEffective(userId: number, role?: string): Pr
 }
 
 /**
- * 统一运行时配置：火火一键生效 → preset；否则 → 默认模型（目录）。
- * 火火生效时忽略 configId（集级 override 仅对默认模型模式有效）。
+ * 统一运行时配置：火火一键生效且该服务启用 → preset；否则 → 默认模型（目录）。
+ * 火火生效且服务启用时忽略 configId（集级 override 仅对默认模型模式有效）。
  */
 export async function resolveUserServiceConfig(
   serviceType: ServiceType,
   opts?: ConfigResolveOpts & { configId?: number | null },
 ): Promise<{ config: AIConfig; source: ConfigSource }> {
+  const serviceEnabled = opts?.userId
+    ? await isHuohuoPresetServiceEnabled(opts.userId, serviceType)
+    : true
+
   if (!opts?.userId || opts.role === 'admin') {
     const hasCatalogId = !!(opts?.configId && opts.configId > 0)
-    if (hasCatalogId) {
-      const cfg = await resolveServiceConfigById(opts!.configId!, opts)
-      if (!cfg) throw new UserAiConfigError(`所选${labelOf(serviceType)}模型未启用或不存在`)
-      assertCatalogServiceType(cfg, serviceType)
+    const forceCatalog = opts?.userId ? !serviceEnabled : false
+    if (hasCatalogId || forceCatalog) {
+      const cfg = await resolveUserCatalogModel(serviceType, {
+        ...opts,
+        configId: opts?.configId ?? null,
+      })
       return { config: cfg, source: 'catalog' }
     }
     const cfg = await resolveHuohuoPresetConfig(serviceType, opts)
     return { config: cfg, source: 'huohuo_preset' }
   }
 
-  if (await isHuohuoPresetEffective(opts.userId, opts.role)) {
+  if ((await isHuohuoPresetEffective(opts.userId, opts.role)) && serviceEnabled) {
     const cfg = await resolveHuohuoPresetConfig(serviceType, opts)
     return { config: cfg, source: 'huohuo_preset' }
   }
@@ -387,7 +406,9 @@ export async function assertUserServiceConfigReady(
   configId?: number | null,
 ): Promise<void> {
   if (role === 'admin') return
-  if (await isHuohuoPresetEffective(userId, role)) {
+  const huohuoOn = await isHuohuoPresetEffective(userId, role)
+  const serviceOn = await isHuohuoPresetServiceEnabled(userId, serviceType)
+  if (huohuoOn && serviceOn) {
     await assertHuohuoPresetReady(userId, role, serviceType)
     return
   }
@@ -484,12 +505,31 @@ export async function getUserAiConfigReadiness(
     }
   }
 
-  const activeBlock: UserModelBlock = huohuoEffective ? 'huohuo_preset' : 'default_model'
-  let checkItems = items.filter(i => i.block === activeBlock)
+  const serviceEnabled = new Map<CatalogServiceType, boolean>()
+  for (const serviceType of CATALOG_SERVICE_TYPES) {
+    serviceEnabled.set(serviceType, await isHuohuoPresetServiceEnabled(userId, serviceType))
+  }
+
+  let checkItems: UserModelReadinessItem[] = []
+  if (huohuoEffective) {
+    for (const serviceType of CATALOG_SERVICE_TYPES) {
+      if (serviceEnabled.get(serviceType)) {
+        checkItems.push(...items.filter(i => i.block === 'huohuo_preset' && i.service_type === serviceType))
+      } else {
+        checkItems.push(...items.filter(i => i.block === 'default_model' && i.service_type === serviceType))
+      }
+    }
+    if (serviceEnabled.get('text')) {
+      checkItems.push(...items.filter(i => i.block === 'huohuo_preset' && i.service_type === 'agent'))
+    }
+  } else {
+    checkItems = items.filter(i => i.block === 'default_model')
+  }
 
   if (scope === 'novel') {
     checkItems = checkItems.filter(i =>
-      i.service_type === 'text' || (huohuoEffective && i.service_type === 'agent'),
+      i.service_type === 'text'
+      || (huohuoEffective && serviceEnabled.get('text') && i.service_type === 'agent'),
     )
   } else if (scope === 'drama' && !huohuoEffective) {
     checkItems = checkItems.filter(i => i.service_type !== 'agent')

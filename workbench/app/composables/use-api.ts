@@ -100,7 +100,35 @@ export const api = {
   del: <T = any>(p: string) => jsonFetch<T>('DELETE', p),
 }
 
-type NovelStreamEvent = { text?: string; started?: boolean; done?: boolean; error?: string; content?: string }
+type NovelStreamEvent = {
+  text?: string
+  started?: boolean
+  polishing?: boolean
+  done?: boolean
+  error?: string
+  content?: string
+  status?: string
+  phase?: string
+  continuity_check?: ContinuityCheckResult | null
+  continuity_ledger?: unknown
+  chapter_craft?: unknown
+  outline_compliance?: OutlineComplianceReport | null
+}
+
+export type OutlineComplianceReport = {
+  passed: boolean
+  attempts: number
+  reasons: Array<{ code: string; message: string; detail?: string }>
+  hardReject?: boolean
+}
+
+export type NovelStreamFinalMeta = {
+  continuity_check?: ContinuityCheckResult | null
+  continuity_ledger?: unknown
+  chapter_craft?: unknown
+  outline_compliance?: OutlineComplianceReport | null
+  hard_reject?: boolean
+}
 
 export type NovelAiDetection = {
   probability: number
@@ -338,7 +366,8 @@ export async function consumeNovelSSE(
   body: Record<string, unknown>,
   onChunk: (text: string) => void,
   onStarted?: () => void,
-  onFinal?: (content: string) => void,
+  onFinal?: (content: string, meta?: NovelStreamFinalMeta) => void,
+  onStatus?: (status: string) => void,
 ): Promise<void> {
   const resp = await fetch(`${API_ROOT}${path}`, {
     method: 'POST',
@@ -358,6 +387,7 @@ export async function consumeNovelSSE(
 
   const decoder = new TextDecoder()
   let buffer = ''
+  let gotFinal = false
   while (true) {
     const { done, value } = await reader.read()
     if (done) break
@@ -372,11 +402,36 @@ export async function consumeNovelSSE(
         if (!payload) continue
         const json = JSON.parse(payload) as NovelStreamEvent
         if (json.error) throw new Error(json.error)
+        if ((json as { heartbeat?: boolean }).heartbeat) continue
+        if (typeof json.status === 'string' && json.status.trim()) onStatus?.(json.status.trim())
         if (json.started) onStarted?.()
-        if (json.text) onChunk(json.text)
-        if (json.content) onFinal?.(json.content)
+        if (json.polishing) onStatus?.('正在润色正文…')
+        // 勿把审校进度行当正文块写入编辑器（编码损坏时形如 ???? 2/3 ???）
+        if (json.text) {
+          const t = String(json.text)
+          const looksStatus = /正在(?:大纲|审校|润色|降低|检测|补全|修复|模型|冷开篇|生成|修正)/.test(t)
+            || (/[?？\uFFFD]{3,}/.test(t) && /\d+\s*\/\s*\d+/.test(t))
+            || /^[?？\uFFFD\s.…]{6,}\d+\s*\/\s*\d+/.test(t.trim())
+            || /修正大纲落实\s*\d+\s*\/\s*\d+/.test(t)
+          if (!looksStatus) onChunk(t)
+          else onStatus?.(t.trim())
+        }
+        if (json.content != null || json.continuity_check !== undefined || json.outline_compliance !== undefined) {
+          gotFinal = true
+          onFinal?.(json.content ?? '', {
+            continuity_check: json.continuity_check,
+            continuity_ledger: json.continuity_ledger,
+            chapter_craft: json.chapter_craft,
+            outline_compliance: json.outline_compliance,
+            hard_reject: (json as { hard_reject?: boolean }).hard_reject === true
+              || json.outline_compliance?.hardReject === true,
+          })
+        }
       }
     }
+  }
+  if (!gotFinal) {
+    throw new Error('生成未返回正文（审校未完成或连接中断），请重试')
   }
 }
 
@@ -574,23 +629,29 @@ export const novelAPI = {
   generateWritingBrief: (chapterId: number, body: { keywords: string }) =>
     api.post<{ writing_brief: string }>(`/novel/chapters/${chapterId}/generate-brief`, body),
   continueChapter: (chapterId: number, body: { text: string; length?: number }) =>
-    api.post<{ segment: string }>(`/novel/chapters/${chapterId}/continue`, body),
+    api.post<{ segment: string; continuity_check?: ContinuityCheckResult | null }>(`/novel/chapters/${chapterId}/continue`, body),
   continueChapterStream: (
     chapterId: number,
     body: { text: string; length?: number },
     onChunk: (text: string) => void,
     onStarted?: () => void,
-    onFinal?: (content: string) => void,
-  ) => consumeNovelSSE(`/novel/chapters/${chapterId}/continue/stream`, body, onChunk, onStarted, onFinal),
-  generateChapter: (chapterId: number, body: { prompt: string; text?: string; target_length?: number }) =>
-    api.post<{ content: string; continuity_check?: ContinuityCheckResult | null }>(`/novel/chapters/${chapterId}/generate`, body),
+    onFinal?: (content: string, meta?: NovelStreamFinalMeta) => void,
+    onStatus?: (status: string) => void,
+  ) => consumeNovelSSE(`/novel/chapters/${chapterId}/continue/stream`, body, onChunk, onStarted, onFinal, onStatus),
+  generateChapter: (chapterId: number, body: { prompt: string; text?: string; target_length?: number; rewrite?: boolean }) =>
+    api.post<{
+      content: string
+      continuity_check?: ContinuityCheckResult | null
+      outline_compliance?: OutlineComplianceReport | null
+    }>(`/novel/chapters/${chapterId}/generate`, body),
   generateChapterStream: (
     chapterId: number,
-    body: { prompt: string; text?: string; target_length?: number },
+    body: { prompt: string; text?: string; target_length?: number; rewrite?: boolean },
     onChunk: (text: string) => void,
     onStarted?: () => void,
-    onFinal?: (content: string) => void,
-  ) => consumeNovelSSE(`/novel/chapters/${chapterId}/generate/stream`, body, onChunk, onStarted, onFinal),
+    onFinal?: (content: string, meta?: NovelStreamFinalMeta) => void,
+    onStatus?: (status: string) => void,
+  ) => consumeNovelSSE(`/novel/chapters/${chapterId}/generate/stream`, body, onChunk, onStarted, onFinal, onStatus),
   generateRemainingStream: (
     dramaId: number,
     onEvent: (event: BatchStreamEvent) => void,
@@ -773,6 +834,7 @@ export const aiConfigAPI = {
       label: string
       priority: number
       source: 'db' | 'env' | 'code'
+      enabled?: boolean
     }>
     agent: { preset_key: 'agent'; model: string; label: string; source: 'db' | 'env' | 'code' }
   }>('/ai-configs/preset'),
@@ -781,6 +843,9 @@ export const aiConfigAPI = {
   getUserDefaultModels: () => api.get<{ items: Array<{ service_type: string; config_id: number | null; ready: boolean; message?: string }> }>('/ai-configs/user-default-models'),
   saveUserDefaultModels: (items: Array<{ service_type: string; config_id: number }>) =>
     api.put('/ai-configs/user-default-models', { items }),
+  getTextAuditModel: () => api.get<{ enabled: boolean; model: string }>('/ai-configs/text-audit-model'),
+  saveTextAuditModel: (d: { enabled: boolean; model: string }) =>
+    api.put<{ enabled: boolean; model: string }>('/ai-configs/text-audit-model', d),
   readiness: (scope?: 'novel' | 'drama' | 'full') =>
     api.get<{ ready: boolean; credit_billing_enabled: boolean; items: Array<{ block: string; service_type: string; ready: boolean; config_id?: number | null; message?: string }> }>(
       `/ai-configs/readiness${scope ? `?scope=${scope}` : ''}`,

@@ -1,7 +1,7 @@
 /**
  * 小说章节一致性审校 — 三层：硬审 / 规则审 / 模型审
  */
-import { chatCompletionText, type TextBillingContext } from '../ai/ai.js'
+import { chatCompletionTextAudit, type TextBillingContext } from '../ai/ai.js'
 import { hashNovelContent } from '../ai/ai-text-detection.js'
 import {
   formatContinuityBlockingItem,
@@ -26,11 +26,13 @@ import {
   runLocalContinuityAudit,
   type AuditConflict,
 } from './novel-continuity-precheck.js'
+import { mergeSeamIntoLocalAudit } from './novel-chapter-seam.js'
 import {
   formatCausalHardBlock,
   formatCausalRuleBlock,
   isCausalChainEnabled,
-  readCausalChain,
+  formatCausalOriginInjectBlock,
+  resolveCausalOriginForChapter,
   runCausalChainAudit,
   CAUSAL_CHAPTER_END_FORMAT,
 } from './novel-causal-chain/index.js'
@@ -68,10 +70,14 @@ const CHECK_SYSTEM_STATE = `你是网文 continuity 审校编辑（模型审）�
 
 **硬审/规则审**已由程序完成；你负责语义类硬伤，重点：
 - 吃书：与【前序已写章节】/【因果起点】在**人名、关键事件、施动者**上矛盾
+- **无铺垫发明重大状态**：前序/大纲/账本未写却突然出现怀孕、腹中孩子等（含「肚子里那块肉」类）；须报 conflict
 - 跨章回忆/闪回：坠崖、推下、仇敌等关键情节的人物与上章不一致
 - **因果缺失**：正文状态变化但【变更记录】无对应因果链（硬审已列的勿重复）
 - 关键剧情矛盾：正文与**已成文**冲突（大纲/概要与之矛盾时不算硬伤，以已成文为准）
 - 章内复杂自洽：旁白/对话/心理在情节事实上矛盾
+- **章缝回放**：上章结尾已写完的关键对白/公开行动/场面高潮，在本章开篇被再次完整描写（换措辞也算）——须报 conflict（程序硬审也会拦）
+- **章缝后退写**：开篇时间点早于上章末已发生事实——含按过期大纲重演已完成拍点、或大纲较后拍点已在上章完成而开篇仍写更早拍点——须报 conflict
+- **章缝冷开篇**：开篇时空早于上章末已发生事实，或开篇未进入本章大纲前段——须报 conflict
 
 **境界语义补审**（硬审已做的层数/圆满/跨章倒退**勿重复**；你补硬审抓不到的语义层）：
 - 对照【应对齐的状态】realm 与正文**主角**战力/能力/描写是否明显脱节（须附摘录）
@@ -113,7 +119,7 @@ const CHECK_SYSTEM_CAUSAL = `你是网文 continuity 审校编辑（因果链模
 - **禁止**把「禁止突破至凝气」类提醒套用到仍在淬体境内的连破
 - 仅当正文**实际写入**与【变更记录】矛盾的 major 境名（如记录写淬体、正文无因果却写凝气一层）才报
 
-须拦：吃书（人名/事件/地点与【因果起点】【前序正文】矛盾）；正文状态变化但【变更记录】无因果；章内事实矛盾。
+须拦：吃书（人名/事件/地点与【因果起点】【前序正文】矛盾）；正文状态变化但【变更记录】无因果；章内事实矛盾；**章缝回放**（上章末已完成的关键对白/场面高潮在本章开篇再完整演一遍）；**章缝后退写**（开篇早于上章末进度：过期大纲拍点重演，或较后拍点已完成却写更早拍点）；**章缝冷开篇**（开篇时空早于上章末已发生事实，或开篇未进入本章大纲前段）。
 勿拦：合法突破/连破（有因果）；与旧15维账本/一致性提醒不一致。
 
 **勿拦（创作层面，不是 continuity 硬伤）**：
@@ -556,7 +562,14 @@ export async function checkNovelChapterContinuity(args: {
   }
 
   const fields = expectedState ?? await resolveExpectedContinuityFields(dramaId, chapterNumber)
-  const prevChapterTail = await loadPrevChapterContentTail(dramaId, chapterNumber)
+  const prevChapterTail = await loadPrevChapterContentTail(dramaId, chapterNumber, 2000)
+  const prevChapterBody = chapterNumber >= 2
+    ? await loadPrevChapterContentTail(dramaId, chapterNumber, 8000)
+    : ''
+  const { loadPrevChapterEndSnapshot } = await import('./novel-chapter-end-snapshot.js')
+  const prevSnapshot = chapterNumber >= 2
+    ? await loadPrevChapterEndSnapshot(dramaId, chapterNumber)
+    : null
   const causalEnabled = isCausalChainEnabled(meta)
   const canonBlock = await buildSerialWrittenContextBlock(dramaId, chapterNumber, {
     skipLedger: causalEnabled,
@@ -570,13 +583,47 @@ export async function checkNovelChapterContinuity(args: {
       hard: causal.hard.map(c => ({ layer: 'hard' as const, rule: c.rule, message: c.message })),
       rule: causal.rule.map(c => ({ layer: 'rule' as const, rule: c.rule, message: c.message })),
     }
+    local = mergeSeamIntoLocalAudit(local, {
+      content: trimmed,
+      chapterNumber,
+      prevChapterTail,
+      prevChapterBody,
+      chapterOutline,
+      prevSnapshot,
+    })
   } else {
     local = runLocalContinuityAudit({
       content: trimmed,
       chapterNumber,
       expectedFields: fields,
       prevChapterTail,
+      prevChapterBody,
+      chapterOutline,
+      prevSnapshot,
+      extraGrounding: [canonBlock, canonLock].filter(Boolean).join('\n'),
     })
+  }
+
+  // 因果模式未走 runLocalContinuityAudit，补拦「无铺垫怀孕」等重大生理状态发明
+  if (causalEnabled) {
+    const { checkUnpromptedPregnancyState } = await import('./novel-continuity-precheck.js')
+    const grounding = [
+      prevChapterTail || '',
+      chapterOutline || '',
+      canonBlock || '',
+      canonLock || '',
+      prevSnapshot
+        ? [prevSnapshot.time, prevSnapshot.place, prevSnapshot.cast, prevSnapshot.last_event, prevSnapshot.open_threads].filter(Boolean).join('\n')
+        : '',
+      fields ? Object.values(fields).filter((v): v is string => typeof v === 'string').join('\n') : '',
+    ].join('\n')
+    const lifeHits = checkUnpromptedPregnancyState(trimmed, grounding)
+    if (lifeHits.length) {
+      local = {
+        hard: [...local.hard, ...lifeHits],
+        rule: local.rule,
+      }
+    }
   }
 
   const stateBlock = !causalEnabled && fields
@@ -585,7 +632,7 @@ export async function checkNovelChapterContinuity(args: {
       ? await resolveContinuityInjectBlock(dramaId, chapterNumber)
       : ''
   const causalOriginBlock = causalEnabled && chapterNumber >= 2
-    ? `【因果起点（审校对照）】\n${readCausalChain(dramaId).slice(0, 2800)}`
+    ? formatCausalOriginInjectBlock(resolveCausalOriginForChapter(dramaId, chapterNumber), 2800)
     : ''
 
   const hardBlock = causalEnabled
@@ -625,7 +672,7 @@ export async function checkNovelChapterContinuity(args: {
     `【待审校正文 — 须检查章内旁白/对话/心理是否自洽；${causalEnabled ? '因果链与吃书' : '人名/剧情/境界语义'}矛盾须附摘录】\n${trunc(trimmed, 10000)}`,
   ].filter(Boolean).join('\n\n')
 
-  const raw = await chatCompletionText(
+  const raw = await chatCompletionTextAudit(
     [{ role: 'system', content: buildCheckSystem(causalEnabled, minScore) }, { role: 'user', content: user }],
     { maxTokens: 1024, temperature: 0.2, billing },
   )
@@ -723,6 +770,7 @@ export function formatContinuityFixInstructions(check: ContinuityCheckResult, mi
   if (plan.blockingItems.some(i => i.rule === 'model_semantic_plot')) {
     sections.push(
       '【整章级要求】存在剧情/场景吃书：须统一地点、人物行动线与上章结尾衔接，局部改词无法过关时会触发整章重生成。',
+      '【章缝】若硬审含 chapter_seam_replay：删除开篇对上章高潮的重演，从上章已完成行动之后起笔，推进新冲突。',
     )
   }
 

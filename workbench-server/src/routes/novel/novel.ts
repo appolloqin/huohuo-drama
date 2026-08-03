@@ -10,7 +10,7 @@ import {
   updateNovelChapter,
   updateNovelDrama,
 } from '../../services/novel/novel-route-service.js'
-import { logTaskError, logTaskStart, logTaskSuccess } from '../../common/task/task-logger.js'
+import { logTaskError, logTaskStart, logTaskSuccess, logTaskWarn } from '../../common/task/task-logger.js'
 import {
   buildContinueNovelMessages,
   buildGenerateNovelChapterMessages,
@@ -20,11 +20,17 @@ import {
   generateNovelWritingBrief,
 } from '../../services/novel/novel-writing.js'
 import { polishNovelChapterProse } from '../../services/novel/novel-prose-polish.js'
+import { normalizeNovelTemporalNumerals } from '../../common/novel/novel-temporal-numerals.js'
+import { detectChapterSeamColdOpen } from '../../services/novel/novel-chapter-seam.js'
+import { loadPrevChapterContentTail } from '../../services/novel/novel-continuity.js'
+import { ensureAnchor, stripLeadingAnchorEcho } from '../../services/novel/novel-memory/index.js'
 import { streamChatCompletionWithPolish, sseResponse } from '../../common/http/sse-stream.js'
 import { batchGenerateNovelChapters } from '../../services/batch/batch-generation.js'
 import { runNovelChapterPipeline, postProcessNovelChapterContent, checkAndSaveChapterContinuity } from '../../services/novel/novel-chapter-pipeline.js'
+import { runChapterCraftContinueHook } from '../../services/novel/novel-chapter-craft-hook.js'
+import { isContinuityRewriteAbortError } from '../../services/novel/novel-continuity-errors.js'
 import { checkNovelChapterContinuity } from '../../services/novel/novel-continuity-check.js'
-import { resolveFullChapterForAudit } from '../../services/novel/novel-causal-chain/index.js'
+import { resolveFullChapterForAudit, detachChangeRecordForStorage } from '../../services/novel/novel-causal-chain/index.js'
 import type { TextBillingContext } from '../../services/ai/ai.js'
 
 function novelTextBilling(
@@ -563,24 +569,48 @@ app.post('/chapters/:id/continue', async (c) => {
   const lengthHint = resolveContinueSegmentChars(body, meta)
   const skipCheck = body.skip_continuity_check === true
   const { text: chapterOutline } = resolveChapterOutline(pack)
+  const writingBrief = (pack.episode.scriptContent || '').trim() || chapterOutline
+
+  const continueArgs = {
+    dramaTitle: pack.drama.title,
+    chapterNumber: pack.episode.episodeNumber,
+    chapterTitle: pack.episode.title,
+    existingText,
+    meta,
+    dramaId: pack.drama.id,
+    chapterId: id,
+    lengthHint,
+    writingBrief,
+    chapterOutline,
+  }
 
   logTaskStart('Novel', 'continue', { chapterId: id })
   try {
-    const segment = await continueNovelChapter({
-      dramaTitle: pack.drama.title,
-      chapterNumber: pack.episode.episodeNumber,
-      chapterTitle: pack.episode.title,
+    let segment = await continueNovelChapter(
+      continueArgs,
+      novelTextBilling(user, '小说续写', id),
+    )
+    const craftOut = await runChapterCraftContinueHook({
       existingText,
+      segment,
+      continueArgs,
+      episodeId: id,
+      chapterNumber: pack.episode.episodeNumber,
+      dramaTitle: pack.drama.title,
       meta,
-      dramaId: pack.drama.id,
-      chapterId: id,
-      lengthHint,
-    }, novelTextBilling(user, '小说续写', id))
+      writingBrief,
+      chapterOutline,
+      billing: novelTextBilling(user, '小说续写质量审校', id),
+    })
+    segment = craftOut.segment
+    const detached = detachChangeRecordForStorage(segment)
+    if (detached.changeBlock) segment = detached.prose
+
     let continuity_check = null
     if (!skipCheck) {
-      const fullText = `${existingText}${existingText && !existingText.endsWith('\n') ? '\n' : ''}${segment}`
+      const fullAfterContinue = `${existingText}${existingText && !existingText.endsWith('\n') ? '\n' : ''}${segment}`
       continuity_check = await checkAndSaveChapterContinuity({
-        content: fullText,
+        content: fullAfterContinue,
         dramaId: pack.drama.id,
         episodeId: id,
         chapterNumber: pack.episode.episodeNumber,
@@ -590,10 +620,22 @@ app.post('/chapters/:id/continue', async (c) => {
         billing: novelTextBilling(user, '小说续写一致性审校', id),
       })
     }
-    logTaskSuccess('Novel', 'continue', { chapterId: id, segmentLen: segment.length })
-    return success(c, { segment, continuity_check })
+    logTaskSuccess('Novel', 'continue', {
+      chapterId: id,
+      segmentLen: segment.length,
+      craftRewritten: craftOut.rewritten,
+      craftScore: craftOut.craft?.score,
+    })
+    return success(c, {
+      segment,
+      continuity_check,
+      chapter_craft: craftOut.craft,
+      rewritten: craftOut.rewritten,
+      rewrite_attempts: craftOut.rewriteAttempts,
+    })
   } catch (err: any) {
     logTaskError('Novel', 'continue', { chapterId: id, error: err.message })
+    if (isContinuityRewriteAbortError(err)) return badRequest(c, err.message)
     return badRequest(c, err.message || '续写失败')
   }
 })
@@ -616,8 +658,9 @@ app.post('/chapters/:id/continue/stream', async (c) => {
   const lengthHint = resolveContinueSegmentChars(body, meta)
   const skipCheck = body.skip_continuity_check === true
   const { text: chapterOutline } = resolveChapterOutline(pack)
+  const writingBrief = (pack.episode.scriptContent || '').trim() || chapterOutline
 
-  const { messages, options } = await buildContinueNovelMessages({
+  const continueArgs = {
     dramaTitle: pack.drama.title,
     chapterNumber: pack.episode.episodeNumber,
     chapterTitle: pack.episode.title,
@@ -626,26 +669,56 @@ app.post('/chapters/:id/continue/stream', async (c) => {
     dramaId: pack.drama.id,
     chapterId: id,
     lengthHint,
-  })
+    writingBrief,
+    chapterOutline,
+  }
+
+  const { messages, options } = await buildContinueNovelMessages(continueArgs)
 
   logTaskStart('Novel', 'continue-stream', { chapterId: id })
   const billing = novelTextBilling(user, '小说续写（流式）', id)
   return streamChatCompletionWithPolish(c, messages, { ...options, billing }, draft =>
-    polishNovelChapterProse(draft, { ...billing, reason: '小说续写润色（流式）' }, { mode: 'segment' }),
+    polishNovelChapterProse(draft, { ...billing, reason: '小说续写润色（流式）' }, { mode: 'segment', colloquialBoost: true }).then(
+      (text) => normalizeNovelTemporalNumerals(text),
+    ),
     async (polished) => {
-      if (skipCheck) return {}
-      const fullText = `${existingText}${existingText && !existingText.endsWith('\n') ? '\n' : ''}${polished}`
-      const continuity_check = await checkAndSaveChapterContinuity({
-        content: fullText,
-        dramaId: pack.drama.id,
+      const craftOut = await runChapterCraftContinueHook({
+        existingText,
+        segment: polished,
+        continueArgs,
         episodeId: id,
         chapterNumber: pack.episode.episodeNumber,
         dramaTitle: pack.drama.title,
         meta,
+        writingBrief,
         chapterOutline,
-        billing: novelTextBilling(user, '小说续写一致性审校', id),
+        billing: novelTextBilling(user, '小说续写质量审校', id),
       })
-      return { continuity_check }
+      let segment = craftOut.segment
+      const detached = detachChangeRecordForStorage(segment)
+      if (detached.changeBlock) segment = detached.prose
+
+      let continuity_check = null
+      if (!skipCheck) {
+        const fullText = `${existingText}${existingText && !existingText.endsWith('\n') ? '\n' : ''}${segment}`
+        continuity_check = await checkAndSaveChapterContinuity({
+          content: fullText,
+          dramaId: pack.drama.id,
+          episodeId: id,
+          chapterNumber: pack.episode.episodeNumber,
+          dramaTitle: pack.drama.title,
+          meta,
+          chapterOutline,
+          billing: novelTextBilling(user, '小说续写一致性审校', id),
+        })
+      }
+      return {
+        content: segment,
+        continuity_check,
+        chapter_craft: craftOut.craft,
+        rewritten: craftOut.rewritten,
+        rewrite_attempts: craftOut.rewriteAttempts,
+      }
     },
   )
 })
@@ -672,8 +745,12 @@ app.post('/chapters/:id/generate/stream', async (c) => {
   const existingText = typeof body.text === 'string' ? body.text : (pack.episode.content || '')
   const meta = parseNovelMetadata(pack.drama.metadata)
   const targetLength = resolveTargetChapterChars(body, meta)
+  const rewriteMode = body.rewrite === true
+  if (rewriteMode && !existingText.trim()) {
+    return badRequest(c, '重写需要本章已有正文')
+  }
 
-  const { messages, options, minLen, maxLen } = await buildGenerateNovelChapterMessages({
+  const generateArgs = {
     dramaTitle: pack.drama.title,
     chapterNumber: pack.episode.episodeNumber,
     chapterTitle: pack.episode.title,
@@ -684,31 +761,99 @@ app.post('/chapters/:id/generate/stream', async (c) => {
     chapterId: id,
     existingText,
     targetLength,
-  })
+    mode: rewriteMode ? 'rewrite' as const : 'generate' as const,
+  }
 
-  logTaskStart('Novel', 'generate-chapter-stream', { chapterId: id, targetLength, maxLen })
-  const billing = novelTextBilling(user, '小说章节生成（流式）', id)
+  const { messages, options, minLen, maxLen } = await buildGenerateNovelChapterMessages(generateArgs)
+
+  logTaskStart('Novel', 'generate-chapter-stream', { chapterId: id, targetLength, maxLen, rewrite: rewriteMode })
+  const billing = novelTextBilling(user, rewriteMode ? '小说章节重写（流式）' : '小说章节生成（流式）', id)
   const skipCheck = body.skip_continuity_check === true
   return streamChatCompletionWithPolish(
     c,
     messages,
     { ...options, billing },
-    draft => polishNovelChapterProse(draft, { ...billing, reason: '小说章节润色（流式）' }, { minLen, maxLen, mode: 'chapter' }),
-    async (polished) => {
-      const post = await postProcessNovelChapterContent({
-        content: polished,
-        dramaId: pack.drama.id,
-        episodeId: id,
-        chapterNumber: pack.episode.episodeNumber,
-        dramaTitle: pack.drama.title,
-        meta,
-        chapterOutline,
-        billing,
-        skipCheck,
+    async (draft) => {
+      const chapterNumber = pack.episode.episodeNumber
+      let pre = normalizeNovelTemporalNumerals(draft)
+      try {
+        const anchor = await ensureAnchor(pack.drama.id, chapterNumber)
+        pre = normalizeNovelTemporalNumerals(stripLeadingAnchorEcho(pre, anchor))
+      } catch {
+        pre = normalizeNovelTemporalNumerals(stripLeadingAnchorEcho(pre, ''))
+      }
+      let polished = normalizeNovelTemporalNumerals(
+        await polishNovelChapterProse(pre, { ...billing, reason: '小说章节润色（流式）' }, {
+          minLen,
+          maxLen,
+          mode: 'chapter',
+          colloquialBoost: true,
+        }),
+      )
+      polished = normalizeNovelTemporalNumerals(stripLeadingAnchorEcho(polished, ''))
+      // 流式润色/补字若把开篇冲早于上章末（冷开篇），回退润色前稿
+      if (chapterNumber >= 2 && chapterOutline?.trim() && pre.trim()) {
+        try {
+          const prevTail = await loadPrevChapterContentTail(pack.drama.id, chapterNumber, 1600)
+          const coldArgs = {
+            chapterNumber,
+            prevChapterTail: prevTail,
+            chapterOutline,
+          }
+          const draftCold = !!detectChapterSeamColdOpen({ content: pre, ...coldArgs })
+          const polishCold = !!detectChapterSeamColdOpen({ content: polished, ...coldArgs })
+          if (polishCold && !draftCold) {
+            logTaskWarn('Novel', 'stream-polish-reverted-cold-open', {
+              chapterNumber,
+              draftChars: [...pre].length,
+              polishChars: [...polished].length,
+            })
+            return pre
+          }
+        } catch {
+          /* ignore */
+        }
+      }
+      return polished
+    },
+    async (polished, _billing, notify) => {
+      logTaskWarn('Novel', 'generate-stream-post-process-start', {
+        chapterId: id,
+        chars: [...polished].length,
       })
-      return {
-        continuity_check: post.check,
-        continuity_ledger: post.ledger,
+      try {
+        const post = await postProcessNovelChapterContent({
+          content: polished,
+          dramaId: pack.drama.id,
+          episodeId: id,
+          chapterNumber: pack.episode.episodeNumber,
+          dramaTitle: pack.drama.title,
+          meta,
+          chapterOutline,
+          billing,
+          skipCheck,
+          generateArgs,
+          onProgress: (status) => notify?.({ phase: 'review', status }),
+        })
+        logTaskWarn('Novel', 'generate-stream-post-process-done', {
+          chapterId: id,
+          chars: [...(post.content || '')].length,
+        })
+        return {
+          content: post.content,
+          continuity_check: post.check,
+          continuity_ledger: post.ledger,
+          chapter_craft: post.craft,
+          outline_compliance: post.outline_compliance,
+          ai_detection: post.ai_detection,
+          hard_reject: post.hard_reject === true,
+        }
+      } catch (err: any) {
+        logTaskWarn('Novel', 'generate-stream-post-process-fail', {
+          chapterId: id,
+          error: err?.message || String(err),
+        })
+        throw err
       }
     },
   )
@@ -736,8 +881,12 @@ app.post('/chapters/:id/generate', async (c) => {
   const existingText = typeof body.text === 'string' ? body.text : (pack.episode.content || '')
   const meta = parseNovelMetadata(pack.drama.metadata)
   const targetLength = resolveTargetChapterChars(body, meta)
+  const rewriteMode = body.rewrite === true
+  if (rewriteMode && !existingText.trim()) {
+    return badRequest(c, '重写需要本章已有正文')
+  }
 
-  logTaskStart('Novel', 'generate-chapter', { chapterId: id })
+  logTaskStart('Novel', 'generate-chapter', { chapterId: id, rewrite: rewriteMode })
   try {
     const strictContinuity = body.skip_continuity_rewrite === true
       ? false
@@ -754,6 +903,7 @@ app.post('/chapters/:id/generate', async (c) => {
         chapterId: id,
         existingText,
         targetLength,
+        mode: rewriteMode ? 'rewrite' : 'generate',
       },
       dramaId: pack.drama.id,
       episodeId: id,
@@ -761,7 +911,7 @@ app.post('/chapters/:id/generate', async (c) => {
       dramaTitle: pack.drama.title,
       meta,
       chapterOutline,
-      billing: novelTextBilling(user, '小说章节生成', id),
+      billing: novelTextBilling(user, rewriteMode ? '小说章节重写' : '小说章节生成', id),
       strictContinuity,
       skipFinalizeWhenCheckFails: strictContinuity,
       skipCheck: body.skip_continuity_check === true,
@@ -773,27 +923,35 @@ app.post('/chapters/:id/generate', async (c) => {
       rewritten: pipeline.rewritten,
       rewriteAttempts: pipeline.rewrite_attempts,
       checkScore: pipeline.check?.score,
+      rewriteMode,
     })
 
     const metaPatch: Partial<import('../../common/drama/episode-meta.js').EpisodeMetadata> = {}
     if (pipeline.causal_change_record) metaPatch.causal_change_record = pipeline.causal_change_record
     if (pipeline.check) metaPatch.continuity_check = pipeline.check
+    if (pipeline.ai_detection) metaPatch.ai_detection = pipeline.ai_detection
     const nextMetadata = Object.keys(metaPatch).length
       ? mergeEpisodeMetadata(pack.episode.metadata, metaPatch)
       : pack.episode.metadata
+    const hardReject = pipeline.hard_reject === true || pipeline.outline_compliance?.hardReject === true
+    // 硬拒不写正文（可写审校元数据），避免跳场冷开篇落库
     await updateNovelChapter(id, {
-      content: pipeline.content,
+      ...(hardReject || !pipeline.content.trim() ? {} : { content: pipeline.content }),
       ...(nextMetadata !== pack.episode.metadata ? { metadata: nextMetadata } : {}),
       updatedAt: now(),
     })
 
     return success(c, {
-      content: pipeline.content,
+      content: hardReject ? '' : pipeline.content,
       causal_change_record: pipeline.causal_change_record,
       continuity_check: pipeline.check,
       continuity_ledger: pipeline.ledger,
       rewritten: pipeline.rewritten,
       rewrite_attempts: pipeline.rewrite_attempts,
+      outline_compliance: pipeline.outline_compliance,
+      chapter_craft: pipeline.craft,
+      ai_detection: pipeline.ai_detection,
+      hard_reject: hardReject,
     })
   } catch (err: any) {
     logTaskError('Novel', 'generate-chapter', { chapterId: id, error: err.message })

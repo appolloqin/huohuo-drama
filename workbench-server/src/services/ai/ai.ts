@@ -9,6 +9,7 @@ import { chargeTextUsage, parseConfigSettings, resolveThinkingEnabled, resolveTo
 import { applyMiniMaxTextRequestParams, isMiniMaxTextConfig } from './minimax-text.js'
 import { fetchWithRetry, isTransientNetworkError } from '../../common/http/fetch-retry.js'
 import { resolveUserServiceConfig } from './user-ai-config-resolve.js'
+import { getUserTextAuditModelSettings, resolveTextAuditAiConfig } from './text-audit-model.js'
 
 export type ServiceType = 'text' | 'image' | 'video' | 'audio'
 
@@ -28,6 +29,11 @@ export {
   shouldChargeMediaGeneration,
   shouldChargeServiceGeneration,
 } from './user-ai-config-resolve.js'
+export {
+  getUserTextAuditModelSettings,
+  saveUserTextAuditModelSettings,
+  isTextAuditModelActive,
+} from './text-audit-model.js'
 export { resolveServiceConfigById, resolveActiveConfigForUser } from './user-ai-config-resolve.js'
 
 export interface AIConfig {
@@ -79,6 +85,29 @@ export async function getTextConfig(opts?: ConfigResolveOpts): Promise<AIConfig>
   return config
 }
 
+/**
+ * 审/判用文本配置：启用独立审核模型时，解析到「该型号所属」的文本服务行（正确的 provider/key）；
+ * 未启用 / 未配置 / 找不到对应服务 → 回退写作文本配置。
+ */
+export async function getTextAuditConfig(opts?: ConfigResolveOpts): Promise<AIConfig> {
+  const cfg = await getTextConfig(opts)
+  if (!opts?.userId) return cfg
+  const audit = await getUserTextAuditModelSettings(opts.userId)
+  if (!audit.enabled || !audit.model) return cfg
+
+  const resolved = await resolveTextAuditAiConfig(audit.model, cfg.provider)
+  if (!resolved) {
+    logTaskWarn('AIConfig', 'text-audit-model-unresolved', {
+      userId: opts.userId,
+      model: audit.model,
+      fallback: cfg.model,
+    })
+    // 找不到对应服务时不要硬套到写作通道（会触发「model not found」）
+    return cfg
+  }
+  return resolved
+}
+
 export async function getTextConfigWithModels(): Promise<{
   cfg: AIConfig
   models: string[]
@@ -108,15 +137,7 @@ export async function getTextConfigWithModels(): Promise<{
   }
 }
 
-const ALI_LOGPROBS_MODEL_FALLBACKS = [
-  'qwen-plus-2025-04-28',
-  'qwen-turbo-2025-04-28',
-  'qwen-plus-latest',
-  'qwen-turbo-latest',
-  'qwen-plus',
-  'qwen-turbo',
-]
-
+/** 启发式：哪些型号更可能支持 logprobs（仅作排序参考，不再注入未配置的型号） */
 function supportsLogprobsHeuristic(model: string): boolean {
   const m = model.toLowerCase()
   if (/qwen3\.5|qwen3\.7|qwen-max|vl|omni|tts/i.test(m)) return false
@@ -124,6 +145,10 @@ function supportsLogprobsHeuristic(model: string): boolean {
   return !/3\.5|thinking/i.test(m)
 }
 
+/**
+ * 困惑度检测候选模型：只使用设置中的「困惑度检测模型」+ 文本服务已配置的模型列表。
+ * 不再硬编码 qwen-plus / qwen-turbo 等回退型号。
+ */
 export function buildPerplexityModelCandidates(
   cfg: AIConfig,
   models: string[],
@@ -141,16 +166,16 @@ export function buildPerplexityModelCandidates(
   const fromSettings = typeof settings.perplexityModel === 'string' ? settings.perplexityModel : ''
   if (fromSettings.trim()) push(fromSettings.trim())
 
-  if (cfg.provider.toLowerCase() === 'ali') {
-    for (const m of models) if (supportsLogprobsHeuristic(m)) push(m)
-    for (const m of ALI_LOGPROBS_MODEL_FALLBACKS) push(m)
-    for (const m of models) push(m)
-    if (cfg.model) push(cfg.model)
-    return ordered
+  // 配置列表中更可能支持 logprobs 的优先
+  for (const m of models) {
+    if (supportsLogprobsHeuristic(m)) push(m)
   }
+  if (cfg.model && supportsLogprobsHeuristic(cfg.model)) push(cfg.model)
 
-  if (cfg.model) push(cfg.model)
+  // 其余已配置型号（含主模型）作为兜底，仍不引入列表外硬编码名
   for (const m of models) push(m)
+  if (cfg.model) push(cfg.model)
+
   return ordered
 }
 
@@ -173,6 +198,13 @@ export type ChatCompletionOptions = {
   billing?: TextBillingContext
   /** 困惑度检测可指定模型（如 qwen-plus 快照，qwen3.5-plus 不支持 logprobs） */
   model?: string
+  /** 显式开启思考；MiniMax 默认强制关闭（避免 reasoning 有、content 空） */
+  enableThinking?: boolean
+  /**
+   * MiniMax reasoning_split；默认 true。
+   * 空正文重试时改为 false，使输出进入 content（含 think 标签时再剥离）。
+   */
+  minimaxReasoningSplit?: boolean
 }
 
 async function maybeChargeText(cfg: AIConfig, messages: ChatMessage[], output: string, usage: any, billing?: TextBillingContext) {
@@ -206,11 +238,37 @@ const THINKING_BLOCK_PATTERNS: RegExp[] = [
   new RegExp(`${DS_OPEN.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}[\\s\\S]*?${DS_CLOSE.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\n?`, 'gi'),
 ]
 
+/** 工具/记忆等非正文 XML（常见于网关/RAG 泄漏） */
+const TOOL_MEMORY_BLOCK_PATTERNS: RegExp[] = [
+  /<memory\b[^>]*>[\s\S]*?<\/memory>/gi,
+  /<tool_call\b[^>]*>[\s\S]*?<\/tool_call>/gi,
+  /<tool_result\b[^>]*>[\s\S]*?<\/tool_result>/gi,
+  /<function_call\b[^>]*>[\s\S]*?<\/function_call>/gi,
+]
+
 const THINKING_OPEN_TAG = /^<(?:redacted_thinking|thinking|think|reasoning)\b[^>]*>/i
 const THINKING_CLOSE_TAG = /<\/(?:redacted_thinking|thinking|think|reasoning)>|<\/think>/i
 const DS_THINK_OPEN = new RegExp(`^${DS_OPEN.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}`, 'i')
 const DS_THINK_BLOCK = new RegExp(`${DS_OPEN.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}[\\s\\S]*?${DS_CLOSE.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\n?`, 'gi')
 const DS_THINK_LEAD = new RegExp(`^[\\s\\S]*?${DS_CLOSE.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\s*\\n?`, 'i')
+
+/** 去掉以拉丁字母为主的污染块（含中英夹杂时的英文长串） */
+function stripLatinHeavyArtifacts(text: string): string {
+  const parts = text.split(/(\n+)/)
+  const cleaned = parts.map((part) => {
+    if (!part || /^\n+$/.test(part)) return part
+    const latin = (part.match(/[A-Za-z]/g) || []).length
+    const cjk = (part.match(/[\u4e00-\u9fff]/g) || []).length
+    if (latin >= 40 && cjk < 8) return ''
+    if (latin >= 80 && latin > cjk * 2) return ''
+    if (cjk >= 8 && latin >= 60) {
+      // 句中突然出现大段英文/JSON：从首个长拉丁串截断
+      return part.replace(/[A-Za-z][A-Za-z0-9_{}\[\]"':,\s.\\\/|<>/=-]{50,}/g, '')
+    }
+    return part
+  }).join('')
+  return cleaned.replace(/[ \t]+\n/g, '\n').replace(/\n{3,}/g, '\n\n').trim()
+}
 
 /** 剥离模型混入正文的思考链（MiniMax、DeepSeek-R1、Qwen thinking、网关转译等） */
 export function stripThinkingArtifactsFromText(text: string): string {
@@ -218,6 +276,11 @@ export function stripThinkingArtifactsFromText(text: string): string {
   for (const pattern of THINKING_BLOCK_PATTERNS) {
     result = result.replace(pattern, '')
   }
+  for (const pattern of TOOL_MEMORY_BLOCK_PATTERNS) {
+    result = result.replace(pattern, '')
+  }
+  // 未闭合的 memory / tool 块：从开标签起丢弃到文末
+  result = result.replace(/<(?:memory|tool_call|tool_result|function_call)\b[^>]*>[\s\S]*$/gi, '')
   result = result.replace(DS_THINK_BLOCK, '')
   // DeepSeek / 部分网关：正文前的  块（含未闭合）
   result = result.replace(DS_THINK_LEAD, '')
@@ -227,7 +290,7 @@ export function stripThinkingArtifactsFromText(text: string): string {
   if (DS_THINK_OPEN.test(result.trim())) {
     result = result.replace(new RegExp(`^${DS_OPEN.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}[\\s\\S]*`, 'i'), '')
   }
-  return result.trim()
+  return stripLatinHeavyArtifacts(result)
 }
 
 const THINKING_LEAK_ENGLISH = /\b(?:The user wants me to|Let me (?:analyze|re-read|think)|Critical conflicts|I need to resolve|Wait, this is Chapter)\b/i
@@ -238,12 +301,15 @@ export function looksLikeModelThinkingLeak(text: string): boolean {
   const t = text.trim()
   if (!t) return false
   if (THINKING_OPEN_TAG.test(t) || DS_THINK_OPEN.test(t)) return true
+  if (/<(?:memory|tool_call|tool_result|function_call)\b/i.test(t)) return true
   if (THINKING_LEAK_ENGLISH.test(t)) return true
   if (THINKING_LEAK_CN_META.test(t)) return true
   const latin = (t.match(/[A-Za-z]/g) || []).length
   const cjk = (t.match(/[\u4e00-\u9fff]/g) || []).length
   if (latin >= 120 && cjk < 40) return true
   if (latin > 0 && cjk === 0 && latin >= 60) return true
+  // 中文正文里夹大段英文（污染未剥净）
+  if (cjk >= 40 && latin >= 100 && latin > cjk * 0.35) return true
   return false
 }
 
@@ -383,6 +449,66 @@ export function extractChatCompletionText(data: any): string {
   return ''
 }
 
+/**
+ * MiniMax 偶发把正文误放入 reasoning_content：仅当其像中文小说正文时才抢救。
+ * 不含英文任务分析 / 润色计划。
+ */
+function extractCjkNarrativeFromMixed(text: string): string {
+  const stripped = stripThinkingArtifactsFromText(text)
+  const lines = stripped.split(/\n/)
+  const keep: string[] = []
+  for (const line of lines) {
+    const t = line.trim()
+    if (!t) {
+      if (keep.length && keep[keep.length - 1] !== '') keep.push('')
+      continue
+    }
+    if (THINKING_LEAK_ENGLISH.test(t) || THINKING_LEAK_CN_META.test(t)) continue
+    if (/^(?:任务理解|润色原则|输出前自检|我需要|首先分析|用户要求)/.test(t)) continue
+    const cjk = (t.match(/[\u4e00-\u9fff]/g) || []).length
+    const latin = (t.match(/[A-Za-z]/g) || []).length
+    if (cjk < 6) continue
+    if (latin > cjk * 0.5) continue
+    keep.push(t)
+  }
+  return keep.join('\n').replace(/\n{3,}/g, '\n\n').trim()
+}
+
+export function salvageProseFromReasoningMessage(message: unknown): string {
+  if (!message || typeof message !== 'object') return ''
+  const msg = message as Record<string, unknown>
+  const candidates: string[] = []
+  for (const key of ['reasoning_content', 'reasoning'] as const) {
+    const v = msg[key]
+    if (typeof v === 'string' && v.trim()) candidates.push(v)
+  }
+  const details = msg.reasoning_details
+  if (Array.isArray(details)) {
+    for (const d of details) {
+      if (typeof d === 'string') candidates.push(d)
+      else if (d && typeof d === 'object' && typeof (d as { text?: string }).text === 'string') {
+        candidates.push((d as { text: string }).text)
+      }
+    }
+  }
+  for (const raw of candidates) {
+    const cleaned = sanitizeModelCreativeOutput(raw)
+    if (cleaned && cleaned.length >= 80) {
+      const cjk = (cleaned.match(/[\u4e00-\u9fff]/g) || []).length
+      const punct = (cleaned.match(/[。！？「」]/g) || []).length
+      if (cjk >= 60 && punct >= 2) return cleaned
+    }
+    // sanitize 过严时：从混杂 reasoning 里抽中文叙事块
+    const narrative = extractCjkNarrativeFromMixed(raw)
+    if (narrative.length >= 120) {
+      const cjk = (narrative.match(/[\u4e00-\u9fff]/g) || []).length
+      const punct = (narrative.match(/[。！？「」]/g) || []).length
+      if (cjk >= 80 && punct >= 2 && !looksLikeModelThinkingLeak(narrative)) return narrative
+    }
+  }
+  return ''
+}
+
 function messageHasReasoningOnly(message: unknown): boolean {
   if (!message || typeof message !== 'object') return false
   const msg = message as Record<string, unknown>
@@ -392,6 +518,7 @@ function messageHasReasoningOnly(message: unknown): boolean {
   const hasUsableContent = sanitized.length > 0
   if (hasUsableContent) return false
   if (typeof reasoning === 'string' && reasoning.length > 20) return true
+  if (Array.isArray(msg.reasoning_details) && msg.reasoning_details.length > 0) return true
   if (rawContent.trim().length > 20 && THINKING_OPEN_TAG.test(rawContent.trim())) return true
   if (rawContent.trim().length > 20 && looksLikeModelThinkingLeak(rawContent)) return true
   return false
@@ -413,8 +540,14 @@ function describeEmptyCompletion(data: any, model: string, requestedMaxTokens?: 
   const prefix = `模型 ${model} 未返回正文${statHint}`
 
   if (messageHasReasoningOnly(choice?.message)) {
+    const underCap = requestedMaxTokens != null
+      && completionTokens != null
+      && completionTokens < requestedMaxTokens * 0.5
     if (cfg && isMiniMaxTextConfig(cfg)) {
-      return `${prefix}：MiniMax 思考过程占满输出配额（已请求 reasoning_split + thinking.type=disabled）。请提高 max_completion_tokens（建议 8192+）`
+      if (underCap) {
+        return `${prefix}：MiniMax 只返回了 reasoning、content 为空（finish=${finish}）。将自动关闭 reasoning_split 重试；若仍失败请换非推理模型或检查网关是否忽略 thinking.disabled`
+      }
+      return `${prefix}：MiniMax 思考输出挤占正文（已请求 thinking.type=disabled）。请提高 max_completion_tokens 或换模型`
     }
     return `${prefix}：输出 token 被推理/思考过程占满，正文 content 为空。请提高 max_tokens（建议 16384+）`
   }
@@ -471,23 +604,92 @@ function buildChatCompletionExtraBody(cfg: AIConfig): Record<string, unknown> {
   return extra
 }
 
+function resolveRequestMaxTokens(cfg: AIConfig, options: ChatCompletionOptions): number {
+  const raw = Number(options.maxTokens)
+  let maxTokens = Number.isFinite(raw) && raw > 0 ? raw : 8192
+  // MiniMax 偶发把少量 token 打进 reasoning：略留余量，但不再强制抬到 8192（会冲掉章节字数预算）
+  if (isMiniMaxTextConfig(cfg) && maxTokens >= 1024) {
+    maxTokens = Math.min(32768, Math.max(maxTokens, Math.round(maxTokens * 1.15) + 384))
+  }
+  return Math.min(32768, maxTokens)
+}
+
+function resolveThinkingForRequest(cfg: AIConfig, options: ChatCompletionOptions): boolean {
+  // 显式开启才开；MiniMax 默认强制关（设置页误开 enableThinking 时也会被关掉）
+  if (options.enableThinking === true) return true
+  if (isMiniMaxTextConfig(cfg)) return false
+  return resolveThinkingEnabled(parseConfigSettings(cfg.settings))
+}
+
 function buildChatCompletionRequestBody(
   cfg: AIConfig,
   messages: ChatMessage[],
   options: ChatCompletionOptions,
 ): Record<string, unknown> {
-  const settings = parseConfigSettings(cfg.settings)
-  const thinkingEnabled = resolveThinkingEnabled(settings)
-  const maxTokens = options.maxTokens ?? 8192
+  const thinkingEnabled = resolveThinkingForRequest(cfg, options)
+  const maxTokens = resolveRequestMaxTokens(cfg, options)
+  const extra = buildChatCompletionExtraBody(cfg)
+  // 禁止 extraBody 覆盖调用方的输出上限 / 思考开关（稍后按 thinkingEnabled 统一写回）
+  delete extra.max_tokens
+  delete extra.max_completion_tokens
+  delete extra.thinking
+  delete extra.enable_thinking
+  delete extra.reasoning_split
   const body: Record<string, unknown> = {
     model: cfg.model,
     messages,
     temperature: options.temperature ?? 0.75,
+    ...extra,
     max_tokens: maxTokens,
-    ...buildChatCompletionExtraBody(cfg),
   }
-  applyMiniMaxTextRequestParams(body, cfg, thinkingEnabled)
+  applyMiniMaxTextRequestParams(body, cfg, thinkingEnabled, {
+    // 关思考时默认 false：部分网关仍产出 reasoning 且 content 空；开思考才默认拆分
+    reasoningSplit: options.minimaxReasoningSplit != null
+      ? options.minimaxReasoningSplit
+      : thinkingEnabled,
+  })
+  // MiniMax 已在 applyMiniMax 写 thinking；DeepSeek/Ali/网关推理模型须在此补回，否则删 extra 后等于未关思考
+  if (!thinkingEnabled && !isMiniMaxTextConfig(cfg)) {
+    applyNonMiniMaxThinkingDisable(body, cfg)
+  }
   return body
+}
+
+/** DeepSeek-V4 / reasoner / 阿里等：把关思考写进最终请求体 */
+export function applyNonMiniMaxThinkingDisable(body: Record<string, unknown>, cfg: AIConfig): void {
+  const provider = cfg.provider.toLowerCase()
+  const model = cfg.model.toLowerCase()
+  body.enable_thinking = false
+  const reasoningLike = /reasoner|thinking|deepseek-v[34]|deepseek-r1|r1-|o[134]-|gpt-5|gemini.*thinking/i.test(model)
+  if (reasoningLike || provider === 'ali' || provider === 'deepseek') {
+    body.thinking = { type: 'disabled' }
+  }
+}
+
+/** 从流式 delta 取出应展示的正文片段（reasoning 仅累计，不挡 content） */
+export function extractStreamContentPieces(delta: Record<string, unknown> | null | undefined): string[] {
+  if (!delta || typeof delta !== 'object') return []
+  return [delta.content, delta.text]
+    .filter((p): p is string => typeof p === 'string' && p.length > 0)
+}
+
+export function appendStreamReasoning(acc: string, delta: Record<string, unknown> | null | undefined): string {
+  if (!delta || typeof delta !== 'object') return acc
+  let next = acc
+  for (const key of ['reasoning_content', 'reasoning'] as const) {
+    const v = delta[key]
+    if (typeof v === 'string' && v) next += v
+  }
+  const details = delta.reasoning_details
+  if (Array.isArray(details)) {
+    for (const d of details) {
+      if (typeof d === 'string') next += d
+      else if (d && typeof d === 'object' && typeof (d as { text?: string }).text === 'string') {
+        next += (d as { text: string }).text
+      }
+    }
+  }
+  return next
 }
 
 async function chatCompletionTextOnce(
@@ -497,8 +699,8 @@ async function chatCompletionTextOnce(
 ): Promise<{ text: string; data: any }> {
   const base = getTextProviderBaseUrl(cfg).replace(/\/+$/, '')
   const url = `${base}/chat/completions`
-  const maxTokens = options.maxTokens ?? 8192
-  const requestBody = buildChatCompletionRequestBody(cfg, messages, options)
+  const maxTokens = resolveRequestMaxTokens(cfg, options)
+  const requestBody = buildChatCompletionRequestBody(cfg, messages, { ...options, maxTokens })
   const res = await fetchWithRetry(url, {
     method: 'POST',
     headers: {
@@ -518,7 +720,17 @@ async function chatCompletionTextOnce(
     const msg = data?.error?.message || data?.message || raw.slice(0, 300) || `AI 请求失败 (${res.status})`
     throw new Error(typeof msg === 'string' ? msg : JSON.stringify(msg))
   }
-  const text = sanitizeModelCreativeOutput(extractChatCompletionText(data))
+  let text = sanitizeModelCreativeOutput(extractChatCompletionText(data))
+  if (!text) {
+    const salvaged = salvageProseFromReasoningMessage(data?.choices?.[0]?.message)
+    if (salvaged) {
+      logTaskWarn('AI', 'chat-completion-salvaged-reasoning', {
+        model: cfg.model,
+        chars: salvaged.length,
+      })
+      text = salvaged
+    }
+  }
   if (!text) {
     logTaskWarn('AI', 'chat-completion-empty', {
       model: cfg.model,
@@ -527,10 +739,69 @@ async function chatCompletionTextOnce(
       promptTokens: data?.usage?.prompt_tokens,
       completionTokens: data?.usage?.completion_tokens,
       hasReasoning: messageHasReasoningOnly(data?.choices?.[0]?.message),
+      thinking: (requestBody as { thinking?: unknown }).thinking,
+      reasoningSplit: (requestBody as { reasoning_split?: unknown }).reasoning_split,
     })
     throw new Error(describeEmptyCompletion(data, cfg.model, maxTokens, cfg))
   }
   return { text: text.trim(), data }
+}
+
+async function chatCompletionWithConfig(
+  messages: ChatMessage[],
+  options: ChatCompletionOptions,
+  cfg: AIConfig,
+): Promise<string> {
+  const maxAttempts = isMiniMaxTextConfig(cfg) ? 3 : 2
+  let lastErr: Error | null = null
+  let attemptOptions: ChatCompletionOptions = { ...options }
+  let attemptMessages = messages
+
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    try {
+      const { text, data } = await chatCompletionTextOnce(attemptMessages, attemptOptions, cfg)
+      await maybeChargeText(cfg, attemptMessages, text, data?.usage, options.billing)
+      return text
+    } catch (err: any) {
+      lastErr = err instanceof Error ? err : new Error(String(err?.message || err))
+      const retriable = lastErr.message.includes('未返回正文')
+        || lastErr.message.includes('思考链')
+        || lastErr.message.includes('英文分析')
+        || isTransientNetworkError(lastErr)
+      if (retriable && attempt < maxAttempts) {
+        const prev = resolveRequestMaxTokens(cfg, attemptOptions)
+        // 按调用方预算温和上浮，避免空正文重试直接飙到 16384
+        const bumped = Math.min(16384, Math.max(prev + 1536, Math.round(prev * 1.35)))
+        attemptOptions = {
+          ...attemptOptions,
+          maxTokens: bumped,
+          enableThinking: false,
+          minimaxReasoningSplit: false,
+        }
+        if (isMiniMaxTextConfig(cfg) && attempt === 1) {
+          attemptMessages = [
+            ...messages,
+            {
+              role: 'user',
+              content: '【系统纠偏】上一次只输出了思考未输出正文。请直接输出最终可用的简体中文正文，不要思考过程、不要英文、不要 XML 标签。',
+            },
+          ]
+        }
+        logTaskWarn('AI', 'chat-completion-retry', {
+          attempt,
+          model: cfg.model,
+          serviceType: cfg.serviceType || 'text',
+          maxTokens: bumped,
+          reasoningSplit: false,
+          error: lastErr.message,
+        })
+        await sleep(800 * attempt)
+        continue
+      }
+      throw lastErr
+    }
+  }
+  throw lastErr || new Error('模型未返回正文，请稍后重试')
 }
 
 export async function chatCompletionText(
@@ -541,33 +812,19 @@ export async function chatCompletionText(
     userId: options.billing.userId,
     role: options.billing.role,
   } : undefined)
-  const maxAttempts = 2
-  let lastErr: Error | null = null
+  return chatCompletionWithConfig(messages, options, cfg)
+}
 
-  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
-    try {
-      const { text, data } = await chatCompletionTextOnce(messages, options, cfg)
-      await maybeChargeText(cfg, messages, text, data?.usage, options.billing)
-      return text
-    } catch (err: any) {
-      lastErr = err instanceof Error ? err : new Error(String(err?.message || err))
-      const retriable = lastErr.message.includes('未返回正文')
-        || lastErr.message.includes('思考链')
-        || lastErr.message.includes('英文分析')
-        || isTransientNetworkError(lastErr)
-      if (retriable && attempt < maxAttempts) {
-        logTaskWarn('AI', 'chat-completion-retry', {
-          attempt,
-          model: cfg.model,
-          error: lastErr.message,
-        })
-        await sleep(1000 * attempt)
-        continue
-      }
-      throw lastErr
-    }
-  }
-  throw lastErr || new Error('模型未返回正文，请稍后重试')
+/** 审/判类调用：启用 text_audit 时用审校模型，否则回退写作模型 */
+export async function chatCompletionTextAudit(
+  messages: ChatMessage[],
+  options: ChatCompletionOptions = {},
+): Promise<string> {
+  const cfg = await getTextAuditConfig(options.billing ? {
+    userId: options.billing.userId,
+    role: options.billing.role,
+  } : undefined)
+  return chatCompletionWithConfig(messages, options, cfg)
 }
 
 /** OpenAI 兼容 /completions：echo + logprobs，用于困惑度检测 */
@@ -772,7 +1029,11 @@ export async function promptLogprobs(
 ): Promise<{ perplexity: number; tokenCount: number; meanLogprob: number; model: string }> {
   const { cfg, models, settings } = await getTextConfigWithModels()
   const candidates = buildPerplexityModelCandidates(cfg, models, settings)
-  if (candidates.length === 0) throw new Error('未配置可用于困惑度检测的文本模型')
+  if (candidates.length === 0) {
+    throw new Error(
+      '未配置可用于困惑度检测的模型：请在文本服务设置中填写「困惑度检测模型」（须支持 logprobs，如 qwen-plus-2025-04-28）',
+    )
+  }
 
   let lastErr: Error | null = null
   for (const model of candidates) {
@@ -794,7 +1055,7 @@ export async function promptLogprobs(
 
   throw new Error(
     lastErr?.message
-      || '困惑度检测失败：请在文本服务配置中指定支持 logprobs 的模型（如 qwen-plus-2025-04-28），qwen3.5-plus 不支持',
+      || '困惑度检测失败：请在文本服务设置中填写「困惑度检测模型」（须支持 logprobs，如 qwen-plus-2025-04-28）；qwen3.5 / qwen3.7 通常不支持',
   )
 }
 
@@ -834,6 +1095,8 @@ export async function* chatCompletionStream(
   const decoder = new TextDecoder()
   let buffer = ''
   const thinkFilter = createThinkingStreamFilter()
+  let reasoningAcc = ''
+  let yieldedChars = 0
   while (true) {
     const { done, value } = await reader.read()
     if (done) break
@@ -848,18 +1111,24 @@ export async function* chatCompletionStream(
       try {
         const json = JSON.parse(payload)
         const choice = json?.choices?.[0]
-        const delta = choice?.delta
-        // 忽略 reasoning 字段（MiniMax reasoning_split、DeepSeek-R1、Qwen 等）
-        if (delta?.reasoning_content || delta?.reasoning || delta?.reasoning_details) continue
+        const delta = (choice?.delta && typeof choice.delta === 'object')
+          ? choice.delta as Record<string, unknown>
+          : null
+        // 累计 reasoning 供末尾抢救；切勿因有 reasoning 就跳过整段（DeepSeek 常同包带 content）
+        reasoningAcc = appendStreamReasoning(reasoningAcc, delta)
         const pieces = [
-          delta?.content,
-          delta?.text,
-          choice?.message?.content,
-          choice?.text,
-        ].filter((p): p is string => typeof p === 'string' && p.length > 0)
+          ...extractStreamContentPieces(delta),
+          ...(typeof choice?.message?.content === 'string' && choice.message.content
+            ? [choice.message.content as string]
+            : []),
+          ...(typeof choice?.text === 'string' && choice.text ? [choice.text as string] : []),
+        ]
         for (const piece of pieces) {
           const cleaned = thinkFilter.push(piece)
-          if (cleaned) yield cleaned
+          if (cleaned) {
+            yieldedChars += cleaned.length
+            yield cleaned
+          }
         }
       } catch {
         // 忽略无法解析的行
@@ -867,7 +1136,21 @@ export async function* chatCompletionStream(
     }
   }
   const tail = sanitizeModelCreativeOutput(thinkFilter.flush())
-  if (tail) yield tail
+  if (tail) {
+    yieldedChars += tail.length
+    yield tail
+  }
+  if (yieldedChars < 80 && reasoningAcc.trim()) {
+    const salvaged = salvageProseFromReasoningMessage({ reasoning_content: reasoningAcc })
+    if (salvaged) {
+      logTaskWarn('AI', 'chat-completion-stream-salvaged-reasoning', {
+        model: cfg.model,
+        chars: salvaged.length,
+        yieldedChars,
+      })
+      yield salvaged
+    }
+  }
 }
 
 export async function getAudioConfig(opts?: ConfigResolveOpts): Promise<AIConfig> {

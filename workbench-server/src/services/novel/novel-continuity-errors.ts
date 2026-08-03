@@ -1,6 +1,6 @@
 /** 一致性修正无法继续 — 批量撰写须整批终止 */
 
-export type ContinuityAbortReason = 'max_attempts' | 'same_issue_loop' | 'stagnant_rewrite'
+export type ContinuityAbortReason = 'max_attempts' | 'same_issue_loop' | 'stagnant_rewrite' | 'craft_fail' | 'compliance_veto'
 
 export class ContinuityRewriteAbortError extends Error {
   readonly chapterNumber: number
@@ -27,6 +27,18 @@ export class ContinuityRewriteAbortError extends Error {
         conflictText ? `须修正：${conflictText}` : '',
         args.summary ? `审校结论：${args.summary}` : '',
       ].filter(Boolean).join(' ')
+      : args.reason === 'compliance_veto'
+        ? [
+          `已停止：第 ${args.chapterNumber} 章触发合规一票否决。`,
+          conflictText ? `原因：${conflictText}` : '',
+          args.summary ? `审校结论：${args.summary}` : '',
+        ].filter(Boolean).join(' ')
+      : args.reason === 'craft_fail'
+        ? [
+          `已停止：第 ${args.chapterNumber} 章质量审校未通过（${args.score} 分，已修正 ${args.rewriteAttempts} 次）。`,
+          conflictText ? `须修正：${conflictText}` : '',
+          args.summary ? `审校结论：${args.summary}` : '',
+        ].filter(Boolean).join(' ')
       : args.reason === 'stagnant_rewrite'
         ? [
           `批量撰写已停止：第 ${args.chapterNumber} 章修正后正文连续 ${args.sameIssueStreak ?? 5} 轮未变化（已修正 ${args.rewriteAttempts} 次，${args.score} 分；上限 ${args.rewriteMax ?? 30} 次/章）。`,

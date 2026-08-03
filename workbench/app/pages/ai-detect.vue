@@ -319,7 +319,11 @@ function aiSuggestionAdvice(item: NonNullable<AiDetectHubResult['suggestions']>[
     case 'paragraph_uniformity':
       return tx(n.aiDetectAdviceParagraphUniformity, { count })
     case 'phrase_repetition':
-      return tx(n.aiDetectAdvicePhraseRepetition, { bigram: item.bigram || '', count })
+      {
+        const bigram = item.bigram || item.match_text || ''
+        if (!bigram || !count) return n.aiDetectAdviceLexical
+        return tx(n.aiDetectAdvicePhraseRepetition, { bigram, count })
+      }
     case 'colloquial':
       return n.aiDetectAdviceColloquial
     case 'punctuation':

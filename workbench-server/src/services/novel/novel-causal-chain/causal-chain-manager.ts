@@ -1,5 +1,5 @@
 import fs from 'fs'
-import { chatCompletionText, type TextBillingContext } from '../../ai/ai.js'
+import { chatCompletionTextAudit, type TextBillingContext } from '../../ai/ai.js'
 import { novelMemoryPaths } from '../novel-memory/novel-memory-paths.js'
 import { causalChainTemplate } from './causal-chain-template.js'
 import {
@@ -32,6 +32,82 @@ export function readCausalChain(dramaId: number): string {
   return fs.readFileSync(p, 'utf-8')
 }
 
+/** 从 causal_chain.md 标题解析「第N章末」 */
+export function parseCausalChainAsOfChapter(md: string): number | null {
+  const m = md.match(/当前状态[（(]\s*第\s*(\d+)\s*章末\s*[）)]/)
+  if (!m) return null
+  const n = Number(m[1])
+  return Number.isFinite(n) && n >= 0 ? n : null
+}
+
+export type CausalOriginResolve = {
+  /** 可注入的 markdown；不可用时为空 */
+  markdown: string
+  asOfChapter: number | null
+  /** 是否与「第 chapterNumber-1 章末」对齐（或可接受的偏旧快照） */
+  usable: boolean
+  note?: string
+}
+
+/**
+ * 第 N 章的因果起点应为「第 N-1 章末」。
+ * causal_chain.md 是滚动最新快照：回写前章时若快照已远超 N-1，不得注入，以免把第100章末当成第1章末。
+ */
+export function resolveCausalOriginForChapter(dramaId: number, chapterNumber: number): CausalOriginResolve {
+  if (chapterNumber < 2) {
+    return { markdown: '', asOfChapter: null, usable: false }
+  }
+  const raw = ensureCausalChain(dramaId, chapterNumber).trim()
+  if (!raw) {
+    return {
+      markdown: '',
+      asOfChapter: null,
+      usable: false,
+      note: '（尚无因果链快照，请以上章正文为准）',
+    }
+  }
+  const asOf = parseCausalChainAsOfChapter(raw)
+  const need = chapterNumber - 1
+  if (asOf == null) {
+    return {
+      markdown: raw,
+      asOfChapter: null,
+      usable: true,
+      note: '（未能解析因果链章号，请同时严格对齐上章正文）',
+    }
+  }
+  if (asOf === need) {
+    return { markdown: raw, asOfChapter: asOf, usable: true }
+  }
+  if (asOf > need) {
+    return {
+      markdown: '',
+      asOfChapter: asOf,
+      usable: false,
+      note:
+        `因果链文件当前为第${asOf}章末快照，与第${chapterNumber}章所需的第${need}章末不符；` +
+        `本次不以该快照为因果起点，请严格以上章正文 / 前序已写为准。`,
+    }
+  }
+  return {
+    markdown: raw,
+    asOfChapter: asOf,
+    usable: true,
+    note: `（因果链快照仅至第${asOf}章末；第${asOf + 1}～${need}章请以上章正文补齐）`,
+  }
+}
+
+export function formatCausalOriginInjectBlock(origin: CausalOriginResolve, maxChars = 2800): string {
+  if (origin.usable && origin.markdown.trim()) {
+    const head = origin.asOfChapter != null
+      ? `【因果起点（审校对照·第${origin.asOfChapter}章末）】`
+      : '【因果起点（审校对照）】'
+    const body = origin.markdown.slice(0, maxChars)
+    return origin.note ? `${head}\n${body}\n${origin.note}` : `${head}\n${body}`
+  }
+  return `【因果起点】\n${origin.note || '（无可用同进度因果快照，以上章正文为准）'}`
+}
+
 export function writeCausalChain(dramaId: number, content: string) {
   const p = novelMemoryPaths(dramaId).causalChain
   fs.mkdirSync(novelMemoryPaths(dramaId).root, { recursive: true })
@@ -54,9 +130,14 @@ export async function updateCausalChainFromChapter(args: {
   fullContent: string
   dramaTitle?: string
   billing?: TextBillingContext
-}): Promise<{ updated: boolean; content: string; entries: CausalChangeEntry[] }> {
+}): Promise<{ updated: boolean; content: string; entries: CausalChangeEntry[]; skipped?: boolean }> {
   const { dramaId, chapterNumber, fullContent, dramaTitle, billing } = args
   const prev = ensureCausalChain(dramaId, chapterNumber)
+  const asOf = parseCausalChainAsOfChapter(prev)
+  // 回写前章时禁止用早期状态覆盖全书最新因果链
+  if (asOf != null && chapterNumber < asOf) {
+    return { updated: false, content: prev, entries: extractChangeRecordFromChapter(fullContent), skipped: true }
+  }
   const entries = extractChangeRecordFromChapter(fullContent)
   const { prose } = splitProseAndChangeRecord(fullContent)
 
@@ -85,7 +166,7 @@ export async function updateCausalChainFromChapter(args: {
     `【本章正文】\n${prose.slice(0, 12000)}`,
   ].filter(Boolean).join('\n\n')
 
-  const raw = await chatCompletionText(
+  const raw = await chatCompletionTextAudit(
     [{ role: 'system', content: UPDATE_SYSTEM }, { role: 'user', content: user }],
     { maxTokens: 2048, temperature: 0.2, billing },
   )

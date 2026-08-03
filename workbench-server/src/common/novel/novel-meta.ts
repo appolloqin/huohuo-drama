@@ -34,6 +34,26 @@ export type NovelMetadata = {
   anchor_echo_enabled?: boolean
   /** 因果链驱动（causal_chain.md + 变更记录审校），默认 true；false 时回退状态冻结硬审 */
   causal_chain_enabled?: boolean
+  /** 章节质量评分落库，默认 true */
+  chapter_craft_score_enabled?: boolean
+  /** 字数软约束（按章职调节），默认 true */
+  chapter_craft_length_soft?: boolean
+  /** 质量未达标时循环修正/停批量，默认 true */
+  chapter_craft_strict?: boolean
+  /** 质量审校最低分，默认 70 */
+  chapter_craft_min_score?: number
+  /** 四件事至少 2 项，默认 true */
+  chapter_craft_require_two_functions?: boolean
+  /** 合规一票否决停章，默认 true */
+  compliance_veto_enabled?: boolean
+  /** 质量修正最大轮次，默认 3 */
+  chapter_craft_rewrite_max?: number
+  /** 生成后自动去 AI 味闭环，默认 true */
+  ai_humanize_auto?: boolean
+  /** 自动去 AI 味最大精修轮次；0=只检测不改写；默认 3 */
+  ai_humanize_max?: number
+  /** 自动去 AI 味过关概率（含），默认 39 */
+  ai_humanize_target?: number
 }
 
 export function parseNovelMetadata(raw: JsonColumnInput): NovelMetadata {
@@ -69,6 +89,35 @@ export function parseNovelMetadata(raw: JsonColumnInput): NovelMetadata {
       long_memory_enabled: parsed.long_memory_enabled === false ? false : undefined,
       anchor_echo_enabled: parsed.anchor_echo_enabled === false ? false : undefined,
       causal_chain_enabled: parsed.causal_chain_enabled === false ? false : undefined,
+      chapter_craft_score_enabled: parsed.chapter_craft_score_enabled === false ? false : undefined,
+      chapter_craft_length_soft: parsed.chapter_craft_length_soft === false ? false : undefined,
+      chapter_craft_strict: parsed.chapter_craft_strict === false ? false : undefined,
+      chapter_craft_min_score: (() => {
+        const n = Number(parsed.chapter_craft_min_score)
+        if (!Number.isFinite(n)) return undefined
+        return Math.min(95, Math.max(50, Math.round(n)))
+      })(),
+      chapter_craft_require_two_functions:
+        parsed.chapter_craft_require_two_functions === false ? false : undefined,
+      compliance_veto_enabled: parsed.compliance_veto_enabled === false ? false : undefined,
+      chapter_craft_rewrite_max: (() => {
+        const n = Number(parsed.chapter_craft_rewrite_max)
+        if (!Number.isFinite(n)) return undefined
+        if (n <= 0) return 0
+        return Math.min(20, Math.round(n))
+      })(),
+      ai_humanize_auto: parsed.ai_humanize_auto === false ? false : undefined,
+      ai_humanize_max: (() => {
+        const n = Number(parsed.ai_humanize_max)
+        if (!Number.isFinite(n)) return undefined
+        if (n <= 0) return 0
+        return Math.min(10, Math.round(n))
+      })(),
+      ai_humanize_target: (() => {
+        const n = Number(parsed.ai_humanize_target)
+        if (!Number.isFinite(n)) return undefined
+        return Math.min(60, Math.max(20, Math.round(n)))
+      })(),
     }
   } catch {
     return {}
@@ -119,4 +168,61 @@ export function resolveContinuityMinScore(meta: NovelMetadata, override?: number
   const fromMeta = meta.continuity_min_score
   if (Number.isFinite(fromMeta)) return Math.min(95, Math.max(60, Math.round(fromMeta!)))
   return DEFAULT_CONTINUITY_MIN_SCORE
+}
+
+/** 交付默认开：仅显式 false 关闭 */
+export function isChapterCraftScoreEnabled(meta: NovelMetadata): boolean {
+  return meta.chapter_craft_score_enabled !== false
+}
+
+export function isChapterCraftLengthSoftEnabled(meta: NovelMetadata): boolean {
+  return meta.chapter_craft_length_soft !== false
+}
+
+export function isChapterCraftStrictEnabled(meta: NovelMetadata): boolean {
+  return meta.chapter_craft_strict !== false
+}
+
+export function isComplianceVetoEnabled(meta: NovelMetadata): boolean {
+  return meta.compliance_veto_enabled !== false
+}
+
+const DEFAULT_CHAPTER_CRAFT_MIN_SCORE = 70
+
+export function resolveChapterCraftMinScore(meta: NovelMetadata, override?: number): number {
+  if (Number.isFinite(override)) return Math.min(95, Math.max(50, Math.round(override!)))
+  const fromMeta = meta.chapter_craft_min_score
+  if (Number.isFinite(fromMeta)) return Math.min(95, Math.max(50, Math.round(fromMeta!)))
+  return DEFAULT_CHAPTER_CRAFT_MIN_SCORE
+}
+
+export function resolveChapterCraftRewriteMax(meta: NovelMetadata): number {
+  const n = meta.chapter_craft_rewrite_max
+  if (n === 0) return 0
+  if (Number.isFinite(n) && n! >= 1) return Math.min(20, Math.round(n!))
+  // 默认只回灌修正 1 次；多次整章重生成本高且常仍不过
+  return 1
+}
+
+/** 交付默认开：仅显式 false 关闭（关闭时不做自动检测） */
+export function isAiHumanizeAutoEnabled(meta: NovelMetadata): boolean {
+  return meta.ai_humanize_auto !== false
+}
+
+const DEFAULT_AI_HUMANIZE_MAX = 3
+
+/** 0 = 只检测不改写 */
+export function resolveAiHumanizeMax(meta: NovelMetadata): number {
+  const n = meta.ai_humanize_max
+  if (n === 0) return 0
+  if (Number.isFinite(n) && n! >= 1) return Math.min(10, Math.round(n!))
+  return DEFAULT_AI_HUMANIZE_MAX
+}
+
+const DEFAULT_AI_HUMANIZE_TARGET = 39
+
+export function resolveAiHumanizeTarget(meta: NovelMetadata): number {
+  const n = meta.ai_humanize_target
+  if (Number.isFinite(n)) return Math.min(60, Math.max(20, Math.round(n!)))
+  return DEFAULT_AI_HUMANIZE_TARGET
 }

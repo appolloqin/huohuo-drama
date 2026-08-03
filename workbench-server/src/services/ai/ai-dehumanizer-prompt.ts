@@ -1,6 +1,6 @@
 import { loadAgentSkills } from '../../agents/skills.js'
 import { AI_DEHUMANIZER_AGENT_TYPE, AI_DEHUMANIZER_DEFAULT_PROMPT } from '../../agents/ai-dehumanizer-defaults.js'
-import { WEBNOVEL_HUMAN_PROSE_STYLE } from '../../agents/webnovel-prose-style.js'
+import { WEBNOVEL_HUMAN_PROSE_STYLE, WEBNOVEL_STAT_FINGERPRINT_GUIDE } from '../../agents/webnovel-prose-style.js'
 import { getAgentConfig } from '../../common/agent/agent-config.js'
 import { appendLessonsToPrompt } from '../lesson/generation-lessons.js'
 import type { ChatCompletionOptions } from './ai.js'
@@ -11,7 +11,8 @@ export async function buildDehumanizerSystem(): Promise<string> {
   const skills = loadAgentSkills(AI_DEHUMANIZER_AGENT_TYPE)
   const parts = [base]
   if (skills) parts.push('', skills)
-  parts.push('', WEBNOVEL_HUMAN_PROSE_STYLE)
+  // 轻量排版 + 三件套指纹规则；勿叠完整口语化清单（易整章重写、分数反升）
+  parts.push('', WEBNOVEL_HUMAN_PROSE_STYLE, '', WEBNOVEL_STAT_FINGERPRINT_GUIDE)
   return await appendLessonsToPrompt(parts.join('\n'), AI_DEHUMANIZER_AGENT_TYPE)
 }
 

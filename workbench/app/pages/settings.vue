@@ -67,6 +67,39 @@
             <button type="button" class="btn btn-primary" @click="saveUserModelPrefs">{{ tm.settings.saveDefaultModels }}</button>
           </div>
         </section>
+        <section class="settings-type-section">
+          <div class="section-head">
+            <div class="section-head-text">
+              <span class="section-title">{{ tm.settings.textAuditModelTitle }}</span>
+              <div class="section-subtitle">{{ tm.settings.textAuditModelDesc }}</div>
+            </div>
+          </div>
+          <div class="field-switch-row" style="margin-top:8px">
+            <div class="field-switch-copy">
+              <span class="field-label">{{ tm.settings.textAuditModelEnable }}</span>
+              <p class="field-hint">{{ tm.settings.textAuditModelEnableHint }}</p>
+            </div>
+            <label class="toggle">
+              <input v-model="textAuditModelEnabled" type="checkbox" />
+              <span />
+            </label>
+          </div>
+          <label class="field" style="margin-top:12px">
+            <span class="field-label">{{ tm.settings.textAuditModel }}</span>
+            <BaseSelect
+              v-model="textAuditModelName"
+              :options="textAuditModelPickerOptions"
+              :placeholder="tm.settings.textAuditModelPlaceholder"
+              :disabled="!textAuditModelEnabled"
+              searchable
+            />
+          </label>
+          <div class="modal-actions" style="margin-top:12px">
+            <button type="button" class="btn btn-primary" :disabled="textAuditModelSaving" @click="saveTextAuditModelPrefs">
+              {{ textAuditModelSaving ? tm.settings.saving : tm.settings.saveTextAuditModel }}
+            </button>
+          </div>
+        </section>
         <section class="setup-panel card">
           <div class="setup-panel-head">
             <div>
@@ -311,6 +344,39 @@
           <div class="modal-actions" style="margin-top:12px">
             <button type="button" class="btn btn-primary" :disabled="passwordChangeSaving" @click="savePassword">
               {{ passwordChangeSaving ? tm.settings.changingPassword : tm.settings.changePassword }}
+            </button>
+          </div>
+        </section>
+        <section class="settings-type-section card" style="margin-top:16px">
+          <div class="section-head">
+            <div class="section-head-text">
+              <span class="section-title">{{ tm.settings.textAuditModelTitle }}</span>
+              <div class="section-subtitle">{{ tm.settings.textAuditModelDesc }}</div>
+            </div>
+          </div>
+          <div class="field-switch-row" style="margin-top:8px">
+            <div class="field-switch-copy">
+              <span class="field-label">{{ tm.settings.textAuditModelEnable }}</span>
+              <p class="field-hint">{{ tm.settings.textAuditModelEnableHint }}</p>
+            </div>
+            <label class="toggle">
+              <input v-model="textAuditModelEnabled" type="checkbox" />
+              <span />
+            </label>
+          </div>
+          <label class="field" style="margin-top:12px">
+            <span class="field-label">{{ tm.settings.textAuditModel }}</span>
+            <BaseSelect
+              v-model="textAuditModelName"
+              :options="textAuditModelPickerOptions"
+              :placeholder="tm.settings.textAuditModelPlaceholder"
+              :disabled="!textAuditModelEnabled"
+              searchable
+            />
+          </label>
+          <div class="modal-actions" style="margin-top:12px">
+            <button type="button" class="btn btn-primary" :disabled="textAuditModelSaving" @click="saveTextAuditModelPrefs">
+              {{ textAuditModelSaving ? tm.settings.saving : tm.settings.saveTextAuditModel }}
             </button>
           </div>
         </section>
@@ -1158,9 +1224,21 @@
         <div class="preset-grid compact">
           <article v-for="preset in bundledPresetCardRows" :key="preset.presetKey" class="preset-card">
             <div class="preset-card-top">
-              <span class="preset-service">{{ preset.label }}</span>
-              <span class="tag tag-accent">{{ preset.provider }}</span>
-              <span class="tag tag-soft">{{ sourceTagLabel(preset.source) }}</span>
+              <div class="preset-card-top-main">
+                <span class="preset-service">{{ preset.label }}</span>
+                <span class="tag tag-accent">{{ preset.provider }}</span>
+                <span class="tag tag-soft">{{ sourceTagLabel(preset.source) }}</span>
+              </div>
+              <label class="toggle preset-enable-toggle" :title="tm.settings.presetServiceEnableHint">
+                <span class="preset-enable-label">{{ tm.settings.presetServiceEnableLabel }}</span>
+                <input
+                  type="checkbox"
+                  :checked="preset.enabled"
+                  :disabled="preset.enabling || preset.saving"
+                  @change="togglePresetServiceEnabled(preset, ($event.target as HTMLInputElement).checked)"
+                />
+                <span />
+              </label>
             </div>
             <div v-if="preset.editing" class="preset-edit-form">
               <label class="field">
@@ -1426,6 +1504,9 @@ const preferredTextConfigId = ref(null)
 const preferredImageConfigId = ref(null)
 const preferredVideoConfigId = ref(null)
 const preferredAudioConfigId = ref(null)
+const textAuditModelEnabled = ref(false)
+const textAuditModelName = ref('')
+const textAuditModelSaving = ref(false)
 const textConfigPickerRows = ref([])
 const imageConfigPickerRows = ref([])
 const videoConfigPickerRows = ref([])
@@ -1770,6 +1851,9 @@ type PresetCardRow = {
   label: string
   priority: number
   source: 'db' | 'env' | 'code'
+  /** 个人是否启用火火该服务；关则回退默认模型 */
+  enabled: boolean
+  enabling: boolean
   editing: boolean
   saving: boolean
   probing: boolean
@@ -1788,7 +1872,7 @@ type AgentPresetRow = {
 const bundledPresetCardRows = ref<PresetCardRow[]>([])
 const bundledPresetAgent = ref<AgentPresetRow | null>(null)
 
-function presetKeyToLabel(presetKey: 'text' | 'image' | 'video' | 'audio'): string {
+function presetKeyToLabel(presetKey: PresetCardRow['presetKey']): string {
   if (presetKey === 'text') return tm.value.settings.presetText
   if (presetKey === 'image') return tm.value.settings.presetImage
   if (presetKey === 'video') return tm.value.settings.presetVideo
@@ -1807,7 +1891,18 @@ function maskApiKey(key: string): string {
   return `${key.slice(0, 4)}${'*'.repeat(Math.min(20, key.length - 8))}${key.slice(-4)}`
 }
 
-function rowFromApi(item: { preset_key: string; service_type: string; provider: string; base_url: string; api_key: string; model: string; label: string; priority: number; source: 'db' | 'env' | 'code' }): PresetCardRow {
+function rowFromApi(item: {
+  preset_key: string
+  service_type: string
+  provider: string
+  base_url: string
+  api_key: string
+  model: string
+  label: string
+  priority: number
+  source: 'db' | 'env' | 'code'
+  enabled?: boolean
+}): PresetCardRow {
   return {
     presetKey: item.preset_key as PresetCardRow['presetKey'],
     serviceType: item.service_type,
@@ -1818,6 +1913,8 @@ function rowFromApi(item: { preset_key: string; service_type: string; provider: 
     label: presetKeyToLabel(item.preset_key as PresetCardRow['presetKey']) || item.label,
     priority: item.priority,
     source: item.source,
+    enabled: item.enabled !== false,
+    enabling: false,
     editing: false,
     saving: false,
     probing: false,
@@ -1976,13 +2073,14 @@ async function savePresetEdit(row: PresetCardRow | AgentPresetRow) {
       if (apiKey) payload.api_key = apiKey
       if (isAdmin.value) {
         await aiConfigAPI.savePreset([payload])
-      } else {
-        await aiConfigAPI.saveUserPreset([{
-          preset_key: r.presetKey,
-          model,
-          ...(apiKey ? { api_key: apiKey } : {}),
-        }])
       }
+      // 个人启用开关始终写 user-preset（管理员改平台字段后也同步 enabled）
+      await aiConfigAPI.saveUserPreset([{
+        preset_key: r.presetKey,
+        model,
+        enabled: r.enabled,
+        ...(apiKey ? { api_key: apiKey } : {}),
+      }])
     }
     toast.success(tm.value.settings.toastPresetSaved)
     row.editing = false
@@ -1991,6 +2089,28 @@ async function savePresetEdit(row: PresetCardRow | AgentPresetRow) {
     toast.error(e.message)
   } finally {
     row.saving = false
+  }
+}
+
+async function togglePresetServiceEnabled(row: PresetCardRow, next: boolean) {
+  const prev = row.enabled
+  row.enabled = next
+  row.enabling = true
+  try {
+    await aiConfigAPI.saveUserPreset([{
+      preset_key: row.presetKey,
+      enabled: next,
+      model: row.model,
+    }])
+    toast.success(next
+      ? tm.value.settings.toastPresetServiceEnabled
+      : tm.value.settings.toastPresetServiceDisabled)
+    await fetchBundledPresetRows()
+  } catch (e: any) {
+    row.enabled = prev
+    toast.error(e.message)
+  } finally {
+    row.enabling = false
   }
 }
 function providerEndpointPrefix(provider, serviceType) {
@@ -2567,6 +2687,31 @@ const textModelPickerOptions = computed(() =>
   }))
 )
 
+/**
+ * 审核模型选项：value 用 `configId::model`，保存后运行时走该配置的 provider/key，
+ * 避免「写作 MiniMax + 审核 deepseek 型号」串到错误网关。
+ */
+const textAuditModelPickerOptions = computed(() => {
+  const groups = serviceConfigRows.value
+    .filter(c => c.service_type === 'text' && c.is_active && c.api_key)
+    .map(c => {
+      const models = Array.isArray(c.model) ? c.model : (c.model ? [c.model] : [])
+      return {
+        label: `${c.provider} — ${c.name}`,
+        options: models
+          .filter(m => typeof m === 'string' && m.trim())
+          .map(m => ({ label: m, value: `${c.id}::${m}` })),
+      }
+    })
+    .filter(g => g.options.length > 0)
+  if (groups.length) return groups
+  const presetText = bundledPresetCardRows.value.find(r => r.presetKey === 'text')
+  if (presetText?.model?.trim()) {
+    return [{ label: presetText.label || 'text', options: [{ label: presetText.model, value: presetText.model }] }]
+  }
+  return []
+})
+
 async function fetchAgentConfigRows() {
   try { agentConfigRows.value = await agentConfigAPI.list() }
   catch (e) { toast.error(e.message) }
@@ -3111,6 +3256,52 @@ async function saveUserModelPrefs() {
   }
 }
 
+function normalizeTextAuditModelSelection(raw: string): string {
+  const value = (raw || '').trim()
+  if (!value) return ''
+  if (/^\d+::/.test(value)) return value
+  for (const g of textAuditModelPickerOptions.value) {
+    for (const opt of g.options || []) {
+      if (opt.value === value || opt.label === value || String(opt.value).endsWith(`::${value}`)) {
+        return opt.value
+      }
+    }
+  }
+  return value
+}
+
+async function loadTextAuditModelPrefs() {
+  try {
+    const data = await aiConfigAPI.getTextAuditModel()
+    textAuditModelEnabled.value = data.enabled === true
+    textAuditModelName.value = normalizeTextAuditModelSelection(data.model || '')
+  } catch {
+    textAuditModelEnabled.value = false
+    textAuditModelName.value = ''
+  }
+}
+
+async function saveTextAuditModelPrefs() {
+  if (textAuditModelEnabled.value && !textAuditModelName.value.trim()) {
+    toast.error(tm.value.settings.textAuditModelRequired)
+    return
+  }
+  try {
+    textAuditModelSaving.value = true
+    const data = await aiConfigAPI.saveTextAuditModel({
+      enabled: textAuditModelEnabled.value,
+      model: textAuditModelName.value.trim(),
+    })
+    textAuditModelEnabled.value = data.enabled === true
+    textAuditModelName.value = normalizeTextAuditModelSelection(data.model || '')
+    toast.success(tm.value.settings.toastTextAuditModelSaved)
+  } catch (e: any) {
+    toast.error(e.message)
+  } finally {
+    textAuditModelSaving.value = false
+  }
+}
+
 async function bootstrapAdminSettings(force = false) {
   if (force) adminSettingsReady.value = false
   await runAdminSettingsBootstrap(adminSettingsReady, async () => {
@@ -3147,8 +3338,10 @@ onMounted(async () => {
     }
   } else {
     loadUserModelOptions()
+    await fetchServiceConfigRows()
     void fetchBundledPresetRows()
   }
+  await loadTextAuditModelPrefs()
 })
 
 // 「火火一键配置」弹窗打开时重新拉数据，保证卡片显示最新 DB/env 值
@@ -3386,6 +3579,22 @@ watch(bundledPresetSheetOpen, (open) => { if (open) fetchBundledPresetRows() })
   align-items: center;
   justify-content: space-between;
   gap: 8px;
+}
+.preset-card-top-main {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+  min-width: 0;
+}
+.preset-enable-toggle {
+  flex-shrink: 0;
+  gap: 6px;
+}
+.preset-enable-label {
+  font-size: 11px;
+  color: var(--text-2);
+  white-space: nowrap;
 }
 .preset-service { font-size: 12px; font-weight: 600; }
 .preset-model { font-size: 12px; color: var(--text-1); }

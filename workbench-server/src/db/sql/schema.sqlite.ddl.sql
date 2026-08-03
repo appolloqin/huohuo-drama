@@ -274,6 +274,7 @@
     preset_key TEXT NOT NULL,
     api_key TEXT,
     model TEXT,
+    enabled INTEGER NOT NULL DEFAULT 1,
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL,
     UNIQUE(user_id, preset_key)

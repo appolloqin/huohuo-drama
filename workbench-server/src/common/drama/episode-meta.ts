@@ -1,7 +1,9 @@
 /** 章节级 metadata（存于 episodes.metadata JSON） */
 
 import {
+  normalizeChapterEndSnapshot,
   normalizeContinuityLedger,
+  type ChapterEndSnapshot,
   type NovelContinuityLedger,
 } from '../novel/novel-continuity-state.js'
 import type { ContinuityCheckResult, ContinuityRewriteLogEntry } from '../novel/novel-continuity-state.js'
@@ -39,6 +41,12 @@ export type EpisodeAiDetection = {
     count?: number
     bigram?: string
   }>
+  /** 自动去 AI 味精修轮次 */
+  humanize_attempts?: number
+  /** 是否压到 humanize_target */
+  humanize_passed?: boolean
+  humanize_target?: number
+  humanize_warning?: string
 }
 
 export type ProductionPipeline = 'ai_video' | 'frame_slideshow'
@@ -51,6 +59,8 @@ export type EpisodeMetadata = {
   frame_merged_duration?: number
   ai_detection?: EpisodeAiDetection
   continuity_ledger?: NovelContinuityLedger
+  /** 章末缝合契约（时间/地点/人物/刚发生），供下章开篇对齐 */
+  chapter_end_snapshot?: ChapterEndSnapshot
   continuity_check?: ContinuityCheckResult
   continuity_rewrite_log?: ContinuityRewriteLogEntry[]
   /** 因果链【变更记录】元数据（与 episodes.content 正文分离） */
@@ -64,6 +74,8 @@ export type EpisodeMetadata = {
   }
   /** 正文落盘时缓存字数，供列表/统计 SQL 使用 */
   prose_char_count?: number
+  /** 章节质量审校结果（独立于 continuity_check） */
+  chapter_craft?: Record<string, unknown>
 }
 
 function parseContinuityCheck(raw: unknown): ContinuityCheckResult | undefined {
@@ -191,6 +203,16 @@ function parseAiDetection(ai: unknown): EpisodeAiDetection | undefined {
         }))
         .filter((s: { excerpt: string }) => s.excerpt.length > 0)
       : undefined,
+    humanize_attempts: Number.isFinite(Number(src.humanize_attempts))
+      ? Math.max(0, Math.round(Number(src.humanize_attempts)))
+      : undefined,
+    humanize_passed: typeof src.humanize_passed === 'boolean' ? src.humanize_passed : undefined,
+    humanize_target: Number.isFinite(Number(src.humanize_target))
+      ? Math.min(60, Math.max(20, Math.round(Number(src.humanize_target))))
+      : undefined,
+    humanize_warning: typeof src.humanize_warning === 'string' && src.humanize_warning.trim()
+      ? src.humanize_warning.trim()
+      : undefined,
   }
 }
 
@@ -199,11 +221,12 @@ export function parseEpisodeMetadata(raw: JsonColumnInput): EpisodeMetadata {
   const ai_detection = parseAiDetection(obj.ai_detection)
   const chapterNum = Number.isFinite(Number(obj.chapter_number)) ? Number(obj.chapter_number) : 0
   const continuity_ledger = normalizeContinuityLedger(obj.continuity_ledger, chapterNum) ?? undefined
+  const chapter_end_snapshot = normalizeChapterEndSnapshot(obj.chapter_end_snapshot, chapterNum) ?? undefined
   const continuity_check = parseContinuityCheck(obj.continuity_check)
   const causal_change_record = typeof obj.causal_change_record === 'string' && obj.causal_change_record.trim()
     ? obj.causal_change_record.trim()
     : undefined
-  return { ai_detection, continuity_ledger, continuity_check, causal_change_record }
+  return { ai_detection, continuity_ledger, chapter_end_snapshot, continuity_check, causal_change_record }
 }
 
 export function mergeEpisodeMetadata(
@@ -219,6 +242,10 @@ export function mergeEpisodeMetadata(
   if ('continuity_ledger' in patch) {
     if (patch.continuity_ledger) next.continuity_ledger = patch.continuity_ledger
     else delete next.continuity_ledger
+  }
+  if ('chapter_end_snapshot' in patch) {
+    if (patch.chapter_end_snapshot) next.chapter_end_snapshot = patch.chapter_end_snapshot
+    else delete next.chapter_end_snapshot
   }
   if ('continuity_check' in patch) {
     if (patch.continuity_check) next.continuity_check = patch.continuity_check
@@ -278,6 +305,10 @@ export function mergeEpisodeMetadata(
     if (Number.isFinite(n) && n >= 0) next.prose_char_count = Math.floor(n)
     else delete next.prose_char_count
   }
+  if ('chapter_craft' in patch) {
+    if (patch.chapter_craft && typeof patch.chapter_craft === 'object') next.chapter_craft = patch.chapter_craft
+    else delete next.chapter_craft
+  }
   return JSON.stringify(next)
 }
 
@@ -303,4 +334,12 @@ export function readEpisodeContinuityLedger(
 ): NovelContinuityLedger | null {
   const obj = readEpisodeMetadataObject(raw)
   return normalizeContinuityLedger(obj.continuity_ledger, chapterNumber)
+}
+
+export function readEpisodeChapterEndSnapshotMeta(
+  raw: string | null | undefined,
+  chapterNumber: number,
+): ChapterEndSnapshot | null {
+  const obj = readEpisodeMetadataObject(raw)
+  return normalizeChapterEndSnapshot(obj.chapter_end_snapshot, chapterNumber)
 }

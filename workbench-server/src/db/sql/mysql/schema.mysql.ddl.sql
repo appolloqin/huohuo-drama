@@ -267,6 +267,7 @@ CREATE TABLE IF NOT EXISTS dramas (
     preset_key VARCHAR(64) NOT NULL,
     api_key TEXT,
     model TEXT,
+    enabled TINYINT(1) NOT NULL DEFAULT 1,
     created_at DATETIME(3) NOT NULL,
     updated_at DATETIME(3) NOT NULL,
     UNIQUE KEY uq_user_ai_preset (user_id, preset_key)

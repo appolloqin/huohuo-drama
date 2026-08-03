@@ -179,6 +179,8 @@ export const userAiPresetConfigs = sqliteTable('user_ai_preset_configs', {
   presetKey: text('preset_key').notNull(),
   apiKey: text('api_key'),
   model: text('model'),
+  /** 是否对该用户启用火火该服务；关则回退默认模型。缺省/旧行视为启用 */
+  enabled: integer('enabled', { mode: 'boolean' }).notNull().default(true),
   createdAt: text('created_at').notNull(),
   updatedAt: text('updated_at').notNull(),
 })

@@ -25,6 +25,7 @@ export function upsertUserPreset(input: {
   presetKey: string
   apiKey?: string | null
   model?: string | null
+  enabled?: boolean | null
   createdAt: string
   updatedAt: string
 }): DbRunResult {
@@ -32,8 +33,11 @@ export function upsertUserPreset(input: {
   if (existing) {
     db().update(schema.userAiPresetConfigs)
       .set({
-        apiKey: input.apiKey ?? null,
-        model: input.model ?? null,
+        apiKey: input.apiKey !== undefined ? input.apiKey : existing.apiKey,
+        model: input.model !== undefined ? input.model : existing.model,
+        enabled: input.enabled !== undefined && input.enabled !== null
+          ? !!input.enabled
+          : existing.enabled,
         updatedAt: input.updatedAt,
       })
       .where(eq(schema.userAiPresetConfigs.id, existing.id))
@@ -45,6 +49,7 @@ export function upsertUserPreset(input: {
     presetKey: input.presetKey,
     apiKey: input.apiKey ?? null,
     model: input.model ?? null,
+    enabled: input.enabled != null ? !!input.enabled : true,
     createdAt: input.createdAt,
     updatedAt: input.updatedAt,
   }).run()

@@ -20,6 +20,8 @@ export const CONTINUITY_RULE_LABELS: Record<string, string> = {
   causal_injury_conflict: '伤势行动矛盾',
   causal_plan_abrupt: '计划突变无触发',
   prose_physics: '物理表述',
+  unprompted_life_state: '无铺垫重大状态',
+  chapter_seam_replay: '章缝回放',
   model_semantic: '语义一致',
   model_semantic_plot: '剧情场景',
   model_semantic_realm: '境界语义',

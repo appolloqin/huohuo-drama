@@ -1,8 +1,13 @@
 import * as dramasRepo from '../../db/repos/dramas/index.js'
 import * as episodesRepo from '../../db/repos/episodes/index.js'
 import { now } from '../../common/http/response.js'
-import { isNovelProject, parseNovelMetadata } from '../../common/novel/novel-meta.js'
+import {
+  isChapterCraftLengthSoftEnabled,
+  isNovelProject,
+  parseNovelMetadata,
+} from '../../common/novel/novel-meta.js'
 import { generateNovelWritingBrief, summarizeNovelChapterLength } from '../novel/novel-writing.js'
+import { lengthFactorForRole, parseChapterCraftTags } from '../novel/novel-chapter-craft-tags.js'
 import { ensureNovelMemory } from '../novel/novel-memory/index.js'
 import { looksLikeModelThinkingLeak } from '../ai/ai.js'
 import { isUsableNovelCreativeOutput } from '../../common/novel/novel-creative-output.js'
@@ -14,7 +19,7 @@ import {
 import { buildCanonLockPrefix } from '../novel/novel-continuity.js'
 import { assertHuohuoAgentReady, assertUserServiceConfigReady, isHuohuoPresetEffective } from '../ai/ai.js'
 import { assertUserCanGenerate } from '../credits/credits.js'
-import { logTaskError, logTaskStart, logTaskSuccess } from '../../common/task/task-logger.js'
+import { logTaskError, logTaskStart, logTaskSuccess, logTaskWarn } from '../../common/task/task-logger.js'
 import { extractChapterOutline } from '../../common/novel/novel-outline.js'
 import { mergeEpisodeMetadata, type ProductionPipeline } from '../../common/drama/episode-meta.js'
 import { isDramaEpisodePending, isDramaEpisodeMergedForPipeline } from '../../common/drama/drama-episode-status.js'
@@ -66,9 +71,24 @@ function resolveNovelChapterOutline(ep: { episodeNumber: number; description: st
   return extractChapterOutline(meta.outline || '', ep.episodeNumber)
 }
 
-function assertChapterLengthOrThrow(content: string, targetLength: number, chapterNumber: number) {
-  const minLen = Math.round(Math.min(20000, Math.max(500, targetLength)) * 0.88)
-  const { chars, within } = summarizeNovelChapterLength(content, minLen, Math.round(targetLength * 1.08))
+function assertChapterLengthOrThrow(
+  content: string,
+  targetLength: number,
+  chapterNumber: number,
+  opts?: { soft?: boolean; role?: import('../novel/novel-chapter-craft-tags.js').ChapterRole | null },
+) {
+  const target = Math.min(20000, Math.max(500, targetLength))
+  const soft = !!opts?.soft
+  const role = opts?.role ?? null
+  const factor = soft ? lengthFactorForRole(role) : 1
+  const effective = Math.round(target * factor)
+  const minLen = soft
+    ? Math.round(effective * (role === 'breath' || role === 'travel' ? 0.55 : 0.75))
+    : Math.round(target * 0.88)
+  const maxLen = soft
+    ? Math.round(effective * (role === 'breath' || role === 'travel' ? 1.05 : 1.12))
+    : Math.round(target * 1.08)
+  const { chars, within } = summarizeNovelChapterLength(content, minLen, maxLen)
   if (within) return
   if (chars < minLen * 0.55) {
     throw new Error(`第${chapterNumber}章正文过短（${chars} 字，目标至少 ${minLen} 字），疑似未写完，已中止批量撰写`)
@@ -332,6 +352,7 @@ export async function batchGenerateNovelChapters(args: {
         shouldStop,
         onPhase: (phase, detail) => {
           progressPhase = phase
+          const d = detail || {}
           onProgress({
             index,
             total: pending.length,
@@ -339,23 +360,40 @@ export async function batchGenerateNovelChapters(args: {
             episode_number: ep.episodeNumber,
             phase,
             status: 'start',
-            rewrite_attempt: detail?.rewriteAttempt,
-            check_score: detail?.score,
-            check_summary: detail?.summary,
-            conflicts: detail?.conflicts,
-            blocking_items: detail?.blocking_items,
-            rule_hints: detail?.rule_hints,
-            model_rejected: detail?.model_rejected,
-            rewrite_mode: detail?.mode,
+            rewrite_attempt: typeof d.rewriteAttempt === 'number' ? d.rewriteAttempt : undefined,
+            check_score: typeof d.score === 'number' ? d.score : undefined,
+            check_summary: typeof d.summary === 'string' ? d.summary : undefined,
+            conflicts: Array.isArray(d.conflicts)
+              ? d.conflicts.filter((x): x is string => typeof x === 'string')
+              : undefined,
+            blocking_items: Array.isArray(d.blocking_items)
+              ? d.blocking_items as import('../../common/novel/novel-continuity-rules.js').ContinuityBlockingItem[]
+              : undefined,
+            rule_hints: Array.isArray(d.rule_hints)
+              ? d.rule_hints.filter((x): x is string => typeof x === 'string')
+              : undefined,
+            model_rejected: Array.isArray(d.model_rejected)
+              ? d.model_rejected.filter((x): x is string => typeof x === 'string')
+              : undefined,
+            rewrite_mode: d.mode === 'patch' || d.mode === 'regen' ? d.mode : undefined,
           })
         },
       })
 
-      assertChapterLengthOrThrow(pipeline.content, targetLength, ep.episodeNumber)
+      {
+        const tags = parseChapterCraftTags(prompt, chapterOutline, pipeline.content)
+        assertChapterLengthOrThrow(pipeline.content, targetLength, ep.episodeNumber, {
+          soft: isChapterCraftLengthSoftEnabled(meta),
+          role: tags.role,
+        })
+      }
 
       const metadataPatch: Partial<import('../../common/drama/episode-meta.js').EpisodeMetadata> = {}
       if (pipeline.causal_change_record) {
         metadataPatch.causal_change_record = pipeline.causal_change_record
+      }
+      if (pipeline.ai_detection) {
+        metadataPatch.ai_detection = pipeline.ai_detection
       }
       const epRow = await episodesRepo.findEpisodeById(ep.id)
       const nextMetadata = Object.keys(metadataPatch).length
@@ -373,6 +411,10 @@ export async function batchGenerateNovelChapters(args: {
         ? pipeline.rewrite_attempts > 0
           ? `审校 ${pipeline.check.score} 分（已局部修正 ${pipeline.rewrite_attempts} 次仍未通过）：${pipeline.check.summary}`
           : `审校 ${pipeline.check.score} 分：${pipeline.check.summary}`
+        : undefined
+      const humanizeWarn = pipeline.ai_detection?.humanize_passed === false
+        ? (pipeline.ai_detection.humanize_warning
+          || `第 ${ep.episodeNumber} 章 AI 痕迹未压到人工线（${pipeline.ai_detection.probability}%）`)
         : undefined
 
       if (checkFailed && !strictContinuity) {
@@ -395,14 +437,32 @@ export async function batchGenerateNovelChapters(args: {
         if (stopOnError) break
       } else {
         summary.generated += 1
-        onProgress({
-          index,
-          total: pending.length,
-          episode_id: ep.id,
-          episode_number: ep.episodeNumber,
-          phase: pipeline.check ? 'check' : 'chapter',
-          status: 'done',
-        })
+        if (humanizeWarn) {
+          logTaskWarn('Novel', 'batch-generate-humanize-warn', {
+            chapterId: ep.id,
+            episodeNumber: ep.episodeNumber,
+            probability: pipeline.ai_detection?.probability,
+            attempts: pipeline.ai_detection?.humanize_attempts,
+          })
+          onProgress({
+            index,
+            total: pending.length,
+            episode_id: ep.id,
+            episode_number: ep.episodeNumber,
+            phase: 'chapter',
+            status: 'done',
+            message: humanizeWarn,
+          })
+        } else {
+          onProgress({
+            index,
+            total: pending.length,
+            episode_id: ep.id,
+            episode_number: ep.episodeNumber,
+            phase: pipeline.check ? 'check' : 'chapter',
+            status: 'done',
+          })
+        }
       }
     } catch (err: any) {
       summary.failed += 1

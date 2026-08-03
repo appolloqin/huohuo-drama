@@ -58,6 +58,9 @@ export function isUsableNovelCreativeOutput(text: string, kind: NovelCreativeOut
   const trimmed = text.trim()
   if (!trimmed || looksLikeModelThinkingLeak(trimmed)) return false
   if (countNovelChars(trimmed) < MIN_CHARS[kind]) return false
+  // 源文件/管道编码损坏时，提示与正文会出现大量 ?
+  const qMarks = (trimmed.match(/[?？]/g) || []).length
+  if (qMarks >= 12 && qMarks / Math.max(trimmed.length, 1) > 0.02) return false
   if (kind === 'outline' && !/总纲|分章|第\s*\d+\s*章/.test(trimmed)) return false
   if (kind === 'outline' && !/世界观|修炼体系/.test(trimmed)) return false
   if (kind === 'outline' && !/分卷|第\s*[一二三四五六七八九十\d]+\s*卷/.test(trimmed)) return false

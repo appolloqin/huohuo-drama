@@ -429,7 +429,7 @@ export async function applyNovelMemoryFromChapter(args: {
 }
 
 export const NOVEL_MEMORY_CHAPTER_END_FORMAT = `
-【章末必须输出 — 正文之后空一行写 --- 再写以下四段】
+【章末必须输出 — 正文之后空一行写 --- 再写以下四段；格式须严格如下，勿写成「---本章事件摘要：」单行】
 ---
 【本章事件摘要】（50字内）
 【状态变更清单】

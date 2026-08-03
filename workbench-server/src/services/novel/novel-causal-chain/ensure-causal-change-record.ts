@@ -1,7 +1,7 @@
 /**
  * 章末【变更记录】补全 — 润色/局部 patch 常会丢掉该块，硬审会反复失败
  */
-import { chatCompletionText, type TextBillingContext } from '../../ai/ai.js'
+import { chatCompletionTextAudit, type TextBillingContext } from '../../ai/ai.js'
 import { logTaskWarn } from '../../../common/task/task-logger.js'
 import { CAUSAL_CHANGE_RECORD_HEADER, CAUSAL_CHAPTER_END_FORMAT } from './causal-chain-template.js'
 import {
@@ -67,7 +67,7 @@ async function generateChangeRecordBlock(args: {
   strict?: boolean
 }): Promise<string | null> {
   const { prose, chapterNumber, billing, strict } = args
-  const raw = await chatCompletionText(
+  const raw = await chatCompletionTextAudit(
     [
       { role: 'system', content: ENSURE_SYSTEM },
       {

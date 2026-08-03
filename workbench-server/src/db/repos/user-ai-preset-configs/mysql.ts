@@ -33,6 +33,7 @@ export async function upsertUserPreset(input: {
   presetKey: string
   apiKey?: string | null
   model?: string | null
+  enabled?: boolean | null
   createdAt: string
   updatedAt: string
 }): Promise<DbRunResult> {
@@ -40,8 +41,11 @@ export async function upsertUserPreset(input: {
   if (existing) {
     await db().update(schema.userAiPresetConfigs)
       .set({
-        apiKey: input.apiKey ?? null,
-        model: input.model ?? null,
+        apiKey: input.apiKey !== undefined ? input.apiKey : existing.apiKey,
+        model: input.model !== undefined ? input.model : existing.model,
+        enabled: input.enabled !== undefined && input.enabled !== null
+          ? (input.enabled ? 1 : 0)
+          : existing.enabled,
         updatedAt: input.updatedAt,
       })
       .where(eq(schema.userAiPresetConfigs.id, existing.id))
@@ -52,6 +56,7 @@ export async function upsertUserPreset(input: {
     presetKey: input.presetKey,
     apiKey: input.apiKey ?? null,
     model: input.model ?? null,
+    enabled: input.enabled != null ? (input.enabled ? 1 : 0) : 1,
     createdAt: input.createdAt,
     updatedAt: input.updatedAt,
   })

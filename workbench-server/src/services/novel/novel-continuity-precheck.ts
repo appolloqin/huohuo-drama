@@ -14,6 +14,7 @@ import {
   sameRealmSystem,
   type ParsedRealmMention,
 } from '../../common/novel/novel-realm-utils.js'
+import { detectChapterSeamReplay } from './novel-chapter-seam.js'
 
 export type AuditConflict = {
   layer: 'hard' | 'rule'
@@ -52,6 +53,56 @@ function checkProsePhysics(content: string): AuditConflict[] {
     }
   }
   return out
+}
+
+/** 怀孕/腹中孩子等重大生理状态线索（用于「有无铺垫」对照，非题材词表） */
+const PREGNANCY_STATE_CUE =
+  /怀孕|身孕|有了身子|有身孕|害喜|临产|孕妇|胎儿|怀了孕|双身子|大着肚子|挺着大肚子|肚子里那[块团]?肉|肚里那块肉|肚子里的(?:孩子|娃娃|崽|肉)/
+
+function hasPregnancyStateCue(text: string | null | undefined): boolean {
+  return !!text && PREGNANCY_STATE_CUE.test(text)
+}
+
+/**
+ * 正文出现怀孕/腹中孩子，但前序/大纲/账本均未出现 → 凭空发明重大状态（硬伤）。
+ * 例：猎获挨饿语境里冒出「苏婉肚子里那块肉」，而全书从未写她怀孕。
+ */
+export function checkUnpromptedPregnancyState(
+  content: string,
+  groundingText: string,
+): AuditConflict[] {
+  if (!hasPregnancyStateCue(content)) return []
+  if (hasPregnancyStateCue(groundingText)) return []
+  const hit = splitSentences(content).find(s => PREGNANCY_STATE_CUE.test(s))
+  const excerpt = (hit || content).trim().slice(0, 48)
+  return [{
+    layer: 'hard',
+    rule: 'unprompted_life_state',
+    message: `凭空发明怀孕/腹中孩子：「${excerpt}…」——前序正文、本章大纲与状态账本均未交代该事实，禁止无铺垫写入；若只写家里挨饿，直接写人名即可，勿脑补身孕`,
+  }]
+}
+
+function buildGroundingCorpus(args: {
+  prevChapterTail?: string
+  chapterOutline?: string
+  expectedFields?: NovelContinuityFields | null
+  prevSnapshot?: import('../../common/novel/novel-continuity-state.js').ChapterEndSnapshot | null
+  extraGrounding?: string
+}): string {
+  const fieldBlob = args.expectedFields
+    ? Object.values(args.expectedFields).filter((v): v is string => typeof v === 'string').join('\n')
+    : ''
+  const snap = args.prevSnapshot
+  const snapBlob = snap
+    ? [snap.time, snap.place, snap.cast, snap.last_event, snap.open_threads].filter(Boolean).join('\n')
+    : ''
+  return [
+    args.prevChapterTail || '',
+    args.chapterOutline || '',
+    fieldBlob,
+    snapBlob,
+    args.extraGrounding || '',
+  ].join('\n')
 }
 
 function splitSentences(text: string): string[] {
@@ -511,8 +562,14 @@ export function runLocalContinuityAudit(args: {
   chapterNumber: number
   expectedFields?: NovelContinuityFields | null
   prevChapterTail?: string
+  /** 上章更长正文，供交付重演检 */
+  prevChapterBody?: string
+  chapterOutline?: string
+  prevSnapshot?: import('../../common/novel/novel-continuity-state.js').ChapterEndSnapshot | null
+  /** 额外接地文本：写作说明、已成文上下文等 */
+  extraGrounding?: string
 }): LocalAuditResult {
-  const { content, chapterNumber, expectedFields, prevChapterTail } = args
+  const { content, chapterNumber, expectedFields, prevChapterTail, chapterOutline, prevSnapshot } = args
   const trimmed = content.trim()
   if (!trimmed) return { hard: [], rule: [] }
 
@@ -520,8 +577,19 @@ export function runLocalContinuityAudit(args: {
   const narrationMentions = extractRealmMentions(narration, 'narration')
   const dialogueMentions = dialogues.flatMap(d => extractRealmMentions(d, 'dialogue'))
 
+  const grounding = buildGroundingCorpus({
+    prevChapterTail,
+    chapterOutline,
+    expectedFields,
+    prevSnapshot,
+    extraGrounding: args.extraGrounding,
+  })
+
   const intra = checkIntraChapterRealmNarration(narrationMentions, narration, expectedFields)
-  const hard: AuditConflict[] = [...intra.hard]
+  const hard: AuditConflict[] = [
+    ...intra.hard,
+    ...checkUnpromptedPregnancyState(trimmed, grounding),
+  ]
   const rule: AuditConflict[] = [
     ...intra.rule,
     ...checkIntraChapterRealmDialogue(narrationMentions, dialogueMentions),
@@ -605,6 +673,20 @@ export function runLocalContinuityAudit(args: {
   }
 
   hard.push(...checkInjuryConsistency(expectedFields?.injuries, narration))
+
+  const seam = detectChapterSeamReplay({
+    content: trimmed,
+    chapterNumber,
+    prevChapterTail,
+    prevChapterBody: args.prevChapterBody || prevChapterTail,
+    chapterOutline,
+    prevSnapshot,
+  })
+  if (seam) {
+    // 交付重演：规则层告警，不因「糠饼渣子」类误伤把整章硬审打到 0 分
+    if (seam.layer === 'rule') rule.push(seam)
+    else hard.push(seam)
+  }
 
   const dedupe = (items: AuditConflict[]) => {
     const seen = new Set<string>()

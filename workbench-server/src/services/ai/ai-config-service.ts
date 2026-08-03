@@ -8,6 +8,7 @@ import { logTaskSuccess } from '../../common/task/task-logger.js'
 import { parseConfigSettings } from '../credits/credits.js'
 import { parseTextBillingPayload, toServiceConfigApiShape } from '../../routes/ai/ai-config-serializers.js'
 import { getHuohuoPresetPolicy, saveHuohuoPresetPolicy } from './huohuo-preset-policy.js'
+import { parsePresetEnabledFlag, presetRowEnabled } from './huohuo-preset-enable.js'
 import { DEFAULT_CATALOG_PRESET_KEY, getUserDefaultCatalogConfigId } from './user-ai-config-resolve.js'
 
 export { getHuohuoPresetPolicy, saveHuohuoPresetPolicy }
@@ -29,6 +30,8 @@ const BUNDLED_DEFAULT_SERVICES = [
   { serviceType: 'video', label: '视频', provider: 'huohuo', baseUrl: 'https://huo.hcpzy.com/v1', model: 'doubao-seedance-1-5-pro-251215', priority: 98 },
   { serviceType: 'audio', label: '音频', provider: 'huohuo', baseUrl: 'https://huo.hcpzy.com/v1', model: 'speech-2.8-hd', priority: 97 },
 ] as const
+
+type BundledServiceType = (typeof BUNDLED_DEFAULT_SERVICES)[number]['serviceType']
 
 const BUNDLED_AGENT_PRESETS = [
   { agentType: 'drama_script_formatter', name: '剧本格式化' },
@@ -56,7 +59,7 @@ const BUNDLED_AGENT_MODEL_NAME = 'gemini-3-pro-preview'
  * 用 env 兜底是为了让生产部署可以不改 DB、不重新打包代码就切换代理平台。
  * 没有配 env 就回退到代码里的 BUNDLED_DEFAULT_SERVICES / BUNDLED_AGENT_MODEL_NAME。
  */
-function envOverride(presetKey: 'text' | 'image' | 'video' | 'audio' | 'agent', field: 'BASE_URL' | 'MODEL' | 'PROVIDER' | 'LABEL') {
+function envOverride(presetKey: BundledServiceType | 'agent', field: 'BASE_URL' | 'MODEL' | 'PROVIDER' | 'LABEL') {
   const raw = process.env[`HUOHUO_PRESET_${presetKey.toUpperCase()}_${field}`]
   return typeof raw === 'string' && raw.trim() ? raw.trim() : ''
 }
@@ -73,7 +76,7 @@ function envOverride(presetKey: 'text' | 'image' | 'video' | 'audio' | 'agent', 
  * 优先用 DB 里的卡内 key，没有再回退到弹窗提交的共用 key（保留向后兼容）。
  */
 type EffectivePreset = {
-  serviceType: 'text' | 'image' | 'video' | 'audio'
+  serviceType: BundledServiceType
   label: string
   provider: string
   baseUrl: string
@@ -304,7 +307,7 @@ export async function listEffectivePresets() {
   }
 }
 
-export async function getPlatformServicePreset(serviceType: 'text' | 'image' | 'video' | 'audio') {
+export async function getPlatformServicePreset(serviceType: BundledServiceType) {
   const presets = await resolveEffectiveServicePresets()
   return presets.find(p => p.serviceType === serviceType) ?? null
 }
@@ -313,7 +316,7 @@ export async function getEffectiveAgentModelName(): Promise<string> {
   return resolveEffectiveAgentModel()
 }
 
-/** 普通用户视角：平台 preset + 用户自配 key/model（不可改 base_url / provider） */
+/** 普通用户视角：平台 preset + 用户自配 key/model/enabled（不可改 base_url / provider） */
 export async function listUserEffectivePresets(userId: number) {
   const policy = await getHuohuoPresetPolicy()
   const platform = await listEffectivePresets()
@@ -327,6 +330,7 @@ export async function listUserEffectivePresets(userId: number) {
       ...s,
       api_key: usePlatformKey ? s.api_key : (userRow?.apiKey || ''),
       model: userRow?.model || s.model,
+      enabled: presetRowEnabled(userRow),
       source: userRow ? 'db' as const : s.source,
     }
   })
@@ -340,6 +344,20 @@ export async function listUserEffectivePresets(userId: number) {
       ...platform.agent,
       model: userAgent?.model || platform.agent.model,
     },
+  }
+}
+
+/** 管理员列表也附带当前账号的个人 enabled（开关写 user_ai_preset） */
+export async function listEffectivePresetsForUser(userId: number) {
+  const platform = await listEffectivePresets()
+  const userRows = await userPresetRepo.listUserPresets(userId)
+  const byKey = new Map(userRows.map(r => [String(r.presetKey), r]))
+  return {
+    ...platform,
+    services: platform.services.map((s) => ({
+      ...s,
+      enabled: presetRowEnabled(byKey.get(s.preset_key)),
+    })),
   }
 }
 
@@ -366,10 +384,22 @@ export async function saveUserPresetOverrides(userId: number, items: Array<Recor
       })
       continue
     }
-    const model = String(item.model || '').trim()
-    if (!model) throw new Error(`${presetKey} 模型不能为空`)
-    const apiKeyRaw = typeof item.api_key === 'string' ? item.api_key.trim() : undefined
+
+    const enabledFlag = parsePresetEnabledFlag(item.enabled)
     const existing = await userPresetRepo.findUserPreset(userId, presetKey)
+    const modelRaw = typeof item.model === 'string' ? item.model.trim() : ''
+
+    let model = modelRaw
+    if (!model) {
+      model = (existing?.model || '').trim()
+      if (!model) {
+        const platform = await getPlatformServicePreset(presetKey as BundledServiceType)
+        model = (platform?.model || '').trim()
+      }
+    }
+    if (!model) throw new Error(`${presetKey} 模型不能为空`)
+
+    const apiKeyRaw = typeof item.api_key === 'string' ? item.api_key.trim() : undefined
     await userPresetRepo.upsertUserPreset({
       userId,
       presetKey,
@@ -377,6 +407,9 @@ export async function saveUserPresetOverrides(userId: number, items: Array<Recor
       apiKey: apiKeyRaw !== undefined && apiKeyRaw !== ''
         ? apiKeyRaw
         : (existing?.apiKey || null),
+      enabled: enabledFlag !== undefined
+        ? enabledFlag
+        : (existing ? presetRowEnabled(existing) : true),
       createdAt: existing?.createdAt || ts,
       updatedAt: ts,
     })

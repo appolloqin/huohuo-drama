@@ -204,6 +204,7 @@ async function applyLegacyColumnPatches(pool: Pool) {
   await appendTableColumnIfAbsent(pool, 'video_merges', 'motion_pipeline', 'TEXT')
   // 「火火一键配置」每张卡片独立 api_key：列已加进 DDL；这里只补老库缺列的情况
   await appendTableColumnIfAbsent(pool, 'ai_preset_configs', 'api_key', 'TEXT')
+  await appendTableColumnIfAbsent(pool, 'user_ai_preset_configs', 'enabled', 'TINYINT(1) NOT NULL DEFAULT 1')
   await appendTableColumnIfAbsent(pool, 'image_generations', 'storage_kind', 'VARCHAR(16)')
   await appendTableColumnIfAbsent(pool, 'image_generations', 'storage_uri', 'TEXT')
   await appendTableColumnIfAbsent(pool, 'video_generations', 'storage_kind', 'VARCHAR(16)')

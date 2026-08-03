@@ -59,6 +59,7 @@ function applyLegacyColumnPatches(sqlite: Database.Database) {
   appendTableColumnIfAbsent(sqlite, 'video_merges', 'motion_pipeline', 'TEXT')
   // 「火火一键配置」每张卡片独立 api_key：列已加进 DDL；这里只补老库缺列的情况
   appendTableColumnIfAbsent(sqlite, 'ai_preset_configs', 'api_key', 'TEXT')
+  appendTableColumnIfAbsent(sqlite, 'user_ai_preset_configs', 'enabled', 'INTEGER NOT NULL DEFAULT 1')
   appendTableColumnIfAbsent(sqlite, 'image_generations', 'storage_kind', 'TEXT')
   appendTableColumnIfAbsent(sqlite, 'image_generations', 'storage_uri', 'TEXT')
   appendTableColumnIfAbsent(sqlite, 'video_generations', 'storage_kind', 'TEXT')

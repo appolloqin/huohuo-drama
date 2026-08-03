@@ -8,22 +8,62 @@ export type ChapterEndMeta = {
   prose: string
 }
 
-const CHAPTER_END_MARKER = /^---\s*\n\n【本章事件摘要】/m
+/**
+ * 章末元数据起点（兼容模型变体）：
+ * --- + 【本章事件摘要】 / ---本章事件摘要： / 【本章事件摘要】
+ */
+const CHAPTER_END_START_RE =
+  /(?:^|\n)(?:---\s*\n*\s*)?(?:【\s*本章事件摘要\s*】|本章事件摘要)(?:\s*[（(][^)）]*[)）])?\s*[：:]?/
+
+export function findChapterEndMetaIndex(fullText: string): number {
+  const trimmed = fullText.trim()
+  if (!trimmed) return -1
+  const n = [...trimmed].length
+  const re = new RegExp(CHAPTER_END_START_RE.source, 'g')
+  let best = -1
+  let m: RegExpExecArray | null
+  while ((m = re.exec(trimmed)) !== null) {
+    let idx = m.index
+    if (trimmed[idx] === '\n') idx += 1
+    const offsetChars = [...trimmed.slice(0, idx)].length
+    // 优先取文末附近（后 45% 或末 900 字），避免正文叙述误伤
+    if (offsetChars >= n * 0.55 || n - offsetChars <= 900) best = idx
+  }
+  if (best >= 0) return best
+  // 回退：整篇仅一处且靠近文末三分之一
+  re.lastIndex = 0
+  const only = re.exec(trimmed)
+  if (!only || only.index == null) return -1
+  let idx = only.index
+  if (trimmed[idx] === '\n') idx += 1
+  const offsetChars = [...trimmed.slice(0, idx)].length
+  return offsetChars >= n * 0.65 ? idx : -1
+}
 
 export function splitChapterProseAndMeta(fullText: string): { prose: string; meta: ChapterEndMeta | null } {
   const trimmed = fullText.trim()
-  const match = trimmed.match(CHAPTER_END_MARKER)
-  if (!match || match.index == null) {
+  const idx = findChapterEndMetaIndex(trimmed)
+  if (idx < 0) {
     return { prose: trimmed, meta: null }
   }
-  const prose = trimmed.slice(0, match.index).trim()
-  const tail = trimmed.slice(match.index)
+  const prose = trimmed.slice(0, idx).trim()
+  const tail = trimmed.slice(idx).trim()
   return { prose, meta: parseChapterEndBlock(tail) }
 }
 
+/** 读者正文：剥掉章末事件摘要等元数据 */
+export function stripNovelChapterEndMeta(text: string | null | undefined): string {
+  if (!text) return ''
+  return splitChapterProseAndMeta(text).prose
+}
+
 export function parseChapterEndBlock(block: string): ChapterEndMeta | null {
-  const summary = extractSectionLine(block, '【本章事件摘要】')
-  if (!summary && !block.includes('【状态变更清单】')) return null
+  const summary =
+    extractSectionLine(block, '【本章事件摘要】')
+    || extractInlineSummary(block)
+  if (!summary && !block.includes('【状态变更清单】') && !/本章事件摘要/.test(block)) {
+    return null
+  }
 
   return {
     summary: summary || '',
@@ -34,8 +74,16 @@ export function parseChapterEndBlock(block: string): ChapterEndMeta | null {
   }
 }
 
+/** `---本章事件摘要：……` 同行摘要 */
+function extractInlineSummary(block: string): string {
+  const inline = block.match(
+    /(?:【\s*)?本章事件摘要(?:\s*】)?(?:\s*[（(][^)）]*[)）])?\s*[：:]\s*([^\n【]+)/,
+  )
+  return inline?.[1]?.trim().slice(0, 120) || ''
+}
+
 function extractSectionLine(text: string, header: string): string {
-  const re = new RegExp(`${escapeRe(header)}\\s*（[^）]*）?\\s*\\n([^【]+)`, 'i')
+  const re = new RegExp(`${escapeRe(header)}\\s*（[^）]*）?\\s*(?:\\n|[：:])\\s*([^【\\n]+)`, 'i')
   const m = text.match(re)
   return m?.[1]?.trim().split('\n')[0]?.trim() || ''
 }

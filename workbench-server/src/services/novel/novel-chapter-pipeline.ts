@@ -24,12 +24,120 @@ import type { NovelMetadata } from '../../common/novel/novel-meta.js'
 import { resolveContinuityRewriteMax, resolveContinuityStagnantStreak } from '../../common/novel/novel-meta.js'
 import type { NovelContinuityLedger } from '../../common/novel/novel-continuity-state.js'
 import type { ContinuityCheckResult, ContinuityRewriteLogEntry } from '../../common/novel/novel-continuity-state.js'
+import { continuityRuleLabel } from '../../common/novel/novel-continuity-rules.js'
 import { logTaskError } from '../../common/task/task-logger.js'
+
+/** ??/?????????????????????????? UI */
+function buildHardRejectContinuityCheck(
+  reasons: Array<{ code: string; message: string }>,
+): ContinuityCheckResult {
+  const softCodes = new Set([
+    'outline_endpoint_overshoot',
+    'outline_boundary_model',
+    'next_chapter_beat_leak',
+    'chapter_event_replay',
+    'draft_orphan_replay',
+    'brief_pacing',
+    'brief_pending_overshoot',
+    'named_as_generic_epithet',
+    'head_orphan_span',
+    'named_as_generic',
+  ])
+  const hardReasons = reasons.filter(r => !softCodes.has(r.code || ''))
+  const use = hardReasons.length ? hardReasons : reasons
+  const reasonText = use.map(r => r.message).filter(Boolean).join(';')
+  return {
+    passed: false,
+    score: 0,
+    summary: reasonText || 'outline/seam hard reject',
+    conflicts: use.map(r => r.message).filter(Boolean),
+    blocking_items: use.map(r => {
+      const rule = r.code || 'chapter_seam_replay'
+      const soft = softCodes.has(rule)
+      return {
+        rule,
+        label: continuityRuleLabel(rule),
+        message: r.message,
+        layer: (soft ? 'model' : 'hard') as 'hard' | 'model',
+      }
+    }),
+    checked_at: new Date().toISOString(),
+    content_hash: hashNovelContent(`hard_reject:${reasonText}`),
+  }
+}
+
 import { generateNovelChapterFull } from './novel-writing.js'
+import { normalizeNovelTemporalNumerals } from '../../common/novel/novel-temporal-numerals.js'
+import { preserveNovelLineLayout } from '../../common/novel/novel-paragraph-format.js'
 import {
   ContinuityRewriteAbortError,
   type ContinuityAbortReason,
 } from './novel-continuity-errors.js'
+import { runChapterCraftPipelineHook } from './novel-chapter-craft-hook.js'
+import { maybeFixChapterSeamOpening } from './novel-chapter-seam-fix.js'
+import { maybeFixOutlineCompliance } from './novel-outline-compliance-fix.js'
+import { alignNovelChapterOutlineBoundary } from './novel-outline-boundary.js'
+import { resolveEffectiveChapterTarget } from './novel-chapter-target.js'
+import { runNovelChapterAiHumanizeHook } from './novel-chapter-ai-humanize-hook.js'
+import { loadPrevChapterContentTail } from './novel-continuity.js'
+import { detectChapterSeamColdOpen } from './novel-chapter-seam.js'
+import { logTaskWarn } from '../../common/task/task-logger.js'
+import type { EpisodeAiDetection } from '../../common/drama/episode-meta.js'
+
+async function runOutlineComplianceGate(args: {
+  content: string
+  dramaId: number
+  chapterNumber: number
+  chapterOutline?: string
+  writingBrief?: string
+  existingText?: string
+  mode?: 'generate' | 'rewrite' | 'continue'
+  targetLength?: number
+  billing?: TextBillingContext
+  onProgress?: (status: string) => void
+}): Promise<{
+  content: string
+  report: import('./novel-outline-compliance-fix.js').OutlineComplianceReport
+  stillCold: boolean
+}> {
+  const userTarget = Math.min(20000, Math.max(500, Number(args.targetLength) || 3000))
+  const beatTarget = resolveEffectiveChapterTarget({
+    chapterOutline: args.chapterOutline,
+    userTarget,
+  })
+  const target = beatTarget.effectiveTarget
+  const briefAlign = alignNovelChapterOutlineBoundary({
+    chapterOutline: args.chapterOutline,
+    writingBrief: args.writingBrief,
+    existingText: args.existingText || args.content,
+    mode: args.mode,
+    chapterNumber: args.chapterNumber,
+  })
+  args.onProgress?.('正在审校…')
+  const outlineFix = await maybeFixOutlineCompliance({
+    content: args.content,
+    dramaId: args.dramaId,
+    chapterNumber: args.chapterNumber,
+    chapterOutline: args.chapterOutline,
+    writingBrief: briefAlign.alignedBrief || undefined,
+    existingText: args.existingText || args.content,
+    billing: args.billing,
+    minLen: briefAlign.endpointPending ? Math.round(target * 0.82) : Math.round(target * 0.9),
+    maxLen: Math.round(target * 1.12),
+    onProgress: args.onProgress,
+  })
+  const stillCold = outlineFix.reasons.some(r => r.code === 'chapter_seam_cold_open')
+  return {
+    content: outlineFix.content,
+    report: {
+      passed: outlineFix.passed,
+      attempts: outlineFix.attempts,
+      reasons: outlineFix.reasons,
+      hardReject: outlineFix.hardReject,
+    },
+    stillCold,
+  }
+}
 
 export type NovelChapterPipelineResult = {
   content: string
@@ -38,8 +146,12 @@ export type NovelChapterPipelineResult = {
   rewritten: boolean
   rewrite_attempts: number
   globalUpdated: boolean
-  /** 因果链模式：从正文拆出的【变更记录】，落库 metadata */
+  /** ????????????????????? metadata */
   causal_change_record?: string
+  craft?: import('./novel-chapter-craft-check.js').ChapterCraftResult | null
+  outline_compliance?: import('./novel-outline-compliance-fix.js').OutlineComplianceReport | null
+  ai_detection?: EpisodeAiDetection | null
+  hard_reject?: boolean
 }
 
 type GenerateArgs = Parameters<typeof generateNovelChapterFull>[0]
@@ -54,49 +166,334 @@ export async function postProcessNovelChapterContent(args: {
   chapterOutline?: string
   billing?: TextBillingContext
   skipCheck?: boolean
-}): Promise<{ check: ContinuityCheckResult | null; ledger: NovelContinuityLedger | null }> {
+  /** ???????????/????? */
+  generateArgs?: GenerateArgs
+  /** ????????? SSE? */
+  onProgress?: (status: string) => void
+}): Promise<{
+  content: string
+  check: ContinuityCheckResult | null
+  ledger: NovelContinuityLedger | null
+  craft: import('./novel-chapter-craft-check.js').ChapterCraftResult | null
+  causal_change_record?: string
+  outline_compliance?: import('./novel-outline-compliance-fix.js').OutlineComplianceReport | null
+  ai_detection?: EpisodeAiDetection | null
+  hard_reject?: boolean
+}> {
   const {
-    content, dramaId, episodeId, chapterNumber, dramaTitle, meta, chapterOutline, billing, skipCheck,
+    dramaId, episodeId, chapterNumber, dramaTitle, meta, chapterOutline, billing, skipCheck,
+    generateArgs, onProgress,
   } = args
 
+  let content = args.content
   let check: ContinuityCheckResult | null = null
-  if (!skipCheck) {
-    const checkResult = await checkNovelChapterContinuity({
+  let outlineCompliance: import('./novel-outline-compliance-fix.js').OutlineComplianceReport | null = null
+
+  const runStreamContinuityCheck = async (reason: string) => {
+    // ??????? rewrite ????????????????????/Craft ???????????
+    if (isCausalChainEnabled(meta)) {
+      onProgress?.('正在审校…')
+      const ensured = await ensureCausalChangeRecordAppended({
+        content,
+        chapterNumber,
+        billing: billing ? { ...billing, reason: `??${reason}??????` } : undefined,
+      })
+      content = ensured.content
+    }
+    let checkResult = await checkNovelChapterContinuity({
       content,
       chapterNumber,
       dramaId,
       dramaTitle,
       meta,
       chapterOutline,
-      billing: billing ? { ...billing, reason: '小说一致性审校' } : undefined,
+      billing: billing ? { ...billing, reason: `???????${reason}` } : undefined,
     })
+    if (!checkResult.passed && isOnlyCausalChangeRecordIssue(checkResult) && isCausalChainEnabled(meta)) {
+      onProgress?.('正在审校…')
+      const fixed = await ensureCausalChangeRecordAppended({
+        content,
+        chapterNumber,
+        billing: billing ? { ...billing, reason: `??${reason}??????` } : undefined,
+      })
+      if (fixed.fixed) {
+        content = fixed.content
+        checkResult = await checkNovelChapterContinuity({
+          content,
+          chapterNumber,
+          dramaId,
+          dramaTitle,
+          meta,
+          chapterOutline,
+          billing: billing ? { ...billing, reason: `???????${reason}?????????` } : undefined,
+        })
+      }
+    }
+    return checkResult
+  }
+
+  if (!skipCheck) {
+    let checkResult = await runStreamContinuityCheck('')
     check = checkResult
-    await saveContinuityCheck(episodeId, checkResult)
+    // ????/????????????????????????
+    const seamHit = (checkResult.blocking_items || []).some(i => i.rule === 'chapter_seam_replay')
+      || (checkResult.conflicts || []).some(c => /章缝回放|chapter_seam_replay/.test(c))
+    if (seamHit && chapterNumber >= 2) {
+      const fixed = await maybeFixChapterSeamOpening({
+        content,
+        dramaId,
+        chapterNumber,
+        chapterOutline,
+        billing: billing ? { ...billing, reason: '????????' } : undefined,
+      })
+      if (fixed.fixed) {
+        content = fixed.content
+        logTaskWarn('Novel', 'post-process-seam-opening-fixed', { chapterNumber })
+        checkResult = await runStreamContinuityCheck('???????')
+        check = checkResult
+      }
+    }
+    await saveContinuityCheck(episodeId, check)
+  }
+
+  // ?????? Craft?????????????/????
+  const prevTail = chapterNumber >= 2
+    ? await loadPrevChapterContentTail(dramaId, chapterNumber, 1600)
+    : ''
+  {
+    const gate = await runOutlineComplianceGate({
+      content,
+      dramaId,
+      chapterNumber,
+      chapterOutline,
+      writingBrief: generateArgs?.prompt,
+      existingText: content,
+      mode: generateArgs?.mode || 'rewrite',
+      targetLength: generateArgs?.targetLength,
+      billing,
+      onProgress,
+    })
+    content = gate.content
+    outlineCompliance = gate.report
+    // ?????????????????????? Craft/????????? UI ???? reasons
+    if (gate.report.hardReject) {
+      logTaskWarn('Novel', 'post-process-outline-hard-reject', {
+        chapterNumber,
+        codes: gate.report.reasons.map(r => r.code),
+        chars: [...(args.content || '')].length,
+      })
+      if (!skipCheck) {
+        check = buildHardRejectContinuityCheck(gate.report.reasons)
+        await saveContinuityCheck(episodeId, check)
+      }
+      return {
+        // ???????????????????????????
+        content: '',
+        check,
+        ledger: null,
+        craft: null,
+        outline_compliance: outlineCompliance,
+        ai_detection: null,
+        hard_reject: true,
+      }
+    }
+  }
+
+  let craft: import('./novel-chapter-craft-check.js').ChapterCraftResult | null = null
+  if (generateArgs) {
+    const { loadPrevChapterEndSnapshot } = await import('./novel-chapter-end-snapshot.js')
+    const prevSnapshot = chapterNumber >= 2
+      ? await loadPrevChapterEndSnapshot(dramaId, chapterNumber)
+      : null
+    const blockStructureRewrite = !!outlineCompliance?.reasons.some(
+      r => r.code === 'chapter_seam_cold_open',
+    )
+    const beforeCraft = content
+    const craftOut = await runChapterCraftPipelineHook({
+      content,
+      generateArgs: { ...generateArgs, existingText: content, mode: 'rewrite' },
+      dramaId,
+      episodeId,
+      chapterNumber,
+      dramaTitle,
+      meta,
+      chapterOutline,
+      billing,
+      prevChapterTail: prevTail,
+      prevSnapshot,
+      blockStructureRewrite,
+    })
+    content = craftOut.content
+    craft = craftOut.craft
+    // Craft ???????????????????
+    if (chapterNumber >= 2 && craftOut.rewritten) {
+      const { detectChapterSeamReplay } = await import('./novel-chapter-seam.js')
+      const after = detectChapterSeamReplay({
+        content,
+        chapterNumber,
+        prevChapterTail: prevTail,
+        chapterOutline,
+        prevSnapshot,
+      })
+      const beforeHit = detectChapterSeamReplay({
+        content: beforeCraft,
+        chapterNumber,
+        prevChapterTail: prevTail,
+        chapterOutline,
+        prevSnapshot,
+      })
+      if (after && !beforeHit) {
+        logTaskWarn('Novel', 'craft-reverted-seam-replay', { chapterNumber })
+        content = beforeCraft
+      }
+    }
+  }
+
+  // ? AI ?????????????????????
+  let aiDetection: EpisodeAiDetection | null = null
+  {
+    const beforeHumanize = content
+    const beforeCold = chapterNumber >= 2 && !!detectChapterSeamColdOpen({
+      content: beforeHumanize,
+      chapterNumber,
+      prevChapterTail: prevTail,
+      chapterOutline,
+    })
+    const humanizeOut = await runNovelChapterAiHumanizeHook({
+      content,
+      episodeId,
+      chapterNumber,
+      meta,
+      billing,
+      onProgress,
+    })
+    const afterCold = chapterNumber >= 2 && !!detectChapterSeamColdOpen({
+      content: humanizeOut.content,
+      chapterNumber,
+      prevChapterTail: prevTail,
+      chapterOutline,
+    })
+    if (afterCold && !beforeCold) {
+      logTaskWarn('Novel', 'humanize-reverted-cold-open', { chapterNumber })
+      content = beforeHumanize
+      aiDetection = humanizeOut.ai_detection
+    } else {
+      content = humanizeOut.content
+      aiDetection = humanizeOut.ai_detection
+    }
+  }
+
+  if (
+    chapterNumber >= 2
+    && detectChapterSeamColdOpen({
+      content,
+      chapterNumber,
+      prevChapterTail: prevTail,
+      chapterOutline,
+    })
+  ) {
+    logTaskWarn('Novel', 'post-process-outline-recheck-after-style', { chapterNumber })
+    const gate = await runOutlineComplianceGate({
+      content,
+      dramaId,
+      chapterNumber,
+      chapterOutline,
+      writingBrief: generateArgs?.prompt,
+      existingText: content,
+      mode: 'rewrite',
+      targetLength: generateArgs?.targetLength,
+      billing,
+      onProgress,
+    })
+    content = gate.content
+    outlineCompliance = {
+      passed: gate.report.passed,
+      attempts: (outlineCompliance?.attempts || 0) + gate.report.attempts,
+      reasons: gate.report.reasons,
+      hardReject: gate.report.hardReject,
+    }
+    if (gate.report.hardReject) {
+      logTaskWarn('Novel', 'post-process-outline-hard-reject-after-style', {
+        chapterNumber,
+        codes: gate.report.reasons.map(r => r.code),
+      })
+      if (!skipCheck) {
+        check = buildHardRejectContinuityCheck(gate.report.reasons)
+        await saveContinuityCheck(episodeId, check)
+      }
+      return {
+        content: '',
+        check,
+        ledger: null,
+        craft,
+        outline_compliance: outlineCompliance,
+        ai_detection: aiDetection,
+        hard_reject: true,
+      }
+    }
+  }
+
+  // Craft/?????????????????????????????
+  if (!skipCheck && isCausalChainEnabled(meta)) {
+    const afterHooks = await runStreamContinuityCheck('???/????')
+    check = afterHooks
+    await saveContinuityCheck(episodeId, check)
+  } else if (isCausalChainEnabled(meta)) {
+    const ensured = await ensureCausalChangeRecordAppended({
+      content,
+      chapterNumber,
+      billing: billing ? { ...billing, reason: '??????????' } : undefined,
+    })
+    content = ensured.content
   }
 
   let ledger: NovelContinuityLedger | null = null
   try {
     const prose = await applyNovelMemoryFromChapter({
       dramaId, chapterNumber, content, meta,
-      billing: billing ? { ...billing, reason: '小说长记忆/锚点回写' } : undefined,
+      billing: billing ? { ...billing, reason: '?????/????' } : undefined,
     })
+    content = prose
     const fin = await finalizeChapterContinuity({
       dramaId,
       episodeId,
       chapterNumber,
       content: prose,
       dramaTitle,
-      billing: billing ? { ...billing, reason: '小说一致性账本提取' } : undefined,
+      billing: billing ? { ...billing, reason: '?????????' } : undefined,
     })
     ledger = fin.ledger
   } catch (err: any) {
     logTaskError('Novel', 'continuity-finalize', {
       chapterId: episodeId,
-      error: err?.message || '账本提取失败',
+      error: err?.message || '??????',
     })
   }
 
-  return { check, ledger }
+  let causalChangeRecord: string | undefined
+  if (isCausalChainEnabled(meta)) {
+    const detached = detachChangeRecordForStorage(content)
+    if (detached.changeBlock) {
+      content = detached.prose
+      causalChangeRecord = detached.changeBlock
+      const ep = await episodesRepo.findEpisodeById(episodeId)
+      const metadata = mergeEpisodeMetadata(ep?.metadata, {
+        causal_change_record: causalChangeRecord,
+      })
+      await episodesRepo.updateEpisode(episodeId, { metadata, updatedAt: now() })
+    }
+  }
+
+  content = normalizeNovelTemporalNumerals(preserveNovelLineLayout('', content))
+  return {
+    content,
+    check,
+    ledger,
+    craft,
+    causal_change_record: causalChangeRecord,
+    outline_compliance: outlineCompliance,
+    ai_detection: aiDetection,
+  }
 }
 
 export async function runNovelChapterPipeline(args: {
@@ -108,24 +505,15 @@ export async function runNovelChapterPipeline(args: {
   meta: NovelMetadata
   chapterOutline?: string
   billing?: TextBillingContext
-  /** 审校未通过时循环修正直至通过，默认跟随 meta.continuity_strict */
+  /** ??????????????????? meta.continuity_strict */
   strictContinuity?: boolean
-  /** 单章最大修正轮次；null/0 表示不限制，默认不限制 */
+  /** ?????????null/0 ??????????? */
   maxRewriteAttempts?: number
   skipCheck?: boolean
   skipFinalize?: boolean
   skipFinalizeWhenCheckFails?: boolean
   shouldStop?: () => boolean
-  onPhase?: (phase: 'chapter' | 'check' | 'rewrite', detail?: {
-    rewriteAttempt?: number
-    conflicts?: string[]
-    blocking_items?: import('../../common/novel/novel-continuity-rules.js').ContinuityBlockingItem[]
-    score?: number
-    summary?: string
-    rule_hints?: string[]
-    model_rejected?: string[]
-    mode?: 'patch' | 'regen'
-  }) => void
+  onPhase?: (phase: 'chapter' | 'check' | 'rewrite', detail?: Record<string, unknown>) => void
 }): Promise<NovelChapterPipelineResult> {
   const {
     generateArgs,
@@ -149,7 +537,7 @@ export async function runNovelChapterPipeline(args: {
   const stagnantLimit = resolveContinuityStagnantStreak(meta)
 
   const assertNotStopped = () => {
-    if (shouldStop?.()) throw new Error('用户已请求停止批量撰写')
+    if (shouldStop?.()) throw new Error('???????????')
   }
 
   onPhase?.('chapter')
@@ -212,10 +600,10 @@ export async function runNovelChapterPipeline(args: {
   }
 
   const runCheck = async (reasonSuffix = '') => {
-    await maybeEnsureChangeRecord(`审校前补全变更记录${reasonSuffix}`)
+    await maybeEnsureChangeRecord(`?????????${reasonSuffix}`)
     onPhase?.('check')
     assertNotStopped()
-    const reason = `小说一致性审校${reasonSuffix}`
+    const reason = `???????${reasonSuffix}`
     const checkResult = await checkNovelChapterContinuity({
       content,
       chapterNumber,
@@ -237,12 +625,12 @@ export async function runNovelChapterPipeline(args: {
         abortContinuity('max_attempts', checkResult, { rewriteMax })
       }
 
-      // 仅缺【变更记录】：程序化补全 + 重审，不计入整章 regen/patch
+      // ?????????????? + ???????? regen/patch
       if (isOnlyCausalChangeRecordIssue(checkResult)) {
         const before = hashNovelContent(content.trim())
-        const fixed = await maybeEnsureChangeRecord('仅补全变更记录（免整章重写）')
+        const fixed = await maybeEnsureChangeRecord('??????????????')
         if (fixed) {
-          checkResult = await runCheck('（变更记录补全后）')
+          checkResult = await runCheck('?????????')
           stagnantRewrites = 0
           continue
         }
@@ -300,7 +688,7 @@ export async function runNovelChapterPipeline(args: {
         content = await generateNovelChapterFull(
           { ...generateArgs, prompt: fixedPrompt },
           billing
-            ? { ...billing, reason: `小说章节一致性重生成（第${rewriteAttempts}次）` }
+            ? { ...billing, reason: `????????????${rewriteAttempts}??` }
             : undefined,
         )
         rewritten = true
@@ -314,7 +702,7 @@ export async function runNovelChapterPipeline(args: {
           dramaTitle,
           attemptHistory: rewriteLog,
           billing: billing
-            ? { ...billing, reason: `小说一致性局部修正（第${rewriteAttempts}次）` }
+            ? { ...billing, reason: `???????????${rewriteAttempts}??` }
             : undefined,
         })
 
@@ -348,9 +736,176 @@ export async function runNovelChapterPipeline(args: {
       })
       await saveContinuityRewriteLog(episodeId, rewriteLog)
 
-      checkResult = await runCheck(`（第${rewriteAttempts}次修正后）`)
+      checkResult = await runCheck(`??${rewriteAttempts}?????`)
     }
     check = checkResult
+  }
+
+  // ?????? Craft???? postProcess ???
+  const prevTailBatch = chapterNumber >= 2
+    ? await loadPrevChapterContentTail(dramaId, chapterNumber, 1600)
+    : ''
+  let outlineCompliance: import('./novel-outline-compliance-fix.js').OutlineComplianceReport | null = null
+  {
+    const gate = await runOutlineComplianceGate({
+      content,
+      dramaId,
+      chapterNumber,
+      chapterOutline,
+      writingBrief: generateArgs?.prompt,
+      existingText: content,
+      mode: generateArgs?.mode || 'rewrite',
+      targetLength: generateArgs?.targetLength,
+      billing,
+    })
+    content = gate.content
+    outlineCompliance = gate.report
+    if (!gate.report.passed || gate.report.attempts > 0) {
+      rewritten = true
+      rewriteAttempts += gate.report.attempts
+    }
+    if (gate.report.hardReject) {
+      logTaskWarn('Novel', 'pipeline-outline-hard-reject', {
+        chapterNumber,
+        codes: gate.report.reasons.map(r => r.code),
+      })
+      return {
+        content: '',
+        check,
+        ledger: null,
+        rewritten,
+        rewrite_attempts: rewriteAttempts,
+        globalUpdated: false,
+        craft: null,
+        outline_compliance: outlineCompliance,
+        ai_detection: null,
+        hard_reject: true,
+      }
+    }
+  }
+
+  let craft: import('./novel-chapter-craft-check.js').ChapterCraftResult | null = null
+  try {
+    const { loadPrevChapterEndSnapshot } = await import('./novel-chapter-end-snapshot.js')
+    const prevSnapshotBatch = chapterNumber >= 2
+      ? await loadPrevChapterEndSnapshot(dramaId, chapterNumber)
+      : null
+    const blockStructureRewrite = !!outlineCompliance?.reasons.some(
+      r => r.code === 'chapter_seam_cold_open',
+    )
+    const beforeCraftBatch = content
+    const craftOut = await runChapterCraftPipelineHook({
+      content,
+      generateArgs: { ...generateArgs, existingText: content, mode: 'rewrite' },
+      dramaId,
+      episodeId,
+      chapterNumber,
+      dramaTitle,
+      meta,
+      chapterOutline,
+      billing,
+      shouldStop,
+      prevChapterTail: prevTailBatch,
+      prevSnapshot: prevSnapshotBatch,
+      blockStructureRewrite,
+      onPhase: (phase, detail) => {
+        if (phase === 'check') onPhase?.('check', detail)
+        if (phase === 'rewrite') onPhase?.('rewrite', detail)
+      },
+    })
+    content = craftOut.content
+    craft = craftOut.craft
+    if (chapterNumber >= 2 && craftOut.rewritten) {
+      const { detectChapterSeamReplay } = await import('./novel-chapter-seam.js')
+      const after = detectChapterSeamReplay({
+        content,
+        chapterNumber,
+        prevChapterTail: prevTailBatch,
+        chapterOutline,
+        prevSnapshot: prevSnapshotBatch,
+      })
+      const beforeHit = detectChapterSeamReplay({
+        content: beforeCraftBatch,
+        chapterNumber,
+        prevChapterTail: prevTailBatch,
+        chapterOutline,
+        prevSnapshot: prevSnapshotBatch,
+      })
+      if (after && !beforeHit) {
+        logTaskWarn('Novel', 'craft-reverted-seam-replay', { chapterNumber })
+        content = beforeCraftBatch
+      }
+    }
+    if (craftOut.rewritten) {
+      rewritten = true
+      rewriteAttempts += craftOut.rewriteAttempts
+    }
+  } catch (err) {
+    throw err
+  }
+
+  let aiDetection: EpisodeAiDetection | null = null
+  {
+    const beforeHumanize = content
+    const beforeCold = chapterNumber >= 2 && !!detectChapterSeamColdOpen({
+      content: beforeHumanize,
+      chapterNumber,
+      prevChapterTail: prevTailBatch,
+      chapterOutline,
+    })
+    const humanizeOut = await runNovelChapterAiHumanizeHook({
+      content,
+      episodeId,
+      chapterNumber,
+      meta,
+      billing,
+      onProgress: (status) => onPhase?.('rewrite', { status, humanize: true }),
+    })
+    const afterCold = chapterNumber >= 2 && !!detectChapterSeamColdOpen({
+      content: humanizeOut.content,
+      chapterNumber,
+      prevChapterTail: prevTailBatch,
+      chapterOutline,
+    })
+    if (afterCold && !beforeCold) {
+      logTaskWarn('Novel', 'humanize-reverted-cold-open', { chapterNumber })
+      content = beforeHumanize
+      aiDetection = humanizeOut.ai_detection
+    } else {
+      content = humanizeOut.content
+      aiDetection = humanizeOut.ai_detection
+      if (humanizeOut.humanize_attempts > 0) rewritten = true
+    }
+  }
+
+  if (
+    chapterNumber >= 2
+    && detectChapterSeamColdOpen({
+      content,
+      chapterNumber,
+      prevChapterTail: prevTailBatch,
+      chapterOutline,
+    })
+  ) {
+    logTaskWarn('Novel', 'pipeline-outline-recheck-after-style', { chapterNumber })
+    const gate = await runOutlineComplianceGate({
+      content,
+      dramaId,
+      chapterNumber,
+      chapterOutline,
+      writingBrief: generateArgs?.prompt,
+      existingText: content,
+      mode: 'rewrite',
+      targetLength: generateArgs?.targetLength,
+      billing,
+    })
+    content = gate.content
+    outlineCompliance = {
+      passed: gate.report.passed,
+      attempts: (outlineCompliance?.attempts || 0) + gate.report.attempts,
+      reasons: gate.report.reasons,
+    }
+    if (!gate.report.passed || gate.report.attempts > 0) rewritten = true
   }
 
   let ledger: NovelContinuityLedger | null = null
@@ -364,7 +919,7 @@ export async function runNovelChapterPipeline(args: {
     chapterNumber,
     content,
     meta,
-    billing: billing ? { ...billing, reason: '小说长记忆/锚点回写' } : undefined,
+    billing: billing ? { ...billing, reason: '?????/????' } : undefined,
   })
 
   if (shouldFinalize) {
@@ -376,7 +931,7 @@ export async function runNovelChapterPipeline(args: {
         content,
         dramaTitle,
         billing: billing
-          ? { ...billing, reason: '小说一致性账本提取' }
+          ? { ...billing, reason: '?????????' }
           : undefined,
       })
       ledger = fin.ledger
@@ -384,7 +939,7 @@ export async function runNovelChapterPipeline(args: {
     } catch (err: any) {
       logTaskError('Novel', 'continuity-finalize', {
         chapterId: episodeId,
-        error: err?.message || '账本提取失败',
+        error: err?.message || '??????',
       })
     }
     if (isCausalChainEnabled(meta)) {
@@ -394,12 +949,12 @@ export async function runNovelChapterPipeline(args: {
           chapterNumber,
           fullContent: content,
           dramaTitle,
-          billing: billing ? { ...billing, reason: '因果链更新' } : undefined,
+          billing: billing ? { ...billing, reason: '?????' } : undefined,
         })
       } catch (err: any) {
         logTaskError('Novel', 'causal-chain-update', {
           chapterId: episodeId,
-          error: err?.message || '因果链更新失败',
+          error: err?.message || '???????',
         })
       }
     }
@@ -422,6 +977,9 @@ export async function runNovelChapterPipeline(args: {
     rewrite_attempts: rewriteAttempts,
     globalUpdated,
     causal_change_record: causalChangeRecord,
+    outline_compliance: outlineCompliance,
+    craft,
+    ai_detection: aiDetection,
   }
 }
 
@@ -437,7 +995,7 @@ async function saveContinuityCheck(episodeId: number, check: ContinuityCheckResu
   await episodesRepo.updateEpisode(episodeId, { metadata, updatedAt: now() })
 }
 
-/** 续写等路径：仅审校并写入 metadata，不提取账本 */
+/** ???????????? metadata?????? */
 export async function checkAndSaveChapterContinuity(args: {
   content: string
   dramaId: number
@@ -455,7 +1013,7 @@ export async function checkAndSaveChapterContinuity(args: {
   const check = await checkNovelChapterContinuity({
     ...args,
     content: auditContent,
-    billing: args.billing ? { ...args.billing, reason: '小说一致性审校' } : undefined,
+    billing: args.billing ? { ...args.billing, reason: '???????' } : undefined,
   })
   await saveContinuityCheck(args.episodeId, check)
   return check

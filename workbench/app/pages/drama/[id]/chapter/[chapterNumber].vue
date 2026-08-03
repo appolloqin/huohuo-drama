@@ -143,26 +143,26 @@
             <button
               type="button"
               :class="['mode-tab', { active: generationMode === 'stream' }]"
-              :disabled="continuing || generating"
+              :disabled="chapterBusy"
               @click="setGenerationMode('stream')"
             >{{ tm.novel.generationModeStream }}</button>
             <button
               type="button"
               :class="['mode-tab', { active: generationMode === 'batch' }]"
-              :disabled="continuing || generating"
+              :disabled="chapterBusy"
               @click="setGenerationMode('batch')"
             >{{ tm.novel.generationModeBatch }}</button>
           </div>
         </div>
         <div class="side-actions">
           <p v-if="!canGenerate" class="side-hint credits-hint">{{ tm.credits.noCreditsCannotGenerate }}</p>
-          <button class="btn btn-primary" :disabled="continuing || generating || !canGenerate" @click="enqueueContinueWrite(false)">
+          <button class="btn btn-primary" :disabled="chapterBusy || !canGenerate" @click="enqueueContinueWrite">
             {{ continuing ? tm.novel.continuing : tm.novel.continueWrite }}
           </button>
-          <button class="btn" :disabled="continuing || generating || !canGenerate" @click="enqueueContinueWrite(true)">
-            {{ tm.novel.rewriteContinue }}
+          <button class="btn" :disabled="chapterBusy || !canGenerate" @click="enqueueAiRewrite">
+            {{ rewriting ? tm.novel.rewriting : tm.novel.rewriteChapter }}
           </button>
-          <button class="btn btn-primary" :disabled="continuing || generating || !canGenerate" @click="enqueueFullGeneration">
+          <button class="btn btn-primary" :disabled="chapterBusy || !canGenerate" @click="enqueueFullGeneration">
             {{ generating ? tm.novel.generating : tm.novel.generateFull }}
           </button>
         </div>
@@ -205,7 +205,7 @@
             :placeholder="tm.novel.editorPlaceholder"
             @input="onEditorInput"
           />
-          <div v-if="streamWaiting" class="stream-waiting">{{ tm.novel.streamWaiting }}</div>
+          <div v-if="streamWaiting" class="stream-waiting">{{ streamStatusText || tm.novel.streamWaiting }}</div>
           <div class="editor-foot">
             <span class="editor-word-count">{{ tx(tm.novel.chapterWordCount, { n: formatNovelWords(charCount) }) }}</span>
           </div>
@@ -254,6 +254,28 @@
             <template v-if="aiDetectionResult.elapsed_ms != null">
               · {{ tx(tm.novel.aiDetectElapsed, { ms: aiDetectionResult.elapsed_ms }) }}
             </template>
+          </p>
+          <p v-if="aiDetectionResult.method" class="ai-detect-method">
+            {{ aiDetectionMethodLabel(aiDetectionResult.method) }}
+          </p>
+          <p
+            v-if="aiDetectionResult.humanize_attempts != null || aiDetectionResult.humanize_warning"
+            class="ai-detect-humanize"
+            :class="{ 'is-warn': aiDetectionResult.humanize_passed === false }"
+          >
+            <template v-if="aiDetectionResult.humanize_attempts != null">
+              {{ tx(tm.novel.aiDetectHumanizeAttempts, {
+                n: aiDetectionResult.humanize_attempts,
+                target: aiDetectionResult.humanize_target ?? 39,
+              }) }}
+              ·
+              {{ aiDetectionResult.humanize_passed
+                ? tm.novel.aiDetectHumanizePassed
+                : tm.novel.aiDetectHumanizeFailed }}
+            </template>
+            <span v-if="aiDetectionResult.humanize_warning">
+              {{ aiDetectionResult.humanize_warning }}
+            </span>
           </p>
           <div v-if="aiDetectionResult.signals?.length" class="ai-detect-signals">
             <p class="ai-detect-signals-title">{{ tm.novel.aiDetectSignals }}</p>
@@ -350,6 +372,8 @@ const generatePrompt = ref('')
 const saving = ref(false)
 const continuing = ref(false)
 const generating = ref(false)
+const rewriting = ref(false)
+const chapterBusy = computed(() => continuing.value || generating.value || rewriting.value)
 const targetChapterChars = ref(3000)
 const continueSegmentChars = ref(800)
 const contextChars = ref(4000)
@@ -358,6 +382,7 @@ const editorRef = ref(null)
 const GENERATION_MODE_KEY = 'huohuo_novel_generation_mode'
 const generationMode = ref('stream')
 const streamWaiting = ref(false)
+const streamStatusText = ref('')
 const aiProbeRunning = ref(false)
 const aiDetectSheetOpen = ref(false)
 const savedAiDetection = ref(null)
@@ -517,8 +542,11 @@ function aiSuggestionAdvice(item) {
       return tx(n.aiDetectAdviceSentenceUniformity, { count })
     case 'paragraph_uniformity':
       return tx(n.aiDetectAdviceParagraphUniformity, { count })
-    case 'phrase_repetition':
-      return tx(n.aiDetectAdvicePhraseRepetition, { bigram: item.bigram || '', count })
+    case 'phrase_repetition': {
+      const bigram = item.bigram || item.match_text || ''
+      if (!bigram || !count) return n.aiDetectAdviceLexical
+      return tx(n.aiDetectAdvicePhraseRepetition, { bigram, count })
+    }
     case 'colloquial':
       return n.aiDetectAdviceColloquial
     case 'punctuation':
@@ -726,12 +754,10 @@ async function saveLengthSettings() {
   } catch { /* ignore */ }
 }
 
-async function enqueueContinueWrite(rewrite) {
+async function enqueueContinueWrite() {
   if (!guardGenerate()) return
   if (!activeChapter.value?.id) return
-  if (rewrite && lastContinuePos.value >= 0) {
-    chapterBody.value = chapterBody.value.slice(0, lastContinuePos.value)
-  } else if (lastContinuePos.value < 0) {
+  if (lastContinuePos.value < 0) {
     lastContinuePos.value = chapterBody.value.length
   }
   const baseText = chapterBody.value
@@ -740,25 +766,45 @@ async function enqueueContinueWrite(rewrite) {
     continuing.value = true
     if (generationMode.value === 'stream') {
       streamWaiting.value = true
+      streamStatusText.value = '已连接，等待模型输出…'
       await novelAPI.continueChapterStream(
         activeChapter.value.id,
         { text: baseText, length: continueSegmentChars.value },
         (chunk) => {
           streamWaiting.value = false
+          streamStatusText.value = ''
           segment += chunk
-          chapterBody.value = baseText + segment
+          chapterBody.value = baseText + stripNovelChangeRecord(segment)
           scrollEditorToBottom()
         },
         () => { streamWaiting.value = true },
-        (finalSegment) => {
-          segment = finalSegment
-          chapterBody.value = baseText + finalSegment
+        (finalSegment, meta) => {
+          if (finalSegment) {
+            segment = stripNovelChangeRecord(finalSegment)
+            chapterBody.value = baseText + segment
+          }
+          if (meta?.continuity_check !== undefined) {
+            continuityCheck.value = meta.continuity_check
+            if (meta.continuity_check && !meta.continuity_check.passed) {
+              toast.warning(tx(tm.value.novel.continuityCheckToastFailed, { score: meta.continuity_check.score }))
+            }
+          }
+        },
+        (status) => {
+          streamWaiting.value = true
+          streamStatusText.value = status
         },
       )
     } else {
       const res = await novelAPI.continueChapter(activeChapter.value.id, { text: baseText, length: continueSegmentChars.value })
-      segment = res.segment || ''
+      segment = stripNovelChangeRecord(res.segment || '')
       if (segment) chapterBody.value = baseText + segment
+      if (res.continuity_check !== undefined) {
+        continuityCheck.value = res.continuity_check
+        if (res.continuity_check && !res.continuity_check.passed) {
+          toast.warning(tx(tm.value.novel.continuityCheckToastFailed, { score: res.continuity_check.score }))
+        }
+      }
     }
     if (segment) await episodeAPI.update(activeChapter.value.id, { content: chapterBody.value })
   } catch (e) {
@@ -766,24 +812,244 @@ async function enqueueContinueWrite(rewrite) {
   } finally {
     continuing.value = false
     streamWaiting.value = false
+    streamStatusText.value = ''
   }
 }
 
-async function enqueueFullGeneration() {
+function isSeamFailCompliance(oc) {
+  if (!oc || oc.passed !== false) return false
+  if (oc.hardReject) return true
+  return (oc.reasons || []).some(r =>
+    r?.code === 'chapter_seam_cold_open',
+  )
+}
+
+function isSeamFailContinuity(check) {
+  if (!check || check.passed) return false
+  const blob = [
+    check.summary || '',
+    ...(check.conflicts || []),
+    ...(check.blocking_items || []).map(i => `${i.rule || ''} ${i.message || ''}`),
+  ].join('\n')
+  return /章缝冷开篇|cold_open|chapter_seam_cold_open/.test(blob)
+}
+
+function notifyOutlineCompliance(oc) {
+  if (!oc || oc.passed !== false) return
+  if (oc.hardReject) {
+    const tip = (oc.reasons || []).map(r => r.message).filter(Boolean).slice(0, 2).join('；')
+    toast.error(tip
+      ? `大纲硬拒未落库：${tip}`
+      : tx(tm.value.novel.outlineComplianceToastWarn, { attempts: oc.attempts || 0 }))
+    return
+  }
+  const tip = (oc.reasons || []).map(r => r.message).filter(Boolean).slice(0, 2).join('；')
+  toast.warning(tip
+    ? `大纲边界告警（已修正 ${oc.attempts || 0} 轮，已落库）：${tip}`
+    : tx(tm.value.novel.outlineComplianceToastWarn, { attempts: oc.attempts || 0 }))
+}
+
+function notifyChapterCraft(craft) {
+  if (craft && craft.passed === false) {
+    toast.warning(tx(tm.value.novel.chapterCraftToastWarn, {
+      score: craft.score ?? 0,
+      min: craft.min_score ?? 70,
+    }))
+  }
+}
+
+function notifyAiHumanize(det) {
+  if (!det) return
+  savedAiDetection.value = det
+  aiDetectionResult.value = { ...det, is_stale: false }
+  if (det.humanize_passed === false) {
+    toast.warning(det.humanize_warning || tx(tm.value.novel.aiDetectHumanizeToastWarn, {
+      n: det.humanize_attempts ?? 0,
+      score: det.probability ?? 0,
+      target: det.humanize_target ?? 39,
+    }))
+  }
+}
+
+function aiDetectionMethodLabel(method) {
+  if (!method) return ''
+  if (String(method).includes('perplexity')) return tm.value.novel.aiDetectMethodPerplexityShort
+  if (String(method).includes('statistical') || String(method).includes('fallback')) {
+    return tm.value.novel.aiDetectMethodStatisticalShort
+  }
+  return String(method)
+}
+
+/**
+ * 生成用写作说明：附带本章大纲硬块，避免他章写作说明串入导致结构跑偏。
+ * @param {{ outlineOnly?: boolean }} [opts] 重写时 outlineOnly=true：不传毒 brief（离别叮嘱等），只认大纲
+ */
+function buildAlignedGeneratePrompt(opts) {
+  const brief = generatePrompt.value.trim()
+  const outline = chapterOutline.value.trim()
+  const marker = '【结构以本章大纲为准'
+  if (opts?.outlineOnly && outline) {
+    return `${marker} — 开篇不得早于上章末已发生事实；写作说明结构段作废】\n${outline}`
+  }
+  if (!outline) return brief
+  if (!brief) return outline
+  if (brief.includes(marker) || brief.includes(outline.slice(0, Math.min(24, outline.length)))) {
+    return brief
+  }
+  return `${brief}\n\n${marker} — 开篇不得早于上章末已发生事实】\n${outline}`
+}
+
+/** 章缝硬拒：勿回滚到旧冷开篇正文（避免「还是旧文」假象） */
+function isSeamHardReject(err) {
+  const m = String(err?.message || err || '')
+  return /冷开篇|已拒绝落库|开篇未进入本章大纲/.test(m)
+}
+
+/** AI 重写：结合上章上下文，整章重写当前正文 */
+async function enqueueAiRewrite() {
   if (!guardGenerate()) return
   if (!activeChapter.value?.id) return
-  const prompt = generatePrompt.value.trim() || chapterOutline.value.trim()
+  if (!chapterBody.value.trim()) {
+    toast.error(tm.value.novel.rewriteNeedContent)
+    return
+  }
+  // 重写：只传大纲，避免写作说明「离别与叮嘱」等起势种子进服务端
+  const prompt = buildAlignedGeneratePrompt({ outlineOnly: true })
   if (!prompt) {
     toast.error(tm.value.novel.chapterOutlineEmpty)
     return
   }
   const existingText = chapterBody.value
   let content = ''
+  const bodyBackup = existingText
+  try {
+    rewriting.value = true
+    if (generationMode.value === 'stream') {
+      streamWaiting.value = true
+      streamStatusText.value = '已连接，正在流式生成…'
+      let streamed = ''
+      await novelAPI.generateChapterStream(
+        activeChapter.value.id,
+        {
+          prompt,
+          text: existingText,
+          target_length: targetChapterChars.value,
+          rewrite: true,
+        },
+        (chunk) => {
+          streamWaiting.value = false
+          // 进度行偶发进 text 块：勿写入正文
+          if (/^[?？\uFFFD\s.…]{3,}\d+\s*\/\s*\d+/.test(chunk.trim())
+            || /正在(?:大纲|审校|润色|修正|降低|检测)/.test(chunk)
+            || (/[?？]{3,}/.test(chunk) && /\d+\s*\/\s*\d+/.test(chunk))) {
+            streamStatusText.value = chunk.trim()
+            return
+          }
+          streamed += chunk
+          chapterBody.value = stripNovelChangeRecord(streamed)
+          scrollEditorToBottom()
+        },
+        () => { streamWaiting.value = true },
+        (finalContent, meta) => {
+          streamWaiting.value = false
+          streamStatusText.value = ''
+          if (finalContent) {
+            content = stripNovelChangeRecord(finalContent)
+            chapterBody.value = content
+          }
+          if (meta?.continuity_check !== undefined) {
+            continuityCheck.value = meta.continuity_check
+            if (meta.continuity_check && !meta.continuity_check.passed && !meta?.hard_reject) {
+              toast.warning(tx(tm.value.novel.continuityCheckToastFailed, { score: meta.continuity_check.score }))
+            }
+          }
+          notifyOutlineCompliance(meta?.outline_compliance)
+          notifyChapterCraft(meta?.chapter_craft)
+          notifyAiHumanize(meta?.ai_detection)
+          if (meta?.hard_reject || meta?.outline_compliance?.hardReject) {
+            // 硬拒不落库；恢复重写前正文（可能本身也有章缝问题，勿误认「又生成了毒稿」）
+            content = ''
+            chapterBody.value = bodyBackup
+            toast.error('本次重写未过章缝硬拒，未保存。已恢复重写前原文；须承接上章事实（可顺叙或先果后因），勿重做收束、勿整段不交代来者。')
+          } else if (isSeamFailCompliance(meta?.outline_compliance) || isSeamFailContinuity(meta?.continuity_check)) {
+            content = ''
+            chapterBody.value = bodyBackup
+            toast.error('重写开篇未接上章末（章缝冷开篇），未保存；请再试一次')
+          }
+        },
+        (status) => {
+          // 润色/审校阶段保留已流式正文，仅更新状态条
+          streamStatusText.value = status
+          if (/润色|审校|大纲|AI 痕迹|去AI/.test(status)) streamWaiting.value = true
+        },
+      )
+    } else {
+      const res = await novelAPI.generateChapter(activeChapter.value.id, {
+        prompt,
+        text: existingText,
+        target_length: targetChapterChars.value,
+        rewrite: true,
+      })
+      const resText = stripNovelChangeRecord(res.content || '')
+      if (res.outline_compliance?.hardReject || res.hard_reject) {
+        content = ''
+        chapterBody.value = bodyBackup
+        toast.error('本次重写未过章缝硬拒，未保存。已恢复原文；须承接上章事实，手法可多样，但勿吃书。')
+      } else if (isSeamFailCompliance(res.outline_compliance) || isSeamFailContinuity(res.continuity_check)) {
+        content = ''
+        chapterBody.value = bodyBackup
+        toast.error('重写开篇未接上章末（章缝冷开篇），未保存；请再试一次')
+      } else if (resText) {
+        content = resText
+        chapterBody.value = resText
+      }
+      if (res.continuity_check !== undefined) {
+        continuityCheck.value = res.continuity_check
+        if (res.continuity_check && !res.continuity_check.passed && !res.outline_compliance?.hardReject) {
+          toast.warning(tx(tm.value.novel.continuityCheckToastFailed, { score: res.continuity_check.score }))
+        }
+      }
+      notifyOutlineCompliance(res.outline_compliance)
+      notifyChapterCraft(res.chapter_craft)
+      notifyAiHumanize(res.ai_detection)
+    }
+    if (content) {
+      lastContinuePos.value = -1
+      await episodeAPI.update(activeChapter.value.id, { content: chapterBody.value })
+      toast.success(tm.value.novel.toastSaved)
+    } else if (!continuityCheck.value && !chapterBody.value.trim()) {
+      toast.error('重写未返回正文，请重试')
+    }
+  } catch (e) {
+    if (!isSeamHardReject(e)) {
+      chapterBody.value = bodyBackup
+    }
+    content = ''
+    toast.error(e.message)
+  } finally {
+    rewriting.value = false
+    streamWaiting.value = false
+    streamStatusText.value = ''
+  }
+}
+
+async function enqueueFullGeneration() {
+  if (!guardGenerate()) return
+  if (!activeChapter.value?.id) return
+  const prompt = buildAlignedGeneratePrompt()
+  if (!prompt) {
+    toast.error(tm.value.novel.chapterOutlineEmpty)
+    return
+  }
+  const existingText = chapterBody.value
+  let content = ''
+  const bodyBackup = existingText
   try {
     generating.value = true
     if (generationMode.value === 'stream') {
       streamWaiting.value = true
-      let cleared = false
+      streamStatusText.value = '已连接，正在流式生成…'
+      let streamed = ''
       await novelAPI.generateChapterStream(
         activeChapter.value.id,
         {
@@ -793,18 +1059,44 @@ async function enqueueFullGeneration() {
         },
         (chunk) => {
           streamWaiting.value = false
-          if (!cleared) {
-            cleared = true
-            chapterBody.value = ''
+          // 进度行偶发进 text 块：勿写入正文
+          if (/^[?？\uFFFD\s.…]{3,}\d+\s*\/\s*\d+/.test(chunk.trim())
+            || /正在(?:大纲|审校|润色|修正|降低|检测)/.test(chunk)
+            || (/[?？]{3,}/.test(chunk) && /\d+\s*\/\s*\d+/.test(chunk))) {
+            streamStatusText.value = chunk.trim()
+            return
           }
-          content += chunk
-          chapterBody.value = content
+          streamed += chunk
+          chapterBody.value = stripNovelChangeRecord(streamed)
           scrollEditorToBottom()
         },
         () => { streamWaiting.value = true },
-        (finalContent) => {
-          content = finalContent
-          chapterBody.value = finalContent
+        (finalContent, meta) => {
+          streamWaiting.value = false
+          streamStatusText.value = ''
+          if (finalContent) {
+            content = stripNovelChangeRecord(finalContent)
+            chapterBody.value = content
+          }
+          if (meta?.continuity_check !== undefined) {
+            continuityCheck.value = meta.continuity_check
+            if (meta.continuity_check && !meta.continuity_check.passed && !meta?.hard_reject) {
+              toast.warning(tx(tm.value.novel.continuityCheckToastFailed, { score: meta.continuity_check.score }))
+            }
+          }
+          notifyOutlineCompliance(meta?.outline_compliance)
+          notifyChapterCraft(meta?.chapter_craft)
+          notifyAiHumanize(meta?.ai_detection)
+          if (meta?.hard_reject || meta?.outline_compliance?.hardReject) {
+            // 硬拒：勿保留流式毒稿；回滚重写/生成前正文
+            content = ''
+            chapterBody.value = bodyBackup
+            toast.error('本次生成未过章缝硬拒，未保存；已恢复原文。')
+          }
+        },
+        (status) => {
+          streamStatusText.value = status
+          if (/润色|审校|大纲|AI 痕迹|去AI/.test(status)) streamWaiting.value = true
         },
       )
     } else {
@@ -813,25 +1105,42 @@ async function enqueueFullGeneration() {
         text: existingText,
         target_length: targetChapterChars.value,
       })
-      content = res.content || ''
-      if (content) chapterBody.value = content
-      if (res.continuity_check) {
+      const resText = stripNovelChangeRecord(res.content || '')
+      if (res.outline_compliance?.hardReject || res.hard_reject) {
+        content = ''
+        chapterBody.value = bodyBackup
+        toast.error('本次生成未过章缝硬拒，未保存；已恢复原文。')
+      } else if (resText) {
+        content = resText
+        chapterBody.value = resText
+      }
+      if (res.continuity_check !== undefined) {
         continuityCheck.value = res.continuity_check
-        if (!res.continuity_check.passed) {
+        if (res.continuity_check && !res.continuity_check.passed && !res.outline_compliance?.hardReject) {
           toast.warning(tx(tm.value.novel.continuityCheckToastFailed, { score: res.continuity_check.score }))
         }
       }
+      notifyOutlineCompliance(res.outline_compliance)
+      notifyChapterCraft(res.chapter_craft)
+      notifyAiHumanize(res.ai_detection)
     }
     if (content) {
       lastContinuePos.value = -1
       await episodeAPI.update(activeChapter.value.id, { content: chapterBody.value })
       toast.success(tm.value.novel.toastSaved)
+    } else if (!chapterBody.value.trim()) {
+      toast.error('生成未返回正文，请重试')
     }
   } catch (e) {
+    if (!isSeamHardReject(e)) {
+      chapterBody.value = bodyBackup
+    }
+    content = ''
     toast.error(e.message)
   } finally {
     generating.value = false
     streamWaiting.value = false
+    streamStatusText.value = ''
   }
 }
 
@@ -1126,6 +1435,20 @@ html[data-theme="dark"] .ai-detect-loading-overlay {
   border-radius: var(--radius);
   background: rgba(201, 122, 46, 0.08);
   border: 1px solid rgba(201, 122, 46, 0.2);
+}
+.ai-detect-method {
+  margin: 0.35rem 0 0;
+  font-size: 0.8rem;
+  color: var(--text-muted, #888);
+}
+.ai-detect-humanize {
+  margin: 0.5rem 0 0;
+  font-size: 0.85rem;
+  color: var(--text-secondary, #666);
+  line-height: 1.45;
+}
+.ai-detect-humanize.is-warn {
+  color: var(--danger, #c44);
 }
 .ai-detect-time {
   margin: 0;

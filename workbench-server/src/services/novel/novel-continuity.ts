@@ -3,7 +3,7 @@
  */
 import * as dramasRepo from '../../db/repos/dramas/index.js'
 import * as episodesRepo from '../../db/repos/episodes/index.js'
-import { chatCompletionText, type TextBillingContext } from '../ai/ai.js'
+import { chatCompletionTextAudit, type TextBillingContext } from '../ai/ai.js'
 import { hashNovelContent } from '../ai/ai-text-detection.js'
 import { now } from '../../common/http/response.js'
 import { mergeNovelMetadata, parseNovelMetadata } from '../../common/novel/novel-meta.js'
@@ -25,8 +25,8 @@ import { ensureNovelMemory } from './novel-memory/index.js'
 import { buildChapter1WorldIntroBlock } from '../../common/novel/novel-worldbuilding.js'
 import {
   buildCausalOriginBlock,
-  ensureCausalChain,
   isCausalChainEnabled,
+  resolveCausalOriginForChapter,
 } from './novel-causal-chain/index.js'
 import { resolveVolumeForChapter } from './novel-memory/novel-memory-parser.js'
 import {
@@ -35,6 +35,11 @@ import {
   findSiblingEpisode,
   truncText,
 } from '../../common/drama/project-continuity.js'
+import {
+  buildSnapshotFromLedger,
+  formatChapterEndSnapshotBlock,
+  loadPrevChapterEndSnapshot,
+} from './novel-chapter-end-snapshot.js'
 
 const EXTRACT_SYSTEM = `你是网文 continuity 编辑。根据章节正文提取「章末状态账本」，供下一章写作强制对齐。
 
@@ -176,7 +181,32 @@ export async function loadPrevChapterContent(dramaId: number, beforeChapter: num
 export async function loadPrevChapterContentTail(dramaId: number, beforeChapter: number, maxChars = 2000): Promise<string> {
   const body = await loadPrevChapterContent(dramaId, beforeChapter)
   if (!body) return ''
-  return body.length <= maxChars ? body : body.slice(-maxChars)
+  // 章缝只认故事正文，剥离变更记录/一致性提醒，避免假「夜里」与假动作污染
+  const { splitProseAndChangeRecord } = await import('../../common/novel/novel-change-record.js')
+  let prose = splitProseAndChangeRecord(body).prose || body
+  prose = prose.replace(/【[*＊]?一致性提醒[*＊]?】[\s\S]*$/, '').trim() || prose
+  if (!prose) return ''
+  return prose.length <= maxChars ? prose : prose.slice(-maxChars)
+}
+
+/** 下一章正文开篇（重写本章时：章末须能正向承接，避免「本章已出门、下章还在炕上」） */
+export async function loadNextChapterContentHead(
+  dramaId: number,
+  afterChapter: number,
+  maxChars = 1200,
+): Promise<string> {
+  if (!(dramaId > 0) || !(afterChapter >= 1)) return ''
+  const nextNum = afterChapter + 1
+  const ep = await findSiblingEpisode(dramaId, nextNum)
+  if (!ep) return ''
+  const body = (ep.scriptContent || ep.content || '').trim()
+  if (!body) return ''
+  const { splitProseAndChangeRecord } = await import('../../common/novel/novel-change-record.js')
+  let prose = splitProseAndChangeRecord(body).prose || body
+  prose = prose.replace(/【[*＊]?一致性提醒[*＊]?】[\s\S]*$/, '').trim() || prose
+  if (!prose) return ''
+  const head = prose.length <= maxChars ? prose : prose.slice(0, maxChars)
+  return head
 }
 
 /** 上章开篇+结尾摘录（ cliff/起因 常在开篇，勿只注入章末） */
@@ -194,7 +224,7 @@ export async function loadPrevChapterContentAnchors(
   if (head) parts.push(`【上章开篇摘录 — 关键起因/人名勿改】\n${head}`)
   if (body.length > headMax + 400) {
     const tail = body.slice(-tailMax)
-    parts.push(`【上章结尾摘录 — 须自然衔接】\n${tail}`)
+    parts.push(`【上章结尾摘录 — 须自然衔接，禁止重演其中已完成的公开高潮】\n${tail}`)
   }
   return parts.join('\n\n')
 }
@@ -293,9 +323,15 @@ export async function buildNovelWriteContext(args: {
     : ''
   let causalBlock = ''
   if (causalEnabled) {
-    const chain = ensureCausalChain(dramaId, chapterNumber)
+    const origin = resolveCausalOriginForChapter(dramaId, chapterNumber)
+    const chainForPrompt = origin.usable && origin.markdown.trim()
+      ? (origin.note ? `${origin.markdown}\n\n${origin.note}` : origin.markdown)
+      : (
+        origin.note
+        || `（无第${Math.max(0, chapterNumber - 1)}章末因果快照；请严格承接前序已写正文/上章结尾，勿套用更后章节状态）`
+      )
     const vol = resolveVolumeForChapter(bookOutline || meta.outline, chapterNumber)
-    causalBlock = buildCausalOriginBlock(chain, {
+    causalBlock = buildCausalOriginBlock(chainForPrompt, {
       vol,
       chapter: chapterNumber,
       chapterGoal: writingBrief,
@@ -330,10 +366,18 @@ export async function buildNovelWriteContext(args: {
     ? buildChapter1WorldIntroBlock({ outline: bookOutline || meta.outline, dramaId })
     : ''
 
+  const prevSnap = chapterNumber >= 2
+    ? await loadPrevChapterEndSnapshot(dramaId, chapterNumber)
+    : null
+  const chapterEndSnapshotBlock = prevSnap
+    ? formatChapterEndSnapshotBlock(prevSnap)
+    : ''
+
   const structuredBlock = [
     memoryBlock,
     causalBlock,
     canonLockBlock,
+    chapterEndSnapshotBlock,
     serialWrittenBlock,
     stateBlock,
     retrievalBlock,
@@ -347,6 +391,8 @@ export async function buildNovelWriteContext(args: {
     causalBlock,
     serialWrittenBlock,
     canonLockBlock,
+    chapterEndSnapshotBlock,
+    prevChapterEndSnapshot: prevSnap,
     structuredBlock,
     continuity,
     characterBlock,
@@ -427,7 +473,7 @@ export async function extractChapterContinuityLedger(args: {
     `【正文（分析章末状态）】\n${trunc(body, 12000)}`,
   ].filter(Boolean).join('\n\n')
 
-  const raw = await chatCompletionText(
+  const raw = await chatCompletionTextAudit(
     [{ role: 'system', content: EXTRACT_SYSTEM }, { role: 'user', content: user }],
     { maxTokens: 2048, temperature: 0.25, billing },
   )
@@ -453,6 +499,19 @@ export async function finalizeChapterContinuity(args: {
   const contentHash = hashNovelContent(trimmed)
   const existing = await loadEpisodeLedger(episodeId, chapterNumber)
   if (skipIfUnchanged && existing?.content_hash === contentHash) {
+    // 旧章有账本无契约时补写快照，供下章开篇对照
+    const epRow = await episodesRepo.findEpisodeById(episodeId)
+    const { readEpisodeChapterEndSnapshot, deriveChapterEndSnapshot, persistChapterEndSnapshot } =
+      await import('./novel-chapter-end-snapshot.js')
+    if (epRow && !readEpisodeChapterEndSnapshot(epRow.metadata, chapterNumber)) {
+      const snap = deriveChapterEndSnapshot({
+        chapterNumber,
+        content: trimmed,
+        ledger: existing,
+        contentHash,
+      })
+      if (snap) await persistChapterEndSnapshot({ episodeId, snapshot: snap })
+    }
     return { ledger: existing, globalUpdated: false }
   }
 
@@ -474,8 +533,12 @@ export async function finalizeChapterContinuity(args: {
     content_hash: contentHash,
   }
 
+  const snapshot = buildSnapshotFromLedger(ledger, trimmed)
   const ep = await episodesRepo.findEpisodeById(episodeId)
-  const epMetadata = mergeEpisodeMetadata(ep?.metadata, { continuity_ledger: ledger })
+  const epMetadata = mergeEpisodeMetadata(ep?.metadata, {
+    continuity_ledger: ledger,
+    ...(snapshot ? { chapter_end_snapshot: snapshot } : {}),
+  })
   await episodesRepo.updateEpisode(episodeId, { metadata: epMetadata, updatedAt: now() })
 
   const drama = await dramasRepo.findDramaById(dramaId)
