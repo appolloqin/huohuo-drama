@@ -42,6 +42,8 @@ function buildHardRejectContinuityCheck(
     'named_as_generic_epithet',
     'head_orphan_span',
     'named_as_generic',
+    'opening_mid_dialogue',
+    'opening_unexplained_name',
   ])
   const hardReasons = reasons.filter(r => !softCodes.has(r.code || ''))
   const use = hardReasons.length ? hardReasons : reasons
@@ -113,7 +115,7 @@ async function runOutlineComplianceGate(args: {
     mode: args.mode,
     chapterNumber: args.chapterNumber,
   })
-  args.onProgress?.('正在审校…')
+  args.onProgress?.('正在审校大纲边界…')
   const outlineFix = await maybeFixOutlineCompliance({
     content: args.content,
     dramaId: args.dramaId,
@@ -122,6 +124,7 @@ async function runOutlineComplianceGate(args: {
     writingBrief: briefAlign.alignedBrief || undefined,
     existingText: args.existingText || args.content,
     billing: args.billing,
+    userTarget,
     minLen: briefAlign.endpointPending ? Math.round(target * 0.82) : Math.round(target * 0.9),
     maxLen: Math.round(target * 1.12),
     onProgress: args.onProgress,

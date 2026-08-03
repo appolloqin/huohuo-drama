@@ -563,6 +563,78 @@ function prevLooksCompletedQuietClose(
   return enclosed || prevImpliesStableCopresence(prevTail, snap)
 }
 
+
+/** 开篇半句对白中起（软告警）：读者不知上一句谁说的、场合如何接到上章 */
+export function detectOpeningMidDialogueColdStart(content: string): { message: string } | null {
+  const head = [...(content || '').trim()].slice(0, 160).join('')
+  if ([...head].length < 16) return null
+  const mid =
+    /那句[「『“"][^」』”"]{1,40}[」』”"][^。！？\n]{0,24}(还没|尚未)[^。！？\n]{0,12}(落地|说完|完)/.test(head)
+    || /又补了一句|话音未落|话没说完|接着又说|还没落地/.test(head)
+    || /^[^。！？\n]{0,40}[「『“"][^」』”"]{2,40}[」』”"][^。！？\n]{0,12}(又|再)(补|接|说)/.test(head)
+  if (!mid) return null
+  return {
+    message:
+      '开篇半句对白中起：头段以未落地对白/又补一句起笔，读者不知上一句来历与听者场合。'
+      + '请先轻锚上章末场合（一句即可），再写墙外声；勿从对白中段硬切。',
+  }
+}
+
+const NAME_INTRO_CUE = /邻家|隔壁|墙外|外头|门外|有人叫|名叫|那头是|听见|听着|传来/
+
+/** 开篇无交代人名直接开口（软告警）：大纲/上章末未点名者勿抢戏 */
+export function detectOpeningUnexplainedNamedSpeech(args: {
+  content: string
+  chapterOutline?: string
+  prevChapterTail?: string
+  prevSnapshot?: import('../../common/novel/novel-continuity-state.js').ChapterEndSnapshot | null
+}): { message: string; name?: string } | null {
+  const opening = [...(args.content || '').trim()].slice(0, 420).join('')
+  if ([...opening].length < 24) return null
+
+  const known = new Set<string>()
+  const cast = args.prevSnapshot?.cast || ''
+  for (const part of cast.split(/[、，,/与和\s]+/)) {
+    const t = part.trim()
+    if (t.length >= 2 && t.length <= 4 && t !== '未明示') known.add(t)
+  }
+  const blob = [
+    args.prevChapterTail || '',
+    args.chapterOutline || '',
+    cast,
+    args.prevSnapshot?.last_event || '',
+  ].join('\n')
+  const nameRe = /([\u4e00-\u9fff]{2,3})(?=把|将|说|道|问|走|坐|听|看|站|应|回|的声音)/g
+  let km: RegExpExecArray | null
+  while ((km = nameRe.exec(blob)) !== null) {
+    known.add(km[1]!)
+  }
+
+  const falsePos = new Set([
+    '炕角', '门外', '外头', '门缝', '原地', '灶边', '炕沿', '屋里', '窗外', '墙外',
+    '一声', '一句', '一下', '什么', '怎么', '那个', '这个', '有人', '来人', '女人', '男人',
+    '邻居', '邻家', '婶子', '大娘', '大哥', '大姐', '同志', '队长',
+  ])
+
+  const speakRe = /([\u4e00-\u9fff]{2,3})(?:的声音|(?=说|道|问|笑|喊|叫|应))/g
+  let m: RegExpExecArray | null
+  while ((m = speakRe.exec(opening)) !== null) {
+    const n = m[1]!
+    if (known.has(n) || falsePos.has(n)) continue
+    if (/^[在从向往对跟和与]/.test(n)) continue
+    const at = m.index ?? 0
+    const before = opening.slice(Math.max(0, at - 28), at)
+    if (NAME_INTRO_CUE.test(before)) continue
+    return {
+      name: n,
+      message:
+        `开篇人名无交代：「${n}」在头段直接开口/露声，且不在上章末在场与本章大纲点名之列。`
+        + '请改用「墙外女人/邻家」等泛称，或半句交代来历后再起名。',
+    }
+  }
+  return null
+}
+
 export function buildForcedSeamOpeningBlock(args: {
   chapterOutline?: string
   prevTail?: string
@@ -576,15 +648,15 @@ export function buildForcedSeamOpeningBlock(args: {
   const quietToVisit = prevLooksCompletedQuietClose(args.prevTail, snap)
     && outlineImpliesExternalVisit(args.chapterOutline)
   const snapLine = snap
-    ? `0. **上章末契约（必须承接）**：时间「${snap.time || '见上章末'}」·地点「${snap.place || '见上章末'}」·刚发生「${snap.last_event || '见上章末'}」·在场「${snap.cast || '见上章末'}」${snap.closed_beats ? `·已闭合「${snap.closed_beats}」` : ''}。开篇不得无故换场重开；已闭合交付同场合勿再演。`
+    ? `0. **上章末契约（须轻锚，勿重演）**：时间「${snap.time || '见上章末'}」·地点「${snap.place || '见上章末'}」·刚发生「${snap.last_event || '见上章末'}」·在场「${snap.cast || '见上章末'}」${snap.closed_beats ? `·已闭合「${snap.closed_beats}」` : ''}。开篇用一句点场合即可；已闭合交付同场合勿再演。`
     : ''
   const closedBlock = snap?.closed_beats?.trim()
     ? `0f. **已闭合情节（同场合）**：上章已写完「${snap.closed_beats}」——同一时间/场地勿再掏出/递给/掰开；换日、换场或写明「又一次」后可写新交付；可一句回忆带过。`
     : ''
   const bridgeBlock = copresent && beat1 && !quietToVisit
     ? [
-      '0c. **共处→屋外拍点桥接（本次必用）**：上章末已在场共处，而大纲拍点1若在屋外/猎获结果，禁止开篇「推门进来/提着猎物归来」。',
-      '顺序必须是：①第一段承接对坐/室内下一拍 → ②离场或隔夜（须写明）→ ③再写拍点1「'
+      '0c. **共处→屋外拍点桥接**：上章末已在场共处，而大纲拍点1若在屋外/猎获结果，禁止开篇「推门进来/提着猎物归来」。',
+      '顺序：①轻锚承接对坐/室内 → ②离场或隔夜（须写明）→ ③再写拍点1「'
         + beat1
         + '」及之后；拍点1可出现在离场之后，不必硬塞进第一段。',
     ].join('\n')
@@ -599,22 +671,26 @@ export function buildForcedSeamOpeningBlock(args: {
   const step1 = !hasTail
     ? '1. 第一段：从本章大纲拍点1起笔，禁止编造大纲未列的离家/准备戏。'
     : quietToVisit
-      ? '1. 开篇须承接【上章结尾】完成态之后的新信息（手法自选），勿重做收束。'
+      ? '1. 开篇须轻锚承接【上章结尾】完成态之后的新信息（手法自选），勿重做收束、勿复述已闭合交付。'
       : copresent
-        ? '1. 第一段：只承接【上章结尾】已在场状态的下一拍（对坐/室内动作一两句），禁止推门进来、禁止雪光重开直接提猎物进门。'
-        : '1. 第一段：只承接【上章结尾】已发生事实之后的下一拍（一两句即可），禁止清晨离家、目送叮嘱、重起炉灶式开篇；禁止直接跳到大纲后段冲突。'
+        ? '1. 第一段：轻锚承接【上章结尾】已在场状态（一句即可），禁止推门进来、禁止雪光重开直接提猎物进门。'
+        : '1. 第一段：轻锚点明【上章结尾】场合/状态后进入本章新拍（一句即可），禁止复述上章闭合高潮；禁止清晨离家、目送叮嘱、重起炉灶式开篇。'
   const step2 = !beat1
-    ? '2. 第二段起：立刻进入【本章大纲】第一个情节拍点。'
+    ? '2. 轻锚之后：立刻进入【本章大纲】第一个情节拍点。'
     : quietToVisit
       ? `2. 开篇窗口内须交代外来冲突如何接上，再落实「${beat1}」；可先果后因，但须补清来者/起势。`
       : copresent
-        ? `2. 第二段起：写离场/隔夜后进入大纲拍点1「${beat1}」，不得跳过离场直接写归来收获。`
-        : `2. 第二段起：立刻进入本章大纲拍点1「${beat1}」，不得先写拍点1之前的起势，也不得跳过拍点1直接写更后拍点。`
+        ? `2. 轻锚之后：写离场/隔夜后进入大纲拍点1「${beat1}」，不得跳过离场直接写归来收获。`
+        : `2. 轻锚之后：进入本章大纲拍点1「${beat1}」，不得跳过拍点1直接写更后拍点；亦勿为凑接缝而把拍点1之前灌成半章。`
   return [
-    '【开篇强制接缝 — 重写/结构作废时生效】',
+    '【开篇轻锚接缝 — 第2章起生效】',
     snapLine,
+    '0a. **轻锚（一句即可）**：须点明上章末场合/状态（如仍在炕上、屋里、夜里），再转入本章新信息；**禁止**把上章场面再演一遍。',
+    '0a2. **轻锚篇幅**：接缝锚句合计 ≤ 铺垫拍预算约 8%；人名出场介绍也算进铺垫，不另开强制段。',
     '0b. **在场硬性**：上章末人物已在场共处时，禁止开篇再写进门/归来/抵达或凭空「在外一宿」；若要写归来或隔夜外出，须先承接离场。',
     '0d. **状态硬性**：上章末已完成的收束动作，禁止开篇用「重新/又/再」重做。新冲突须在开篇窗口内交代来者/起势（顺叙或先果后因均可），禁止整段没头没尾半路接戏。',
+    '0g. **禁半句对白中起**：禁止开篇以「那句…还没落地 / 又补了一句 / 话音未落」等中段对白起笔；须先有听者场合或来历。',
+    '0h. **人名不抢戏**：大纲未点名的邻里默认「墙外女人 / 邻家 / 外头声」；若要起名，用半句交代来历，计入铺垫预算。',
     closedBlock,
     visitBlock,
     bridgeBlock,

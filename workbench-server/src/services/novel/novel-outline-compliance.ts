@@ -6,6 +6,8 @@
  */
 import {
   detectChapterSeamColdOpen,
+  detectOpeningMidDialogueColdStart,
+  detectOpeningUnexplainedNamedSpeech,
   extractOutlineBeatPhrases,
   findStaleOutlineBeats,
 } from './novel-chapter-seam.js'
@@ -26,6 +28,8 @@ export type OutlineComplianceReasonCode =
   | 'next_chapter_beat_leak'
   | 'outline_boundary_model'
   | 'named_as_generic'
+  | 'opening_mid_dialogue'
+  | 'opening_unexplained_name'
   | 'brief_pacing'
   | 'brief_pending_overshoot'
 
@@ -535,6 +539,19 @@ export function detectOutlineCompliance(args: {
     if (eventReplay) {
       reasons.push({ code: 'chapter_event_replay', message: eventReplay.message })
     }
+    const midDialogue = detectOpeningMidDialogueColdStart(content)
+    if (midDialogue) {
+      reasons.push({ code: 'opening_mid_dialogue', message: midDialogue.message })
+    }
+    const unexplainedName = detectOpeningUnexplainedNamedSpeech({
+      content,
+      chapterOutline: outline || undefined,
+      prevChapterTail: args.prevChapterTail,
+      prevSnapshot: args.prevSnapshot,
+    })
+    if (unexplainedName) {
+      reasons.push({ code: 'opening_unexplained_name', message: unexplainedName.message })
+    }
   }
 
   let earlyMissing = false
@@ -629,7 +646,7 @@ export function formatNuclearColdDraftBlock(args: {
       ? beats.slice(0, 10).map((b, i) => `${i + 1}. ${b}`).join('\n')
       : '（严格按【本章大纲】）',
     '【开篇硬约束】',
-    '1. 第一段必须紧接【上章结尾】的时空与事态（同场景续写或合理短过渡）。',
+    '1. 第一段用一句轻锚点明【上章结尾】场合/状态，禁止复述已闭合高潮；再进入本章新拍。',
     '2. 第二段起进入拍点1；开篇约前三分之一须覆盖大纲前段拍点。',
     '3. 禁止开篇时空早于上章末已发生事实；禁止倒退到上章已越过的更早情节节点重开。',
   ].join('\n')

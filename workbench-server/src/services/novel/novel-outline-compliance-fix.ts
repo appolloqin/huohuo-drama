@@ -263,6 +263,8 @@ export async function maybeFixOutlineCompliance(args: {
   writingBrief?: string
   existingText?: string
   billing?: TextBillingContext
+  /** ?????????? UI target_length ??????? 2700/2800 */
+  userTarget?: number
   minLen?: number
   maxLen?: number
   maxRounds?: number
@@ -288,10 +290,19 @@ export async function maybeFixOutlineCompliance(args: {
   const alignedBrief = boundary.alignedBrief || writingBrief
   const outlineOnlyBrief = buildOutlineOnlyWritingStub(chapterOutline)
 
-  // ? pipeline / ???????? 2700 ??? 0.9?1.12???????????
+  // ????? userTarget ? ? min/max ?? ? ???????? 3000?????
+  const inferredFromBand = args.minLen != null && args.maxLen != null
+    ? Math.round((Number(args.minLen) / 0.9 + Number(args.maxLen) / 1.12) / 2)
+    : args.minLen != null
+      ? Math.round(Number(args.minLen) / 0.9)
+      : undefined
+  const userTarget = Math.min(
+    20000,
+    Math.max(500, Math.round(Number(args.userTarget) || inferredFromBand || 3000)),
+  )
   const beatTarget = resolveEffectiveChapterTarget({
     chapterOutline,
-    userTarget: 2700,
+    userTarget,
   })
   const targetFallback = beatTarget.effectiveTarget
   const minLen = Math.max(
@@ -735,6 +746,8 @@ export async function maybeFixOutlineCompliance(args: {
     'named_as_generic_epithet',
     'named_as_generic',
     'head_orphan_span',
+    'opening_mid_dialogue',
+    'opening_unexplained_name',
   ].includes(r.code))
 
   if (deliverStillOvershoot || deliverOverLength || deliverStillEventReplay || deliverStillOrphan) {

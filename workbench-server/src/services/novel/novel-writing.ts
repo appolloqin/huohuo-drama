@@ -51,6 +51,7 @@ import {
   buildOutlineOnlyWritingStub,
 } from './novel-outline-boundary.js'
 import { resolveEffectiveChapterTarget } from './novel-chapter-target.js'
+import { resolveChapterBeatBudgets } from './novel-chapter-beat-budget.js'
 import { hasRealWorldBlock } from '../../common/novel/novel-worldbuilding.js'
 import { loadNextChapterContentHead, loadPrevChapterContentTail } from './novel-continuity.js'
 import { loadPrevChapterEndSnapshot } from './novel-chapter-end-snapshot.js'
@@ -133,6 +134,7 @@ function formatNextChapterForwardSeamBlock(nextHead: string | undefined, chapter
 const CAST_CONTINUITY_RULE = [
   '**在场人物硬性**：本章可写人物 = 上章末已出场/已交代者 ∪ 本章大纲点名者。',
   '禁止无交代使用「娘俩」「一家三口」「爹妈」等暗示未出场亲属的称谓；新婚二人用「她/媳妇/俩口子」等已成立称谓即可。',
+  '大纲未点名的邻里默认「墙外女人/邻家/外头声」；若要起名，须半句交代来历，计入铺垫预算，禁止开篇直接点名抢戏。',
   '若须新出场人物，须在本场有来由（敲门、墙外声、上门等），不得脑内一句带出未交代的家里人。',
 ].join('')
 
@@ -653,17 +655,17 @@ export async function buildGenerateNovelChapterMessages(args: {
   const target = beatTarget.effectiveTarget
   const tags = parseChapterCraftTags(alignedBrief, chapterOutline)
   const boundarySuspend = outlineAlign.endpointPending
-  const soft = isChapterCraftLengthSoftEnabled(meta) || boundarySuspend || beatTarget.downscaled
-  const factor = soft && !boundarySuspend && !beatTarget.downscaled ? lengthFactorForRole(tags.role) : 1
+  const soft = isChapterCraftLengthSoftEnabled(meta) || boundarySuspend
+  const factor = soft && !boundarySuspend ? lengthFactorForRole(tags.role) : 1
   const effectiveTarget = Math.round(target * factor)
-  // 末拍宜悬停 / 大纲拍点不足时字数下限略软，避免为凑字越过大纲边界
-  const minLen = boundarySuspend || beatTarget.downscaled
+  // 末拍宜悬停时字数下限略软，避免为凑字越过大纲边界（不因拍点少而砍半目标）
+  const minLen = boundarySuspend
     ? Math.round(target * 0.82)
     : soft
       ? Math.round(effectiveTarget * (tags.role === 'breath' || tags.role === 'travel' ? 0.7 : 0.9))
       : Math.round(target * 0.88)
   const maxLen = soft
-    ? Math.round(effectiveTarget * (tags.role === 'breath' || tags.role === 'travel' || boundarySuspend || beatTarget.downscaled ? 1.08 : 1.12))
+    ? Math.round(effectiveTarget * (tags.role === 'breath' || tags.role === 'travel' || boundarySuspend ? 1.08 : 1.12))
     : Math.round(target * 1.08)
 
   const ctx = await buildNovelWriteContext({
@@ -681,7 +683,12 @@ export async function buildGenerateNovelChapterMessages(args: {
     maxTokens: tokenCeiling,
     temperature: isRewrite ? 0.84 : 0.8,
   }
-  const beatLengthNote = beatTarget.promptBlock
+  const beatBudgets = resolveChapterBeatBudgets({
+    chapterOutline,
+    userTarget: target,
+    endpointPending: boundarySuspend,
+  })
+  const beatLengthNote = beatBudgets.promptBlock || beatTarget.promptBlock
   const lengthBoundNote = outlineAlign.boundaryBlock
     ? '另：**字数只服务本章大纲已列拍点**；禁止用大纲未列的后续情节凑字；**宁可贴近目标略短，也不可为凑字越过【章末硬止点】**。'
     : ''
@@ -696,7 +703,9 @@ export async function buildGenerateNovelChapterMessages(args: {
         ? '（章职为收息/赶路：宜短，禁止灌水凑字）'
         : `；**上限**不得超过 ${maxLen} 字；**下限**不宜明显短于 ${minLen} 字（禁止写成目标的七八成就停）。`,
     ].join('')
-    : `**字数硬性要求**：本章正文目标 ${target} 字，必须写满 ${minLen}～${maxLen} 字，**严禁少于 ${minLen} 字或超过 ${maxLen} 字**；情节完整、有起承转合，篇幅服从字数区间。`
+    : boundarySuspend
+      ? `**篇幅**：目标 ${target} 字，尽量落在 ${minLen}～${maxLen} 字；**宁短勿越过章末硬止点**；只在【篇幅预算】各拍内写厚。`
+      : `**字数要求**：本章正文目标 ${target} 字，尽量写满 ${minLen}～${maxLen} 字；情节完整；**不得用大纲未列情节凑字**。`
   ) + (beatLengthNote ? ` ${beatLengthNote}` : '') + (lengthBoundNote ? ` ${lengthBoundNote}` : '') + (endpointStopNote ? ` ${endpointStopNote}` : '')
 
   // 先裁定旧稿结构，再组 system/user（结构作废时须覆盖「以前序为准」以免冷开篇）
@@ -800,6 +809,7 @@ export async function buildGenerateNovelChapterMessages(args: {
 
   const chapterOutlineBlock = formatChapterOutlineBlock(chapterOutline, chapterNumber)
   const outlineBoundaryBlock = outlineAlign.boundaryBlock
+  const beatBudgetBlock = beatBudgets.promptBlock
   const seamBlock = chapterNumber >= 2 ? buildChapterSeamWriteBlock(prevTail) : ''
   const forcedSeamBlock = forceSeamOpening
     ? buildForcedSeamOpeningBlock({ chapterOutline, prevTail, prevSnapshot: prevSnap })
@@ -862,12 +872,12 @@ export async function buildGenerateNovelChapterMessages(args: {
         ? '**旧稿已判定超出大纲边界**：禁止照抄旧稿越界结构/篇幅比例；越界段仅作反例。'
         : '',
       forceSeamOpening
-        ? '**开篇强制接缝**：承接【上章结尾】后进入大纲拍点（手法可顺叙或先果后因）；有价值旧句可写厚；禁止完成态重做与同日时辰倒退。'
+        ? '**开篇轻锚接缝**：承接【上章结尾】后进入大纲拍点（手法可顺叙或先果后因）；有价值旧句可写厚；禁止完成态重做与同日时辰倒退。'
         : '',
       `章末钩子须对齐本章大纲（即将/还没则勿提前完成）；**篇幅贴近目标 ${effectiveTarget} 字（${minLen}～${maxLen}）**；口语化；已给出钱数/物件勿改写或加码；只输出简体中文正文。`,
     ].filter(Boolean).join('')
     : (forceSeamOpening
-      ? `【生成要求】开篇须承接【上章结尾】再进入大纲拍点（手法可顺叙或先果后因）；遵守【开篇强制接缝】；禁止吃书与完成态重做。${CAST_CONTINUITY_RULE}`
+      ? `【生成要求】开篇须承接【上章结尾】再进入大纲拍点（手法可顺叙或先果后因）；遵守【开篇轻锚接缝】；禁止吃书与完成态重做。${CAST_CONTINUITY_RULE}`
       : CAST_CONTINUITY_RULE)
 
   const blocks = [
@@ -887,6 +897,7 @@ export async function buildGenerateNovelChapterMessages(args: {
     draftBlock,
     chapterOutlineBlock,
     outlineBoundaryBlock,
+    beatBudgetBlock,
     nextChapterForbidBlock,
     nextChapterForwardSeamBlock,
     writingSpecHardBlock,
@@ -894,7 +905,9 @@ export async function buildGenerateNovelChapterMessages(args: {
     rewriteReq,
     soft
       ? `【篇幅】目标 ${boundarySuspend ? target : effectiveTarget} 字，须落在 ${minLen}～${maxLen} 字；贴近目标${tags.role ? `（章职 ${tags.role}）` : ''}。${lengthBoundNote ? ` ${lengthBoundNote}` : ''}`
-      : `【篇幅硬性指标】本章正文必须 ${minLen}～${maxLen} 字（目标 ${target} 字），不得超过 ${maxLen} 字，不宜明显短于 ${minLen} 字。${lengthBoundNote ? ` ${lengthBoundNote}` : ''}`,
+      : (boundarySuspend
+        ? `【篇幅】目标 ${target} 字，尽量 ${minLen}～${maxLen} 字；须遵守【篇幅预算】；宁短勿越章末硬止点。${lengthBoundNote ? ` ${lengthBoundNote}` : ''}`
+        : `【篇幅】目标 ${target} 字，尽量 ${minLen}～${maxLen} 字；不得超过 ${maxLen} 字；只在大纲拍点内写厚。${lengthBoundNote ? ` ${lengthBoundNote}` : ''}`),
     isRewrite
       ? '【输出前自检】开篇是否承接上章末？章末时空是否仍能接上【下章开篇】（勿本章已出门、下章还在炕上）？是否误写下章情节？人物称谓是否有交代？字数是否只用于已列拍点？'
       : WEBNOVEL_OUTPUT_FORMAT_REMINDER + (forceSeamOpening
