@@ -8,13 +8,15 @@ import {
   detectChapterSeamColdOpen,
   detectOpeningMidDialogueColdStart,
   detectOpeningUnexplainedNamedSpeech,
+  detectForwardSeamCopyLexical,
   extractOutlineBeatPhrases,
+  extractOutlineCatalystPhrases,
   findStaleOutlineBeats,
 } from './novel-chapter-seam.js'
 import { detectChapterBodyEventReplay } from './novel-chapter-end-snapshot.js'
 import { detectBriefPendingStateOvershoot } from './novel-brief-compliance.js'
 import { filterDraftByChapterOutline } from './novel-draft-outline-filter.js'
-import { filterSubstantiveOutlineBeats, outlineBeatCoveredIn } from './novel-outline-beat-cover.js'
+import { filterSubstantiveOutlineBeats, outlineBeatCoveredIn, beatAnchorTokens } from './novel-outline-beat-cover.js'
 
 export { outlineBeatCoveredIn, filterSubstantiveOutlineBeats } from './novel-outline-beat-cover.js'
 
@@ -26,8 +28,10 @@ export type OutlineComplianceReasonCode =
   | 'head_orphan_span'
   | 'outline_endpoint_overshoot'
   | 'next_chapter_beat_leak'
+  | 'chapter_forward_seam_copy'
   | 'outline_boundary_model'
   | 'named_as_generic'
+  | 'catalyst_agency_fail'
   | 'opening_mid_dialogue'
   | 'opening_unexplained_name'
   | 'brief_pacing'
@@ -227,14 +231,19 @@ function detectEarlyBeatsMissing(args: {
   if (!required.length) return null
 
   const head = headSlice(args.content)
-  const hit = required.filter(b => outlineBeatCoveredIn(head, b))
+  const hitHead = required.filter(b => outlineBeatCoveredIn(head, b))
   const need = Math.max(1, Math.ceil(required.length / 2))
-  if (hit.length >= need) return null
+  if (hitHead.length >= need) return null
+
+  // 前段拍点若已在**全文**落地，不再逼开篇重写（否则补拍易造成章内重复击杀/重复场面）
+  const hitFull = required.filter(b => outlineBeatCoveredIn(args.content, b))
+  if (hitFull.length >= required.length) return null
+  if (hitFull.length >= need && hitFull.length > hitHead.length) return null
 
   const missing = required.filter(b => !outlineBeatCoveredIn(head, b))
   return {
     code: 'early_beats_missing',
-    message: `开篇约前三分之一未落实大纲前段拍点（命中 ${hit.length}/${need}）。缺失：${missing.slice(0, 4).join('；')}`,
+    message: `开篇约前三分之一未落实大纲前段拍点（命中 ${hitHead.length}/${need}）。缺失：${missing.slice(0, 4).join('；')}`,
     detail: missing.slice(0, 6).join(' | '),
   }
 }
@@ -266,6 +275,56 @@ function detectDraftOrphanReplay(args: {
   }
 }
 
+/**
+ * 待落地【本章起因】时：开篇若高重合续写上章末，且起因仍未覆盖 → 结构失败。
+ * 题材无关：不使用第三方归属词表；只看 tipContinue + outlineBeatCoveredIn。
+ */
+export function detectCatalystAgencyFail(args: {
+  content: string
+  chapterOutline?: string
+  prevChapterTail?: string
+}): OutlineComplianceReason | null {
+  const outline = args.chapterOutline?.trim() || ''
+  if (!outline || charLen(args.content) < 120) return null
+  const catalysts = extractOutlineCatalystPhrases(outline)
+  if (!catalysts.length) return null
+
+  const prev = args.prevChapterTail || ''
+  const pending = catalysts.filter(c => !prev.trim() || !outlineBeatCoveredIn(prev, c))
+  if (!pending.length) return null
+
+  const head = halfSlice(args.content)
+  const covered = pending.some(c => outlineBeatCoveredIn(head, c))
+  if (covered) return null
+
+  const headNorm = normalizeLite(head)
+  const prevNorm = normalizeLite(prev.slice(-900))
+  let tipContinue = false
+  if (prevNorm.length >= 20) {
+    for (let w = Math.min(16, prevNorm.length, headNorm.length); w >= 6; w--) {
+      for (let i = 0; i <= prevNorm.length - w; i++) {
+        if (headNorm.includes(prevNorm.slice(i, i + w))) {
+          tipContinue = true
+          break
+        }
+      }
+      if (tipContinue) break
+    }
+    if (!tipContinue) {
+      const tipHits = beatAnchorTokens(prev.slice(-500)).filter(t => t.length >= 2 && headNorm.includes(t))
+      tipContinue = tipHits.length >= 2
+    }
+  }
+  if (!tipContinue) return null
+
+  const cat = pending[0] || catalysts[0] || '本章起因'
+  return {
+    code: 'catalyst_agency_fail',
+    message: `本章起因「${cat}」尚未落地，开篇却沿上章末悬念续写（与上章末高度重合），未按大纲写出该起因。请从上章已发生事实之后起笔，先写清起因。`,
+    detail: cat,
+  }
+}
+
 function detectHeadOrphanSpan(args: {
   content: string
   chapterOutline: string
@@ -294,6 +353,26 @@ function detectHeadOrphanSpan(args: {
   return {
     code: 'head_orphan_span',
     message: '开篇大段未落入任何大纲拍点，且前段拍点落实不足，疑似开篇越级铺开。',
+  }
+}
+
+/**
+ * 章末照抄/高度重合下章开篇 → 正向章缝抄袭。
+ * 题材无关：只比归一化连续片段，无对白/物件词表。
+ */
+export function detectChapterForwardSeamCopy(args: {
+  content: string
+  nextChapterHead?: string
+}): OutlineComplianceReason | null {
+  const hit = detectForwardSeamCopyLexical({
+    content: args.content,
+    nextChapterHead: args.nextChapterHead,
+  })
+  if (!hit) return null
+  return {
+    code: 'chapter_forward_seam_copy',
+    message: `章末与下章开篇高度重合（摘录「${hit.excerpt}…」）。章末须停在下章开篇之前：可留下章可读得通的短落点，禁止复述或照抄下章开篇句群。`,
+    detail: hit.excerpt,
   }
 }
 
@@ -508,6 +587,8 @@ export function detectOutlineCompliance(args: {
   existingText?: string
   prevChapterTail?: string
   nextChapterOutline?: string
+  /** 下章已写开篇：章末须正向承接 */
+  nextChapterHead?: string
   chapterNumber: number
   prevSnapshot?: import('../../common/novel/novel-continuity-state.js').ChapterEndSnapshot | null
 }): OutlineComplianceResult {
@@ -590,6 +671,13 @@ export function detectOutlineCompliance(args: {
     })
     if (draftReplay) reasons.push(draftReplay)
 
+    const agencyFail = detectCatalystAgencyFail({
+      content,
+      chapterOutline: outline,
+      prevChapterTail: args.prevChapterTail,
+    })
+    if (agencyFail) reasons.push(agencyFail)
+
     const orphanSpan = detectHeadOrphanSpan({
       content,
       chapterOutline: outline,
@@ -607,6 +695,12 @@ export function detectOutlineCompliance(args: {
       nextChapterOutline: args.nextChapterOutline,
     })
     if (nextLeak) reasons.push(nextLeak)
+
+    const forwardCopy = detectChapterForwardSeamCopy({
+      content,
+      nextChapterHead: args.nextChapterHead,
+    })
+    if (forwardCopy) reasons.push(forwardCopy)
 
     const named = detectNamedAsGenericEpithet({ content, chapterOutline: outline })
     if (named) reasons.push(named)
@@ -685,9 +779,15 @@ export function buildOutlineComplianceFixPrompt(args: {
     args.nuclearCold ? '【大纲落实修正 — 冷开篇核修重写】' : '【大纲落实修正 — 整章重写】',
     '上一稿未落实本章大纲/写作说明，请输出完整替换正文。硬性要求：',
     ...args.reasons.map((r, i) => `${i + 1}. ${r.message}`),
-    args.prevChapterTail?.trim()
-      ? `【上章结尾（必须承接；开篇不得早于此处已发生事实）】\n${args.prevChapterTail.trim().slice(-1200)}`
+    args.reasons.some(r => r.code === 'catalyst_agency_fail')
+      ? '【结构硬性】本章起因尚未落地时，禁止沿上章末悬念续写开篇；须先写清起因由【本章人物】完成，再进入欲望/阻碍。'
       : '',
+    // 起因未落地时不喂上章 tip 原文（防续写诱饵）；其它原因仍给尾段承接
+    args.reasons.some(r => r.code === 'catalyst_agency_fail')
+      ? '【上章接缝】只承接已发生事实；禁止粘贴/续写上章末悬念原文。先写清本章起因，再进入欲望/阻碍。'
+      : (args.prevChapterTail?.trim()
+        ? `【上章结尾（必须承接；开篇不得早于此处已发生事实）】\n${args.prevChapterTail.trim().slice(-1200)}`
+        : ''),
     args.chapterOutline?.trim()
       ? `【本章大纲】\n${args.chapterOutline.trim().slice(0, 800)}`
       : '',
@@ -695,7 +795,10 @@ export function buildOutlineComplianceFixPrompt(args: {
       ? `【下章大纲 — 禁止提前写】\n${args.nextChapterOutline.trim().slice(0, 500)}`
       : '',
     args.nextChapterHead?.trim()
-      ? `【下章开篇（已写，本章章末须能承接）】\n${args.nextChapterHead.trim().slice(0, 800)}\n硬性：章末时空不得与下章开篇打架（如下章开篇在炕上，本章勿写成已出门远行）。`
+      ? '【正向章缝】下章开篇已写（正文不粘贴进提示）。先完成本章末拍；章末停在下章开篇之前；禁止照抄/复述下章开篇句群；禁止另起下章未接的支线终局。'
+      : '',
+    args.reasons.some(r => r.code === 'chapter_forward_seam_copy')
+      ? '【正向章缝硬性】章末与下章开篇高度重合：删掉章末照抄/复述下章开篇的句子，停在下章开篇之前；勿把下章第一句写进本章。'
       : '',
     args.writingBrief?.trim()
       ? (seamCold

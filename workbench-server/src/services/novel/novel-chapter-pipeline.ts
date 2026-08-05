@@ -37,6 +37,8 @@ function buildHardRejectContinuityCheck(
     'next_chapter_beat_leak',
     'chapter_event_replay',
     'draft_orphan_replay',
+    'catalyst_agency_fail',
+    'chapter_forward_seam_copy',
     'brief_pacing',
     'brief_pending_overshoot',
     'named_as_generic_epithet',
@@ -115,30 +117,56 @@ async function runOutlineComplianceGate(args: {
     mode: args.mode,
     chapterNumber: args.chapterNumber,
   })
-  args.onProgress?.('正在审校大纲边界…')
-  const outlineFix = await maybeFixOutlineCompliance({
-    content: args.content,
-    dramaId: args.dramaId,
-    chapterNumber: args.chapterNumber,
-    chapterOutline: args.chapterOutline,
-    writingBrief: briefAlign.alignedBrief || undefined,
-    existingText: args.existingText || args.content,
-    billing: args.billing,
-    userTarget,
-    minLen: briefAlign.endpointPending ? Math.round(target * 0.82) : Math.round(target * 0.9),
-    maxLen: Math.round(target * 1.12),
-    onProgress: args.onProgress,
-  })
-  const stillCold = outlineFix.reasons.some(r => r.code === 'chapter_seam_cold_open')
-  return {
-    content: outlineFix.content,
-    report: {
-      passed: outlineFix.passed,
-      attempts: outlineFix.attempts,
-      reasons: outlineFix.reasons,
-      hardReject: outlineFix.hardReject,
-    },
-    stillCold,
+  args.onProgress?.('?????????')
+  try {
+    const outlineFix = await maybeFixOutlineCompliance({
+      content: args.content,
+      dramaId: args.dramaId,
+      chapterNumber: args.chapterNumber,
+      chapterOutline: args.chapterOutline,
+      writingBrief: briefAlign.alignedBrief || undefined,
+      existingText: args.existingText || args.content,
+      billing: args.billing,
+      userTarget,
+      minLen: briefAlign.endpointPending ? Math.round(target * 0.82) : Math.round(target * 0.9),
+      maxLen: Math.round(target * 1.12),
+      onProgress: args.onProgress,
+      mode: args.mode === 'continue' ? 'continue' : args.mode === 'generate' ? 'generate' : 'rewrite',
+    })
+    const stillCold = outlineFix.reasons.some(r => r.code === 'chapter_seam_cold_open')
+    return {
+      content: outlineFix.content,
+      report: {
+        passed: outlineFix.passed,
+        attempts: outlineFix.attempts,
+        reasons: outlineFix.reasons,
+        hardReject: outlineFix.hardReject,
+      },
+      stillCold,
+    }
+  } catch (err: unknown) {
+    logTaskWarn('Novel', 'outline-compliance-gate-llm-failed', {
+      chapterNumber: args.chapterNumber,
+      error: err instanceof Error ? err.message : String(err),
+    })
+    const { detectOutlineCompliance } = await import('./novel-outline-compliance.js')
+    const detected = detectOutlineCompliance({
+      content: args.content,
+      chapterOutline: args.chapterOutline || '',
+      chapterNumber: args.chapterNumber,
+      writingBrief: briefAlign.alignedBrief || args.writingBrief,
+    })
+    const reasons = detected.reasons
+    return {
+      content: args.content,
+      report: {
+        passed: detected.ok,
+        attempts: 0,
+        reasons,
+        hardReject: reasons.some(r => r.code === 'chapter_seam_cold_open'),
+      },
+      stillCold: reasons.some(r => r.code === 'chapter_seam_cold_open'),
+    }
   }
 }
 
@@ -189,13 +217,30 @@ export async function postProcessNovelChapterContent(args: {
   } = args
 
   let content = args.content
+  // ??????????????????????????? generateNovelChapterFull?
+  if (chapterNumber >= 2) {
+    try {
+      const prevForPurge = await loadPrevChapterContentTail(dramaId, chapterNumber, 1600)
+      const { stripSeamReplayOpening } = await import('./novel-chapter-seam.js')
+      const purged = stripSeamReplayOpening({
+        content,
+        chapterNumber,
+        prevChapterTail: prevForPurge,
+        chapterOutline,
+      })
+      if (purged.stripped) {
+        content = purged.text
+        logTaskWarn('Novel', 'post-process-seam-purged-on-entry', { chapterNumber })
+      }
+    } catch { /* ignore */ }
+  }
   let check: ContinuityCheckResult | null = null
   let outlineCompliance: import('./novel-outline-compliance-fix.js').OutlineComplianceReport | null = null
 
   const runStreamContinuityCheck = async (reason: string) => {
     // ??????? rewrite ????????????????????/Craft ???????????
     if (isCausalChainEnabled(meta)) {
-      onProgress?.('正在审校…')
+      onProgress?.('?????')
       const ensured = await ensureCausalChangeRecordAppended({
         content,
         chapterNumber,
@@ -213,7 +258,7 @@ export async function postProcessNovelChapterContent(args: {
       billing: billing ? { ...billing, reason: `???????${reason}` } : undefined,
     })
     if (!checkResult.passed && isOnlyCausalChangeRecordIssue(checkResult) && isCausalChainEnabled(meta)) {
-      onProgress?.('正在审校…')
+      onProgress?.('?????')
       const fixed = await ensureCausalChangeRecordAppended({
         content,
         chapterNumber,
@@ -240,7 +285,7 @@ export async function postProcessNovelChapterContent(args: {
     check = checkResult
     // ????/????????????????????????
     const seamHit = (checkResult.blocking_items || []).some(i => i.rule === 'chapter_seam_replay')
-      || (checkResult.conflicts || []).some(c => /章缝回放|chapter_seam_replay/.test(c))
+      || (checkResult.conflicts || []).some(c => /章缝|回放|chapter_seam_replay/.test(c))
     if (seamHit && chapterNumber >= 2) {
       const fixed = await maybeFixChapterSeamOpening({
         content,
@@ -271,11 +316,12 @@ export async function postProcessNovelChapterContent(args: {
       chapterOutline,
       writingBrief: generateArgs?.prompt,
       existingText: content,
-      mode: generateArgs?.mode || 'rewrite',
+      mode: generateArgs?.mode || 'generate',
       targetLength: generateArgs?.targetLength,
       billing,
       onProgress,
     })
+
     content = gate.content
     outlineCompliance = gate.report
     // ?????????????????????? Craft/????????? UI ???? reasons
@@ -314,7 +360,12 @@ export async function postProcessNovelChapterContent(args: {
     const beforeCraft = content
     const craftOut = await runChapterCraftPipelineHook({
       content,
-      generateArgs: { ...generateArgs, existingText: content, mode: 'rewrite' },
+      generateArgs: {
+        ...generateArgs,
+        existingText: content,
+        mode: 'rewrite',
+        includeNextChapter: generateArgs.includeNextChapter ?? generateArgs.mode === 'rewrite',
+      },
       dramaId,
       episodeId,
       chapterNumber,
@@ -384,6 +435,37 @@ export async function postProcessNovelChapterContent(args: {
       content = humanizeOut.content
       aiDetection = humanizeOut.ai_detection
     }
+    if (chapterNumber >= 2 && prevTail.trim()) {
+      const { stripSeamReplayOpening, detectChapterSeamReplay } = await import('./novel-chapter-seam.js')
+      const isLexicalSeam = (msg?: string) => !!msg && msg.includes('????')
+      const beforeSeam = detectChapterSeamReplay({
+        content: beforeHumanize,
+        chapterNumber,
+        prevChapterTail: prevTail,
+        chapterOutline,
+      })
+      const afterSeam = detectChapterSeamReplay({
+        content,
+        chapterNumber,
+        prevChapterTail: prevTail,
+        chapterOutline,
+      })
+      if (afterSeam && isLexicalSeam(afterSeam.message) && !isLexicalSeam(beforeSeam?.message)) {
+        logTaskWarn('Novel', 'humanize-reverted-seam-replay', { chapterNumber })
+        content = beforeHumanize
+      } else if (afterSeam && isLexicalSeam(afterSeam.message)) {
+        const purged = stripSeamReplayOpening({
+          content,
+          chapterNumber,
+          prevChapterTail: prevTail,
+          chapterOutline,
+        })
+        if (purged.stripped) {
+          logTaskWarn('Novel', 'humanize-seam-replay-purged', { chapterNumber })
+          content = purged.text
+        }
+      }
+    }
   }
 
   if (
@@ -403,7 +485,7 @@ export async function postProcessNovelChapterContent(args: {
       chapterOutline,
       writingBrief: generateArgs?.prompt,
       existingText: content,
-      mode: 'rewrite',
+      mode: generateArgs?.mode || 'generate',
       targetLength: generateArgs?.targetLength,
       billing,
       onProgress,
@@ -436,9 +518,9 @@ export async function postProcessNovelChapterContent(args: {
     }
   }
 
-  // Craft/?????????????????????????????
-  if (!skipCheck && isCausalChainEnabled(meta)) {
-    const afterHooks = await runStreamContinuityCheck('???/????')
+  // Craft/?AI ????????????????????????? UI ????
+  if (!skipCheck) {
+    const afterHooks = await runStreamContinuityCheck('hooks')
     check = afterHooks
     await saveContinuityCheck(episodeId, check)
   } else if (isCausalChainEnabled(meta)) {
@@ -540,7 +622,7 @@ export async function runNovelChapterPipeline(args: {
   const stagnantLimit = resolveContinuityStagnantStreak(meta)
 
   const assertNotStopped = () => {
-    if (shouldStop?.()) throw new Error('???????????')
+    if (shouldStop?.()) throw new Error('?????')
   }
 
   onPhase?.('chapter')
@@ -661,10 +743,10 @@ export async function runNovelChapterPipeline(args: {
         lastRejectedFingerprint = ''
       }
       const plotModelConflicts = (checkResult.audit?.model ?? []).filter(m =>
-        /吃书|场景|逻辑|剧情|须立即|下章|顺绳|溪边|踪迹|锁定事实|黑松林|断崖|绳索|发现.*踪迹/.test(m.message),
+        /时空|人物|吃书|回放|章缝|地点|时间|身份|称谓|因果|矛盾|大纲|拍点|越界|接缝/.test(m.message),
       )
       const rejectedPlotHints = (checkResult.audit?.model_rejected ?? []).filter(r =>
-        /吃书|状态矛盾|矛盾|不一致|【因果起点】/.test(r),
+        /时空|章缝|回放|吃书|大纲|拍点|越界/.test(r),
       )
       const needsStructuralFix = plotModelConflicts.length > 0 || rejectedPlotHints.length > 0
       const lastMode = rewriteLog.at(-1)?.mode
@@ -757,7 +839,7 @@ export async function runNovelChapterPipeline(args: {
       chapterOutline,
       writingBrief: generateArgs?.prompt,
       existingText: content,
-      mode: generateArgs?.mode || 'rewrite',
+      mode: generateArgs?.mode || 'generate',
       targetLength: generateArgs?.targetLength,
       billing,
     })
@@ -799,7 +881,12 @@ export async function runNovelChapterPipeline(args: {
     const beforeCraftBatch = content
     const craftOut = await runChapterCraftPipelineHook({
       content,
-      generateArgs: { ...generateArgs, existingText: content, mode: 'rewrite' },
+      generateArgs: {
+        ...generateArgs,
+        existingText: content,
+        mode: 'rewrite',
+        includeNextChapter: generateArgs.includeNextChapter ?? generateArgs.mode === 'rewrite',
+      },
       dramaId,
       episodeId,
       chapterNumber,
@@ -879,6 +966,37 @@ export async function runNovelChapterPipeline(args: {
       aiDetection = humanizeOut.ai_detection
       if (humanizeOut.humanize_attempts > 0) rewritten = true
     }
+    if (chapterNumber >= 2 && prevTailBatch.trim()) {
+      const { stripSeamReplayOpening, detectChapterSeamReplay } = await import('./novel-chapter-seam.js')
+      const isLexicalSeam = (msg?: string) => !!msg && msg.includes('????')
+      const beforeSeam = detectChapterSeamReplay({
+        content: beforeHumanize,
+        chapterNumber,
+        prevChapterTail: prevTailBatch,
+        chapterOutline,
+      })
+      const afterSeam = detectChapterSeamReplay({
+        content,
+        chapterNumber,
+        prevChapterTail: prevTailBatch,
+        chapterOutline,
+      })
+      if (afterSeam && isLexicalSeam(afterSeam.message) && !isLexicalSeam(beforeSeam?.message)) {
+        logTaskWarn('Novel', 'humanize-reverted-seam-replay', { chapterNumber })
+        content = beforeHumanize
+      } else if (afterSeam && isLexicalSeam(afterSeam.message)) {
+        const purged = stripSeamReplayOpening({
+          content,
+          chapterNumber,
+          prevChapterTail: prevTailBatch,
+          chapterOutline,
+        })
+        if (purged.stripped) {
+          logTaskWarn('Novel', 'humanize-seam-replay-purged', { chapterNumber })
+          content = purged.text
+        }
+      }
+    }
   }
 
   if (
@@ -898,7 +1016,7 @@ export async function runNovelChapterPipeline(args: {
       chapterOutline,
       writingBrief: generateArgs?.prompt,
       existingText: content,
-      mode: 'rewrite',
+      mode: generateArgs?.mode || 'generate',
       targetLength: generateArgs?.targetLength,
       billing,
     })

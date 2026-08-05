@@ -48,6 +48,10 @@ export type NovelMetadata = {
   compliance_veto_enabled?: boolean
   /** 质量修正最大轮次，默认 3 */
   chapter_craft_rewrite_max?: number
+  /** 写正文前校验大纲戏剧标签，默认 true */
+  outline_drama_gate_enabled?: boolean
+  /** 按大纲拍点顺序多次生成再拼接（P1），默认 true */
+  beat_sequential_generate?: boolean
   /** 生成后自动去 AI 味闭环，默认 true */
   ai_humanize_auto?: boolean
   /** 自动去 AI 味最大精修轮次；0=只检测不改写；默认 3 */
@@ -106,6 +110,8 @@ export function parseNovelMetadata(raw: JsonColumnInput): NovelMetadata {
         if (n <= 0) return 0
         return Math.min(20, Math.round(n))
       })(),
+      outline_drama_gate_enabled: parsed.outline_drama_gate_enabled === false ? false : undefined,
+      beat_sequential_generate: parsed.beat_sequential_generate === false ? false : undefined,
       ai_humanize_auto: parsed.ai_humanize_auto === false ? false : undefined,
       ai_humanize_max: (() => {
         const n = Number(parsed.ai_humanize_max)
@@ -200,8 +206,18 @@ export function resolveChapterCraftRewriteMax(meta: NovelMetadata): number {
   const n = meta.chapter_craft_rewrite_max
   if (n === 0) return 0
   if (Number.isFinite(n) && n! >= 1) return Math.min(20, Math.round(n!))
-  // 默认只回灌修正 1 次；多次整章重生成本高且常仍不过
-  return 1
+  // 对照大纲戏剧要素修正：默认 3 次
+  return 3
+}
+
+/** 写正文前大纲戏剧标签闸门，默认开 */
+export function isOutlineDramaGateEnabled(meta: NovelMetadata): boolean {
+  return meta.outline_drama_gate_enabled !== false
+}
+
+/** 按拍点顺序生成（P1），默认开 */
+export function isBeatSequentialGenerateEnabled(meta: NovelMetadata): boolean {
+  return meta.beat_sequential_generate !== false
 }
 
 /** 交付默认开：仅显式 false 关闭（关闭时不做自动检测） */

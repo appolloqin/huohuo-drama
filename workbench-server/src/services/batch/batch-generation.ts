@@ -4,9 +4,15 @@ import { now } from '../../common/http/response.js'
 import {
   isChapterCraftLengthSoftEnabled,
   isNovelProject,
+  mergeNovelMetadata,
   parseNovelMetadata,
 } from '../../common/novel/novel-meta.js'
 import { generateNovelWritingBrief, summarizeNovelChapterLength } from '../novel/novel-writing.js'
+import {
+  OutlineDramaFieldsError,
+  prepareOutlineDramaForChapterWrite,
+} from '../novel/novel-outline-drama-ensure.js'
+import { upgradePromptToDramaOutline } from '../novel/novel-outline-drama-fields.js'
 import { lengthFactorForRole, parseChapterCraftTags } from '../novel/novel-chapter-craft-tags.js'
 import { ensureNovelMemory } from '../novel/novel-memory/index.js'
 import { looksLikeModelThinkingLeak } from '../ai/ai.js'
@@ -187,7 +193,7 @@ export async function batchGenerateNovelChapters(args: {
     throw new Error('小说项目不存在')
   }
 
-  const meta = parseNovelMetadata(drama.metadata)
+  let meta = parseNovelMetadata(drama.metadata)
   const premise = meta.premise || drama.description || ''
   const twoPhase = meta.batch_two_phase !== false
   const strictContinuity = meta.continuity_strict !== false
@@ -223,7 +229,8 @@ export async function batchGenerateNovelChapters(args: {
     if (shouldStop?.()) break
     index += 1
 
-    const chapterOutline = resolveNovelChapterOutline(ep, drama)
+    const oldChapterOutline = resolveNovelChapterOutline(ep, drama)
+    let chapterOutline = oldChapterOutline
     let prompt = resolveNovelPrompt(ep, chapterOutline, premise)
     if (!prompt && !chapterOutline) {
       summary.skipped += 1
@@ -326,6 +333,47 @@ export async function batchGenerateNovelChapters(args: {
         resourceId: ep.id,
       }
 
+      try {
+        const prepared = await prepareOutlineDramaForChapterWrite({
+          meta,
+          chapterNumber: ep.episodeNumber,
+          title: drama.title,
+          billing: { ...billing, reason: '数字作家大纲补全' },
+          fallbackChapterOutline: oldChapterOutline,
+        })
+        meta = prepared.meta
+        chapterOutline = prepared.writingChapterOutline || oldChapterOutline
+        prompt = upgradePromptToDramaOutline({
+          prompt,
+          oldChapterOutline,
+          writingChapterOutline: chapterOutline,
+        })
+        if (prepared.outlineChanged) {
+          await dramasRepo.updateDrama(dramaId, {
+            metadata: mergeNovelMetadata(drama.metadata, { outline: meta.outline }),
+            updatedAt: now(),
+          })
+          drama.metadata = mergeNovelMetadata(drama.metadata, { outline: meta.outline })
+        }
+      } catch (err: any) {
+        if (err instanceof OutlineDramaFieldsError) {
+          summary.failed += 1
+          summary.errors.push({ episode_number: ep.episodeNumber, message: err.message })
+          onProgress({
+            index,
+            total: pending.length,
+            episode_id: ep.id,
+            episode_number: ep.episodeNumber,
+            phase: 'chapter',
+            status: 'error',
+            message: err.message,
+          })
+          if (stopOnError) break
+          continue
+        }
+        throw err
+      }
+
       let progressPhase = 'chapter'
       const pipeline = await runNovelChapterPipeline({
         generateArgs: {
@@ -339,6 +387,7 @@ export async function batchGenerateNovelChapters(args: {
           chapterId: ep.id,
           existingText: '',
           targetLength,
+          mode: 'generate',
         },
         dramaId: drama.id,
         episodeId: ep.id,

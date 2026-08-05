@@ -16,6 +16,7 @@ import {
   prevImpliesStableCopresence,
   prevTailWithSnapshotTime,
 } from './novel-chapter-end-snapshot.js'
+import { stripLengthAdjustInstructionEcho } from '../../common/novel/novel-change-record.js'
 
 /** 兼容 「」『』“” 及 ASCII 引号（用 \u 避免源码引号歧义） */
 const SPEECH_RE = new RegExp(
@@ -142,35 +143,130 @@ export function phraseAppearsIn(haystack: string, phrase: string): boolean {
   return false
 }
 
+/** 戏剧标签：须落地的情节拍（含起因——仅当前序未写到时才写过程） */
+const DRAMA_PLOT_TAGS = new Set([
+  '本章起因', '欲望', '阻碍', '局面变化', '人物选择', '章末问题', '信息增量',
+])
+
 /**
- * 从大纲切出有序「情节拍点」（顺序即大纲叙述顺序，用于倒退判定）。
+ * 戏剧标签：场合设定，不进「须写拍点」序列。
+ * 时间/地点/人物只定场合；【本章起因】是否已成立看前序正文覆盖，不在此列。
  */
-export function extractOutlineBeatPhrases(outline: string, max = 12): string[] {
-  const cleaned = outline.replace(/\s+/g, ' ').trim()
-  if (!cleaned) return []
-  // 只按强分隔符切拍点；勿用 ，、 切开——中文大纲常在同一拍内用顿号/逗号列要点，
-  // 切开后末拍会变成「硬着头皮面对这一局」这类碎片，导致越界漏检。
-  const parts = cleaned
+const DRAMA_SETTING_TAGS = new Set([
+  '本章时间', '本章地点', '本章人物',
+])
+
+/** 戏剧标签：手法/调性，不进情节拍点序列 */
+const DRAMA_META_TAGS = new Set([
+  '冲突层', '情绪手法', '主题回响',
+])
+
+const DRAMA_TAG_LINE_RE = /^【([^】]{1,24})】\s*(.*)$/
+
+function pushUniquePhrase(out: string[], seen: Set<string>, phrase: string, max: number): boolean {
+  const key = normalizeText(phrase)
+  if (key.length < 4 || seen.has(key)) return out.length >= max
+  seen.add(key)
+  out.push(phrase)
+  return out.length >= max
+}
+
+function extractDramaTagValues(outline: string, tags: Set<string>, max: number): string[] {
+  const lines = outline.trim().split(/\n+/).map(s => s.trim()).filter(Boolean)
+  const out: string[] = []
+  const seen = new Set<string>()
+  for (const line of lines) {
+    const m = line.match(DRAMA_TAG_LINE_RE)
+    if (!m) continue
+    const tag = m[1]!.trim()
+    const val = (m[2] || '').replace(/\s+/g, ' ').trim()
+    if (!tags.has(tag) || [...val].length < 4) continue
+    if (pushUniquePhrase(out, seen, val, max)) break
+  }
+  return out
+}
+
+/**
+ * 【本章起因】取值（题材无关）。
+ * 是否「已成立禁演」由前序正文覆盖决定，见 buildOutlineStaleBlock。
+ */
+export function extractOutlineCatalystPhrases(outline: string, max = 4): string[] {
+  return extractDramaTagValues(outline, new Set(['本章起因']), max)
+}
+
+/**
+ * @deprecated 使用 extractOutlineCatalystPhrases；保留别名以免外部引用断裂
+ */
+export function extractOutlinePreconditionPhrases(outline: string, max = 6): string[] {
+  return extractOutlineCatalystPhrases(outline, max)
+}
+
+export type OutlineBeatItem = {
+  /** 戏剧标签名（如「本章起因」）；旧版无标签大纲则为 undefined */
+  tag?: string
+  beat: string
+}
+
+/**
+ * 从大纲切出有序「情节拍点」（含可选戏剧标签）。
+ * 戏剧标签大纲：按行序取起因/欲望/阻碍/局面等落地拍；旧版「/」分隔大纲保持原切分。
+ * 禁止先把换行压成空格——否则标签行粘成超长串，拍点几乎全丢。
+ */
+export function extractOutlineBeatItems(outline: string, max = 12): OutlineBeatItem[] {
+  const raw = outline.trim()
+  if (!raw) return []
+
+  const lines = raw.split(/\n+/).map(s => s.trim()).filter(Boolean)
+  const dramaLineCount = lines.filter(l => DRAMA_TAG_LINE_RE.test(l)).length
+  const seen = new Set<string>()
+  const out: OutlineBeatItem[] = []
+
+  if (dramaLineCount >= 3) {
+    for (const line of lines) {
+      const m = line.match(DRAMA_TAG_LINE_RE)
+      if (!m) continue
+      const tag = m[1]!.trim()
+      const val = (m[2] || '').replace(/\s+/g, ' ').trim()
+      if (DRAMA_SETTING_TAGS.has(tag) || DRAMA_META_TAGS.has(tag)) continue
+      if (!DRAMA_PLOT_TAGS.has(tag)) continue
+      if ([...val].length < 4 || [...val].length > 100) continue
+      const key = normalizeText(val)
+      if (key.length < 4 || seen.has(key)) continue
+      seen.add(key)
+      out.push({ tag, beat: val })
+      if (out.length >= max) break
+    }
+    if (out.length) return out
+  }
+
+  // 旧版拍点：先按换行与强分隔符切开，再压空白；勿用 ，、 切开
+  const parts = raw
     .split(/[/／|｜；;\n]+|(?<=[。！？])\s*/)
-    .map(s => s.trim())
+    .map(s => s.replace(/\s+/g, ' ').trim())
     .filter(s => {
       const n = [...s].length
       return n >= 4 && n <= 80
     })
-  const seen = new Set<string>()
-  const out: string[] = []
   for (const p of parts) {
     const key = normalizeText(p)
     if (key.length < 4 || seen.has(key)) continue
     seen.add(key)
-    out.push(p)
+    out.push({ beat: p })
     if (out.length >= max) break
   }
   return out
 }
 
 /**
- * 本章大纲要点是否已在上章正文出现（大纲过期 → 易诱发后退写）。
+ * 从大纲切出有序「情节拍点」文案（顺序即大纲叙述顺序，用于倒退判定）。
+ */
+export function extractOutlineBeatPhrases(outline: string, max = 12): string[] {
+  return extractOutlineBeatItems(outline, max).map(i => i.beat)
+}
+
+/**
+ * 本章情节拍是否已在上章正文出现（大纲过期 → 易诱发后退写）。
+ * 【本章起因】同样：仅当前序已覆盖时才算过期。
  */
 export function findStaleOutlineBeats(outline: string, prevText: string): string[] {
   if (!outline.trim() || !prevText.trim()) return []
@@ -185,13 +281,31 @@ export function buildOutlineStaleBlock(args: {
   const { chapterOutline, prevTail, chapterNumber } = args
   if (chapterNumber < 2 || !chapterOutline?.trim() || !prevTail.trim()) return ''
   const stale = findStaleOutlineBeats(chapterOutline, prevTail)
-  if (!stale.length) return ''
-  return [
-    '【本章大纲过期冲突 — 硬性】',
-    '下列大纲要点已在【上章结尾/前序正文】出现，**禁止再写**；请从上章已发生事实**之后**推进新阻力/新信息：',
-    ...stale.slice(0, 8).map((s, i) => `${i + 1}. ${s}`),
-    '大纲中排在上述要点**之前**的拍点若尚未在本章应有位置出现，也禁止倒退重演；以前序正文进度为准。',
-  ].join('\n')
+  const catalysts = extractOutlineCatalystPhrases(chapterOutline)
+  const staleCatalysts = catalysts.filter(c => phraseAppearsIn(prevTail, c))
+  const pendingCatalysts = catalysts.filter(c => !phraseAppearsIn(prevTail, c))
+  const forbid = [...new Set([...stale, ...staleCatalysts])]
+  if (!forbid.length && !pendingCatalysts.length) return ''
+
+  const lines = ['【本章大纲与前序对齐 — 硬性】']
+  if (forbid.length) {
+    lines.push(
+      '下列要点已在【上章结尾/前序正文】出现，**禁止再写过程/重演**；请从上章已发生事实**之后**推进：',
+      ...forbid.slice(0, 8).map((s, i) => `${i + 1}. ${s}`),
+      '大纲中排在上述要点**之前**的拍点若尚未在本章应有位置出现，也禁止倒退重演；以前序正文进度为准。',
+    )
+  }
+  if (pendingCatalysts.length) {
+    lines.push(
+      '【本章起因 — 前序尚未落地，须在本章写清过程】',
+      ...pendingCatalysts.slice(0, 4).map((s, i) => `${i + 1}. ${s}`),
+      '硬性：不可默认「已完成」而跳到结果态；先写清起因过程，再进入【欲望】【阻碍】。',
+      '硬性：起因须由【本章人物】完成；上章末悬念若与起因冲突，以本章大纲为准（接缝只给结构化事实，勿续写上章末原文）。',
+    )
+  } else if (staleCatalysts.length) {
+    lines.push('【本章起因】已在前序落地：勿重演过程，从上章末之后进入【欲望】【阻碍】。')
+  }
+  return lines.filter(Boolean).join('\n')
 }
 
 /**
@@ -704,9 +818,69 @@ export function buildForcedSeamOpeningBlock(args: {
   ].filter(Boolean).join('\n')
 }
 
-export function buildChapterSeamWriteBlock(prevTail: string): string {
+/** 下章大纲仅作禁写边界，禁止提前写场面 */
+export function formatNextChapterForbidBlock(
+  nextOutline: string | undefined,
+  chapterNumber: number,
+): string {
+  const t = nextOutline?.trim()
+  if (!t) return ''
+  return [
+    `【下章大纲（第${chapterNumber + 1}章）— 仅作边界，禁止提前写】`,
+    t.slice(0, 600),
+    '硬性：本章不得铺开上述下章情节；章末可留钩子意向，勿写成下章场面。',
+  ].join('\n')
+}
+
+/**
+ * 下章开篇已写：正向章缝约束（双目标）。
+ * **不注入下章开篇原文**（与上章 tip「待落地起因不喂原文」同理，避免抄袭诱饵）。
+ * nextHead 仅作有无判断；检测/剥尾另用原文，不进写作提示。
+ * 见 docs/superpowers/specs/2026-08-04-forward-seam-next-head-design.md
+ */
+export function formatNextChapterForwardSeamBlock(
+  nextHead: string | undefined,
+  chapterNumber: number,
+): string {
+  if (!nextHead?.trim()) return ''
+  return [
+    `【正向章缝（第${chapterNumber + 1}章开篇已写）】`,
+    '硬性（不提供下章开篇原文；禁止复述或向提示索取下章正文）：',
+    '1. 先完成本章大纲末拍收束。',
+    '2. 再留短落点：时间/地点/在场须使下章能自然续上，不得时空打架。',
+    '3. 章末必须停在下章开篇之前；下章第一句留给下章；禁止照抄、扩写下章已写开篇。',
+    '4. 禁止另起下章未接续的支线终局；禁止改写下章。',
+  ].join('\n')
+}
+
+export function buildChapterSeamWriteBlock(
+  prevTail: string,
+  opts?: {
+    maxTailChars?: number
+    /**
+     * 待落地【本章起因】：不注入上章末原文（续写诱饵），只给结构化已发生事实。
+     * 见 docs/superpowers/specs/2026-08-04-structured-seam-pending-catalyst-design.md
+     */
+    omitRawPrevProse?: boolean
+    prevSnapshot?: import('../../common/novel/novel-continuity-state.js').ChapterEndSnapshot | null
+  },
+): string {
   const tail = prevTail.trim()
-  if (!tail) {
+  const maxTail = Math.max(40, Math.min(1200, opts?.maxTailChars ?? 1200))
+  const omitRaw = !!opts?.omitRawPrevProse
+  const snap = opts?.prevSnapshot
+
+  const rules = [
+    '【章缝硬规则 — 禁止回放上章高潮】',
+    '1. 本章起点 = 上章结尾**已经发生**之后；读者已知内容不要重演。',
+    '2. 禁止「同一高潮换措辞」：上章末已完成的关键对白、公开行动、冲突落点，开篇勿再铺一遍。',
+    '3. 禁止拍点倒退：勿回到上章已越过的更早情节节点重开。',
+    '4. 禁止开篇时空早于上章末已发生事实；禁止倒退到上章已越过的更早情节节点重开。',
+    '5. **时辰**：开篇不得早于上章末已写明的日光/时辰（如日头正中后禁止晨光重开；到次日须写明次日）。',
+    '6. 允许：一两句承接或他人反应，然后立刻进入本章新阻力/新信息。',
+  ]
+
+  if (!tail && !snap) {
     return [
       '【章缝硬规则】第2章起：从【上章结尾】已发生事实**之后**开笔。',
       '禁止把上章末已经写完的关键对白、公开行动或场面高潮再完整演一遍；一两句承接即可，立刻推进新信息/新阻力。',
@@ -714,6 +888,24 @@ export function buildChapterSeamWriteBlock(prevTail: string): string {
       '禁止开篇时空早于上章末已发生事实；禁止倒退到上章已越过的更早情节节点重开。',
     ].join('\n')
   }
+
+  if (omitRaw) {
+    const factLines = [
+      snap?.time?.trim() ? `时间：${snap.time.trim()}` : '',
+      snap?.place?.trim() ? `地点：${snap.place.trim()}` : '',
+      snap?.cast?.trim() ? `在场：${snap.cast.trim()}` : '',
+      snap?.last_event?.trim() ? `末事件：${snap.last_event.trim()}` : '',
+    ].filter(Boolean)
+    return [
+      ...rules,
+      '【上章已发生事实 — 结构化（禁止续写上章末悬念正文）】',
+      ...(factLines.length
+        ? factLines
+        : ['（无 snapshot；仅知须从上章已发生事实之后起笔，勿扩写上章末未决发现）']),
+      '硬性：本章【起因】若尚未落地，开篇须先写清该起因由【本章人物】完成；禁止把上章末未决物扩写成开篇主戏。',
+    ].join('\n')
+  }
+
   const speeches = extractSpeeches(tail.slice(-1000), 4)
   const sentences = extractTailSentences(tail.slice(-800), 3)
   const speechHint = speeches.length
@@ -723,15 +915,9 @@ export function buildChapterSeamWriteBlock(prevTail: string): string {
     ? `上章末关键收束句（勿换皮重写同一拍）：\n${sentences.map((s, i) => `${i + 1}. ${s.slice(0, 70)}${s.length > 70 ? '…' : ''}`).join('\n')}`
     : ''
   return [
-    '【章缝硬规则 — 禁止回放上章高潮】',
-    '1. 本章起点 = 上章结尾**已经发生**之后；读者已知内容不要重演。',
-    '2. 禁止「同一高潮换措辞」：上章末已完成的关键对白、公开行动、冲突落点，开篇勿再铺一遍。',
-    '3. 禁止拍点倒退：勿回到上章已越过的更早情节节点重开。',
-    '4. 禁止开篇时空早于上章末已发生事实；禁止倒退到上章已越过的更早情节节点重开。',
-    '5. **时辰**：开篇不得早于上章末已写明的日光/时辰（如日头正中后禁止晨光重开；到次日须写明次日）。',
-    '6. 允许：一两句承接或他人反应，然后立刻进入本章新阻力/新信息。',
+    ...rules,
     speechHint || sentenceHint,
-    `【上章结尾（须承接，勿重演）】\n${tail.slice(-1200)}`,
+    `【上章结尾（须承接，勿重演；禁止照抄词组）】\n${tail.slice(-maxTail)}`,
   ].filter(Boolean).join('\n')
 }
 
@@ -811,19 +997,52 @@ export function formatRewriteDraftBlock(args: {
   return lines.filter(Boolean).join('\n')
 }
 
+/** 契约 cast 不得当成人名的噪声（身体部位/代词/碎片） */
+const CAST_NAME_STOP = new Set([
+  '耳朵', '眼睛', '嘴巴', '鼻子', '手指', '手心', '掌心', '胸口', '肩头',
+  '自己', '什么', '这个', '那个', '他们', '她们', '我们', '东西', '么东',
+  '好是', '一声', '一下', '手里', '怀里', '眼前', '心里', '脸上', '身上',
+  '门口', '屋里', '炕上', '那边', '这边', '时候', '样子',
+])
+
 /** 契约 cast 字段拆人名（顿号/逗号），题材无关 */
 function castNamesFromSnapshot(cast?: string): string[] {
   if (!cast?.trim() || cast === '未明示') return []
   return cast
     .split(/[、，,/／|｜\s]+/)
     .map(s => s.replace(/\s+/g, '').trim())
-    .filter(s => [...s].length >= 2 && [...s].length <= 4)
+    .filter(s => {
+      const n = [...s].length
+      if (n < 2 || n > 4) return false
+      if (CAST_NAME_STOP.has(s)) return false
+      // 拒明显非人名（含「的/是」等）
+      if (/[的是了在]$/.test(s)) return false
+      return true
+    })
+}
+
+/**
+ * 上章末「刚发生」是否被开篇整段回放（须长连续指纹，避免「阴影→揭晓」承接误杀）。
+ */
+function eventFingerprintReplayed(opening: string, eventFp: string): boolean {
+  const h = opening.replace(/\s+/g, '').replace(/[，。！？、；：…—\-~·"'「」『』“”']/g, '')
+  const p = eventFp.replace(/\s+/g, '').replace(/[，。！？、；：…—\-~·"'「」『』“”']/g, '')
+  if (p.length < 8 || h.length < 40) return false
+  // 近整句回放
+  const head = p.slice(0, Math.min(24, p.length))
+  if (head.length >= 12 && h.includes(head)) return true
+  // 长连续块：至少 12 字，或事件长度的 35%
+  const need = Math.min(18, Math.max(12, Math.floor(p.length * 0.35)))
+  for (let i = 0; i <= p.length - need; i++) {
+    if (h.includes(p.slice(i, i + need))) return true
+  }
+  return false
 }
 
 /**
  * 上章末「刚发生」被开篇换皮重演（题材无关）。
- * 信号：契约 last_event 被开篇覆盖 / 与上章末高重合 + cast 人名再现。
- * 不扫场面动作专词表。
+ * 信号：契约 last_event 被开篇长指纹覆盖 / 与上章末高重合 + 真人名再现。
+ * 不扫场面动作专词表；短词重合的「承接揭示」不判回放。
  */
 export function detectChapterSeamClimaxReplay(args: {
   content: string
@@ -835,7 +1054,9 @@ export function detectChapterSeamClimaxReplay(args: {
   if (chapterNumber < 2) return null
 
   const prevClimax = (prevChapterTail || '').trim().slice(-900)
-  const opening = content.trim().slice(0, Math.min(content.trim().length, 900))
+  // 审校前先剥篇幅指令回显，避免把提示词当开篇
+  const body = stripLengthAdjustInstructionEcho(content.trim()) || content.trim()
+  const opening = body.slice(0, Math.min(body.length, 900))
   if ([...opening].length < 60) return null
 
   const lastEvent = prevSnapshot?.last_event?.trim()
@@ -845,7 +1066,7 @@ export function detectChapterSeamClimaxReplay(args: {
   if (!eventFp && [...prevClimax].length < 80) return null
 
   const eventCovered = eventFp
-    ? outlineBeatCoveredIn(opening, eventFp)
+    ? eventFingerprintReplayed(opening, eventFp)
     : false
   const overlap = bigramJaccard(
     prevClimax || eventFp,
@@ -857,10 +1078,10 @@ export function detectChapterSeamClimaxReplay(args: {
     n => opening.includes(n) && (prevClimax.includes(n) || (eventFp ? eventFp.includes(n) : false)),
   )
 
-  // 须「事件指纹命中」或「与上章末高重合」，再叠加人名/重合门槛，避免误杀纯承接
-  const eventHit = eventCovered || overlap >= 0.11
+  // 须「长指纹事件命中」或「与上章末高重合」，再叠加人名/重合门槛，避免误杀纯承接
+  const eventHit = eventCovered || overlap >= 0.14
   if (!eventHit) return null
-  if (sharedCast.length < 1 && overlap < 0.14) return null
+  if (sharedCast.length < 1 && overlap < 0.18) return null
   if (!eventCovered && sharedCast.length < 1) return null
 
   const who = sharedCast.length
@@ -1046,6 +1267,191 @@ export function detectChapterSeamReplay(args: {
   }
 
   return null
+}
+
+/**
+ * 确定性清除开篇与上章末的「高度重合」句：
+ * - 按句扫描：与上章末尾共享 ≥8 字连续归一化片段则删句
+ * - 若仍触发 lexical 章缝回放，继续剥首句
+ * 不处理冷开篇/时辰倒退等非重合类硬伤。
+ */
+export function stripSeamReplayOpening(args: {
+  content: string
+  chapterNumber: number
+  prevChapterTail?: string
+  chapterOutline?: string
+  prevSnapshot?: ChapterEndSnapshot | null
+}): { text: string; stripped: boolean } {
+  let text = (args.content || '').trim()
+  const prev = (args.prevChapterTail || '').trim()
+  if (args.chapterNumber < 2 || !prev || !text) {
+    return { text, stripped: false }
+  }
+
+  const prevTip = normalizeText(prev.slice(-900))
+  let stripped = false
+
+  const sentenceSharesPrev = (sent: string): boolean => {
+    const sn = normalizeText(sent)
+    if (sn.length < 8 || prevTip.length < 8) return false
+    if (prevTip.includes(sn) || sn.includes(prevTip.slice(-Math.min(16, prevTip.length)))) return true
+    const maxW = Math.min(20, sn.length)
+    for (let w = maxW; w >= 8; w--) {
+      for (let i = 0; i <= sn.length - w; i++) {
+        if (prevTip.includes(sn.slice(i, i + w))) return true
+      }
+    }
+    return false
+  }
+
+  // 第一轮：删掉开篇窗口内与上章末共享长片段的句子（最多扫前 ~1200 字）
+  {
+    const openCut = Math.min(text.length, Math.max(400, Math.floor(text.length * 0.35)))
+    const head = text.slice(0, openCut)
+    const tail = text.slice(openCut)
+    const parts = head.split(/(?<=[。！？…])\s*/)
+    const kept: string[] = []
+    let dropped = 0
+    for (const p of parts) {
+      const t = p.trim()
+      if (!t) continue
+      if ([...t].length >= 10 && sentenceSharesPrev(t) && dropped < 12) {
+        dropped += 1
+        stripped = true
+        continue
+      }
+      kept.push(p)
+    }
+    if (stripped) {
+      text = `${kept.join('')}${tail}`.replace(/\n{3,}/g, '\n\n').trim()
+    }
+  }
+
+  // 第二轮：若仍「高度重合」，继续剥首句
+  for (let guard = 0; guard < 10; guard++) {
+    const hit = detectChapterSeamReplay({
+      content: text,
+      chapterNumber: args.chapterNumber,
+      prevChapterTail: prev,
+      chapterOutline: args.chapterOutline,
+      prevSnapshot: args.prevSnapshot,
+    })
+    if (!hit || hit.rule !== 'chapter_seam_replay') break
+    if (!/高度重合|回放上章高潮|勿把上章高潮/.test(hit.message)) break
+    const m = text.match(/^[\s\S]*?[。！？](?:\s*\n+)*/)
+    if (!m || [...m[0]].length < 8) break
+    const next = text.slice(m[0].length).trim()
+    if ([...next].length < 80) break
+    text = next
+    stripped = true
+  }
+
+  return { text, stripped }
+}
+
+/**
+ * 章末与下章开篇高度重合：确定性剥掉尾部重合句（对称于 stripSeamReplayOpening）。
+ * 题材无关：只比归一化连续片段；保守阈值，禁止把整章剥短。
+ */
+export function stripForwardSeamCopyEnding(args: {
+  content: string
+  nextChapterHead?: string
+}): { text: string; stripped: boolean } {
+  let text = (args.content || '').trim()
+  const next = (args.nextChapterHead || '').trim()
+  if (!next || !text) return { text, stripped: false }
+
+  const nextNorm = normalizeText(next.slice(0, 1000))
+  if (nextNorm.length < 16) return { text, stripped: false }
+
+  const inputChars = [...text].length
+  // 正文本身已偏短时禁止再剥（避免只剩首拍）
+  if (inputChars < 800) return { text, stripped: false }
+
+  const sentenceSharesNext = (sent: string): boolean => {
+    const sn = normalizeText(sent)
+    if (sn.length < 16 || nextNorm.length < 16) return false
+    // 整句被下章开篇包含，或下章开篇开头大段落在本句中
+    if (nextNorm.includes(sn) && sn.length >= 16) return true
+    if (sn.includes(nextNorm.slice(0, Math.min(28, nextNorm.length)))) return true
+    // 连续重合须 ≥18 字
+    const maxW = Math.min(40, sn.length)
+    for (let w = maxW; w >= 18; w--) {
+      for (let i = 0; i <= sn.length - w; i++) {
+        if (nextNorm.includes(sn.slice(i, i + w))) return true
+      }
+    }
+    return false
+  }
+
+  const parts = text
+    .split(/(?<=[。！？…])\s*/)
+    .map(s => s.trim())
+    .filter(Boolean)
+  if (parts.length < 5) return { text, stripped: false }
+
+  let stripped = false
+  let peeled = 0
+  // 最多剥尾 3 句，避免连环误剥
+  while (parts.length >= 5 && peeled < 3) {
+    const last = parts[parts.length - 1]!
+    if (!sentenceSharesNext(last)) break
+    parts.pop()
+    stripped = true
+    peeled += 1
+  }
+
+  if (!stripped) return { text, stripped: false }
+  const nextText = parts.join('').replace(/\n{3,}/g, '\n\n').trim()
+  const nextChars = [...nextText].length
+  // 至少保留 90%（原 55% 过松，会把整章剥成首拍）
+  if (nextChars < Math.floor(inputChars * 0.9) || nextChars < 800) {
+    return { text, stripped: false }
+  }
+  return { text: nextText, stripped: true }
+}
+
+/**
+ * 章末 vs 下章开篇：是否高度重合（正向抄袭）。
+ */
+export function detectForwardSeamCopyLexical(args: {
+  content: string
+  nextChapterHead?: string
+}): { excerpt: string } | null {
+  const content = (args.content || '').trim()
+  const next = (args.nextChapterHead || '').trim()
+  if (!next || !content) return null
+
+  const chars = [...content]
+  // 只盯真正章末窗口，避免全章与下章用词交叉误报
+  const take = Math.min(480, Math.max(160, Math.floor(chars.length * 0.18)))
+  const tail = chars.slice(-take).join('')
+  const head = next.slice(0, 720)
+  const tailNorm = normalizeText(tail)
+  const headNorm = normalizeText(head)
+  if (tailNorm.length < 20 || headNorm.length < 20) return null
+
+  let best = 0
+  let snippet = ''
+  const maxW = Math.min(56, headNorm.length, tailNorm.length)
+  for (let w = maxW; w >= 24; w -= 2) {
+    for (let i = 0; i <= headNorm.length - w; i += 2) {
+      const chunk = headNorm.slice(i, i + w)
+      if (tailNorm.includes(chunk)) {
+        best = w
+        snippet = chunk.slice(0, 48)
+        break
+      }
+    }
+    if (best) break
+  }
+
+  const jaccard = bigramJaccard(tail, head)
+  const lcs = longestCommonSubstringRatio(tail, head)
+  // 抬高阈值：须强连续重合，避免同书续写误报
+  const strong = best >= 28 || lcs.ratio >= 0.18 || (best >= 24 && jaccard >= 0.28)
+  if (!strong) return null
+  return { excerpt: (snippet || lcs.snippet || head.slice(0, 40)).replace(/\s+/g, ' ').slice(0, 48) }
 }
 
 export function mergeSeamIntoLocalAudit(

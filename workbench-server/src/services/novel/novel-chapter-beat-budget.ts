@@ -1,13 +1,28 @@
 /**
  * 大纲拍点字数预算：把用户目标拆到拍点上，边界内写厚，末拍后 0 字。
- * 题材无关（相位名仅作提示标签）。
+ * 题材无关（相位名仅作提示标签；戏剧标签大纲优先用标签名，避免把「起因」误标成「铺垫」）。
  */
-import { extractOutlineBeatPhrases } from './novel-chapter-seam.js'
+import { extractOutlineBeatItems } from './novel-chapter-seam.js'
 
 const PHASE_LABELS_5 = ['铺垫', '起因', '发展', '高潮', '收束'] as const
 
-function substantiveBeats(beats: string[]): string[] {
-  return beats.filter(b => [...b].length >= 6)
+function substantiveBeatItems<T extends { beat: string }>(items: T[]): T[] {
+  return items.filter(b => [...b.beat].length >= 6)
+}
+
+/** 戏剧标签 → 提示相位（勿用序号硬套「铺垫/起因」） */
+export function phaseLabelFromDramaTag(tag: string | undefined): string | null {
+  if (!tag) return null
+  const map: Record<string, string> = {
+    本章起因: '起因',
+    欲望: '欲望',
+    阻碍: '阻碍',
+    局面变化: '局面变化',
+    人物选择: '人物选择',
+    章末问题: '收束',
+    信息增量: '信息增量',
+  }
+  return map[tag] || null
 }
 
 /** 按拍点数返回归一化前权重 */
@@ -47,6 +62,8 @@ export type ChapterBeatBudgetItem = {
   index: number
   phase: string
   beat: string
+  /** 戏剧标签（若有） */
+  tag?: string
   targetChars: number
   minChars: number
   maxChars: number
@@ -68,8 +85,8 @@ export function resolveChapterBeatBudgets(args: {
   endpointPending?: boolean
 }): ChapterBeatBudget {
   const userTarget = Math.min(20000, Math.max(500, Math.round(Number(args.userTarget)) || 3000))
-  const beats = substantiveBeats(extractOutlineBeatPhrases(args.chapterOutline || ''))
-  const n = beats.length
+  const beatItems = substantiveBeatItems(extractOutlineBeatItems(args.chapterOutline || ''))
+  const n = beatItems.length
   if (n === 0) {
     return {
       beatCount: 0,
@@ -93,15 +110,17 @@ export function resolveChapterBeatBudgets(args: {
   }
 
   const pending = !!args.endpointPending
-  const items: ChapterBeatBudgetItem[] = beats.map((beat, i) => {
+  const items: ChapterBeatBudgetItem[] = beatItems.map((item, i) => {
     const targetChars = raw[i] || 50
     const isLast = i === n - 1
     const lo = Math.max(40, Math.floor(targetChars * 0.85))
     const hi = Math.max(lo + 20, Math.ceil(targetChars * (pending && isLast ? 1.08 : 1.15)))
+    const phase = phaseLabelFromDramaTag(item.tag) || phaseLabelForIndex(i, n)
     return {
       index: i + 1,
-      phase: phaseLabelForIndex(i, n),
-      beat,
+      phase,
+      beat: item.beat,
+      tag: item.tag,
       targetChars,
       minChars: lo,
       maxChars: hi,
@@ -111,13 +130,43 @@ export function resolveChapterBeatBudgets(args: {
   const lines = items.map(
     it => `${it.index}. [${it.phase}] ${it.beat} → 约 ${it.minChars}～${it.maxChars} 字（目标 ${it.targetChars}）`,
   )
+  const firstPhase = items[0]?.phase || '首拍'
   const promptBlock = [
     '【篇幅预算 — 须遵守】',
     `用户目标合计 ${userTarget} 字；只允许在下列拍点内按序写厚；写完最后一拍即停；最后一拍之后预算为 0 字（禁止新场面/新人物登门/新完成态）。`,
     ...lines,
-    '第2章起：开篇轻锚（一句点场合）合计 ≤ 铺垫拍约 8%，禁止为接缝复述上章闭合场面。',
+    `第2章起：开篇轻锚（一句点场合）合计 ≤ ${firstPhase}拍约 8%，禁止为接缝复述上章闭合场面。`,
+    '相位标签与拍点文案一致：标「起因」的拍必须写该起因由本章人物落地；待落地起因时接缝不喂上章末原文。',
     '优先级：已发生事实（勿回放）> 大纲边界 > 本预算 > 旧稿结构；某拍写不够可在该拍内加反应与细节，禁止挪用「末拍之后」的篇幅。',
   ].join('\n')
 
   return { beatCount: n, userTarget, items, promptBlock }
+}
+
+/** 超预算时截到最近句末；找不到则硬切。 */
+export function truncateProseToCharBudget(text: string, maxChars: number): string {
+  const raw = (text || '').trim()
+  if (!raw) return ''
+  const limit = Math.max(8, Math.round(maxChars))
+  const chars = [...raw]
+  if (chars.length <= limit) return raw
+  const head = chars.slice(0, limit).join('')
+  const sentence = head.match(/^[\s\S]*[。！？…」』》】]/)
+  if (sentence && [...sentence[0]].length >= Math.floor(limit * 0.55)) {
+    return sentence[0].trim()
+  }
+  const soft = head.match(/^[\s\S]*[，；、]/)
+  if (soft && [...soft[0]].length >= Math.floor(limit * 0.5)) {
+    return soft[0].trim()
+  }
+  return head.trim()
+}
+
+/** 是否走按拍顺序生成（P1） */
+export function shouldUseBeatSequentialGenerate(args: {
+  beatCount: number
+  enabled?: boolean
+}): boolean {
+  if (args.enabled === false) return false
+  return args.beatCount >= 2
 }

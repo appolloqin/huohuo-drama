@@ -110,12 +110,32 @@ export function pruneBriefToOutlineBeats(brief: string, outline: string): {
   const src = brief.trim()
   if (!src || !beats.length) return { brief: src, dropped: [] }
 
+  // 写作说明本身已是戏剧标签大纲（或与本章大纲同构）：只剔结构前缀，勿误删【局面变化】等
+  const dramaBrief = /【欲望】/.test(src) && /【阻碍】/.test(src)
+  const dramaOutline = /【欲望】/.test(outline) && /【阻碍】/.test(outline)
+  if (dramaBrief && dramaOutline) {
+    const stripped = src
+      .replace(/^【结构以本章大纲为准[^\n]*】\s*/m, '')
+      .replace(/^【写作说明已按本章大纲裁剪】[^\n]*\n?/m, '')
+      .trim()
+    const droppedPrefix = stripped !== src.trim()
+      ? [src.split('\n')[0]!.slice(0, 48)]
+      : []
+    return { brief: stripped || src, dropped: droppedPrefix }
+  }
+
   const clauses = splitBriefClauses(src)
   if (clauses.length < 2) return { brief: src, dropped: [] }
 
   const kept: string[] = []
   const dropped: string[] = []
   for (const clause of clauses) {
+    // 戏剧标签行：与大纲同标签则保留
+    const tagM = clause.match(/^【([^】]{1,24})】/)
+    if (tagM && outline.includes(`【${tagM[1]}】`)) {
+      kept.push(clause)
+      continue
+    }
     const setup = BRIEF_STRUCTURAL_SETUP.test(clause)
     const plot = BRIEF_PLOT_DRIVE.test(clause)
     const meta = BRIEF_META_KEEP.test(clause)

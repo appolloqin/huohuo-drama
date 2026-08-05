@@ -8,6 +8,38 @@ import { stripNovelChangeRecord } from '../../common/novel/novel-change-record.j
 import type { NovelMetadata } from '../../common/novel/novel-meta.js'
 import { resolveChapterCraftMinScore } from '../../common/novel/novel-meta.js'
 import { parseChapterCraftTags, type ChapterCraftTags } from './novel-chapter-craft-tags.js'
+import {
+  assertOutlineChapterFields,
+  buildChapterOutlineDramaPromptBlock,
+} from './novel-outline-drama-fields.js'
+
+export type DramaGateLevel = '有' | '弱' | '无'
+export type DramaGateCode =
+  | 'desire_on_page'
+  | 'obstacle_on_page'
+  | 'choice_on_page'
+  | 'hook_on_page'
+  | 'info_delta'
+  | 'emotion_shown'
+  | 'theme_echo'
+  | 'conflict_layer'
+  | 'stakes_shift'
+  | 'opening_promise'
+
+export const DRAMA_GATE_CODES: DramaGateCode[] = [
+  'desire_on_page',
+  'obstacle_on_page',
+  'choice_on_page',
+  'hook_on_page',
+  'info_delta',
+  'emotion_shown',
+  'theme_echo',
+  'conflict_layer',
+  'stakes_shift',
+  'opening_promise',
+]
+
+export type DramaGateEntry = { level: DramaGateLevel; excerpt?: string; note?: string }
 
 export type ChapterCraftResult = {
   passed: boolean
@@ -22,6 +54,42 @@ export type ChapterCraftResult = {
   tags: ChapterCraftTags
   content_hash: string
   checked_at: string
+  drama_gates: Record<DramaGateCode, DramaGateEntry>
+  drama_gate_passed: boolean
+  soft_alerts: Array<{ code: string; message: string }>
+}
+
+export function computeDramaGatePassed(
+  gates: Partial<Record<DramaGateCode, DramaGateEntry | undefined>>,
+): boolean {
+  return DRAMA_GATE_CODES.every((code) => {
+    const lv = gates[code]?.level
+    return lv === '有' || lv === '弱'
+  })
+}
+
+function normalizeDramaGates(raw: unknown): Record<DramaGateCode, DramaGateEntry> {
+  const obj = (raw && typeof raw === 'object') ? raw as Record<string, unknown> : {}
+  const out = {} as Record<DramaGateCode, DramaGateEntry>
+  for (const code of DRAMA_GATE_CODES) {
+    const g = obj[code]
+    if (g && typeof g === 'object') {
+      const level = (g as { level?: string }).level
+      const lv: DramaGateLevel = level === '有' || level === '弱' || level === '无' ? level : '无'
+      out[code] = {
+        level: lv,
+        excerpt: typeof (g as { excerpt?: string }).excerpt === 'string'
+          ? (g as { excerpt: string }).excerpt.slice(0, 40)
+          : undefined,
+        note: typeof (g as { note?: string }).note === 'string'
+          ? (g as { note: string }).note.slice(0, 80)
+          : undefined,
+      }
+    } else {
+      out[code] = { level: '无' }
+    }
+  }
+  return out
 }
 
 const CRAFT_SYSTEM = `你是男频网文章节质量审校。只评读者正文的戏剧与追更质量，不评文风炫技。
@@ -42,11 +110,28 @@ const CRAFT_SYSTEM = `你是男频网文章节质量审校。只评读者正文�
 conflicts 须标出：前序/大纲未交代却突然写怀孕、腹中孩子等。
 compliance_veto=true 仅当命中：未成年人色情擦边、性暴力细节、酷刑教学、可操作违法步骤、仇恨煽动。
 
+另须对照【本章大纲·戏剧要素】给出 drama_gates（有/弱/无）：
+desire_on_page, obstacle_on_page, choice_on_page, hook_on_page, info_delta,
+emotion_shown, theme_echo, conflict_layer, stakes_shift, opening_promise。
+「弱」=有痕迹但不饱满；「无」=正文未落地。opening_promise=开篇约前300～800字有本章看点/赌注。
+
 只输出 JSON：
 {
   "score": 0-100,
   "functions_hit": 0-4,
   "dimensions": { "function_mainline":0,"conflict_tension":0,"character_choice":0,"hook_pull":0,"scene":0,"dialogue":0,"pulse_clarity":0,"pacing":0,"style":0,"continuity_light":0 },
+  "drama_gates": {
+    "desire_on_page": { "level": "有|弱|无", "excerpt": "可选" },
+    "obstacle_on_page": { "level": "有|弱|无" },
+    "choice_on_page": { "level": "有|弱|无" },
+    "hook_on_page": { "level": "有|弱|无" },
+    "info_delta": { "level": "有|弱|无" },
+    "emotion_shown": { "level": "有|弱|无" },
+    "theme_echo": { "level": "有|弱|无" },
+    "conflict_layer": { "level": "有|弱|无" },
+    "stakes_shift": { "level": "有|弱|无" },
+    "opening_promise": { "level": "有|弱|无" }
+  },
   "conflicts": ["须改问题 + 摘录「……」", ...],
   "summary": "一句话",
   "compliance_veto": false,
@@ -76,6 +161,12 @@ export async function checkNovelChapterCraft(args: {
   const checkedAt = new Date().toISOString()
   const contentHash = hashNovelContent(prose)
 
+  const outlineBlob = [args.meta.outline || '', args.chapterOutline || ''].join('\n\n')
+  const outlineDrama = assertOutlineChapterFields(outlineBlob, args.chapterNumber)
+  const dramaPrompt = outlineDrama.fields
+    ? buildChapterOutlineDramaPromptBlock(outlineDrama.fields)
+    : ''
+
   const user = [
     `【书名】${args.dramaTitle}`,
     `【章号】第${args.chapterNumber}章`,
@@ -83,6 +174,7 @@ export async function checkNovelChapterCraft(args: {
     tags.emotionDebt ? `【情绪债标注】${tags.emotionDebt}` : '',
     tags.promise ? `【承诺标注】${tags.promise}` : '',
     tags.stage ? `【舞台标注】${tags.stage}` : '',
+    dramaPrompt ? dramaPrompt : '',
     args.writingBrief?.trim() ? `【写作说明】\n${trunc(args.writingBrief, 1200)}` : '',
     args.chapterOutline?.trim() ? `【本章大纲】\n${trunc(args.chapterOutline, 600)}` : '',
     `【正文字数】${countNovelChars(prose)}`,
@@ -131,7 +223,10 @@ export async function checkNovelChapterCraft(args: {
   }
 
   const functionOk = !requireTwo || functionsHit >= 2
-  const passed = !complianceVeto && score >= minScore && functionOk
+  const drama_gates = normalizeDramaGates(parsed.drama_gates)
+  // 解析失败且无 conflicts 时旧逻辑抬分，但 drama_gates 缺码视为未过，避免假通过
+  const drama_gate_passed = computeDramaGatePassed(drama_gates)
+  const passed = !complianceVeto && score >= minScore && functionOk && drama_gate_passed
 
   return {
     passed,
@@ -146,18 +241,25 @@ export async function checkNovelChapterCraft(args: {
     tags,
     content_hash: contentHash,
     checked_at: checkedAt,
+    drama_gates,
+    drama_gate_passed,
+    soft_alerts: [],
   }
 }
 
 export function buildChapterCraftFixPrompt(basePrompt: string, craft: ChapterCraftResult): string {
+  const gateFixes = DRAMA_GATE_CODES
+    .filter((code) => craft.drama_gates?.[code]?.level === '无')
+    .map((code, i) => `${i + 1}. 大纲戏剧未落地【${code}】：${craft.drama_gates[code]?.note || '请对照本章大纲该字段用行动写出来'}`)
   const lines = [
     '【章节质量修正任务】上一稿未达好章节标准，请重写本章正文（可保留可用情节），必须修好下列问题：',
     ...craft.conflicts.slice(0, 8).map((c, i) => `${i + 1}. ${c}`),
+    ...gateFixes,
     craft.compliance_veto
       ? `合规否决：${craft.compliance_reasons.join('；') || '触及红线'}——须彻底改写避开。`
       : '',
-    `当前分 ${craft.score}，须 ≥ ${craft.min_score}；functions_hit 须 ≥ 2。`,
-    '优先修：章功能、冲突与选择（须用说明/大纲已有代价，禁止另造更大金额或新惩罚条款）、开头钩子与章末具体问题；禁止只加水字数或空喊口号。',
+    `当前分 ${craft.score}，须 ≥ ${craft.min_score}；functions_hit 须 ≥ 2；大纲戏剧门槛须全部为有/弱。`,
+    '优先修：对照大纲欲望/阻碍/选择/局面变化/章末问题与开头承诺；禁止只加水字数或空喊口号；禁止重演上章闭合交付。',
     '',
     '【原写作说明】',
     basePrompt,

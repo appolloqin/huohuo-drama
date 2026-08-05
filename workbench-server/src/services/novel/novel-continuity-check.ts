@@ -3,6 +3,7 @@
  */
 import { chatCompletionTextAudit, type TextBillingContext } from '../ai/ai.js'
 import { hashNovelContent } from '../ai/ai-text-detection.js'
+import { logTaskWarn } from '../../common/task/task-logger.js'
 import {
   formatContinuityBlockingItem,
   formatContinuityRuleHint,
@@ -672,12 +673,23 @@ export async function checkNovelChapterContinuity(args: {
     `【待审校正文 — 须检查章内旁白/对话/心理是否自洽；${causalEnabled ? '因果链与吃书' : '人名/剧情/境界语义'}矛盾须附摘录】\n${trunc(trimmed, 10000)}`,
   ].filter(Boolean).join('\n\n')
 
-  const raw = await chatCompletionTextAudit(
-    [{ role: 'system', content: buildCheckSystem(causalEnabled, minScore) }, { role: 'user', content: user }],
-    { maxTokens: 1024, temperature: 0.2, billing },
-  )
+  let parsed: ReturnType<typeof parseCheckResponse> = null
+  try {
+    const raw = await chatCompletionTextAudit(
+      [{ role: 'system', content: buildCheckSystem(causalEnabled, minScore) }, { role: 'user', content: user }],
+      { maxTokens: 1024, temperature: 0.2, billing },
+    )
+    parsed = parseCheckResponse(raw)
+  } catch (err: unknown) {
+    // LLM 忙/失败时不得整单 abort：硬审（含章缝）已本地完成，按无模型审结果合并
+    logTaskWarn('Novel', 'continuity-check-llm-failed', {
+      chapterNumber,
+      error: err instanceof Error ? err.message : String(err),
+      localHard: local.hard.length,
+    })
+    parsed = null
+  }
 
-  const parsed = parseCheckResponse(raw)
   return mergeCheckResult({
     parsed,
     local,

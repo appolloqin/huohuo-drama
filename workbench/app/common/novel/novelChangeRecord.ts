@@ -25,8 +25,14 @@ function stripChapterEndMeta(text: string): string {
 export function stripNovelChangeRecord(text: string): string {
   const trimmed = text.trim()
   if (!trimmed) return trimmed
+  const inputLen = [...trimmed].length
   let out = trimmed
   const idx = out.search(CHANGE_RECORD_RE)
   if (idx >= 0) out = out.slice(0, idx).replace(/\s+$/, '')
-  return stripChapterEndMeta(out)
+  out = stripChapterEndMeta(out)
+  // 禁止元数据剥离把整章砍成残篇（误匹配会导致只剩几百字）
+  if (inputLen >= 800 && [...out].length < Math.floor(inputLen * 0.5)) {
+    return trimmed
+  }
+  return out
 }

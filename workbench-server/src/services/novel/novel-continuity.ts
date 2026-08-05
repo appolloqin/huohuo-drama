@@ -168,23 +168,22 @@ export async function buildCanonLockPrefix(dramaId: number, targetChapter: numbe
   ].join('\n')
 }
 
-/** 上一章完整正文 */
+/** 上一章完整正文（读者故事正文；hydrate 磁盘，禁止写作说明） */
 export async function loadPrevChapterContent(dramaId: number, beforeChapter: number): Promise<string> {
   if (beforeChapter < 2) return ''
   const prevNum = beforeChapter - 1
   const ep = await findSiblingEpisode(dramaId, prevNum)
   if (!ep) return ''
-  return (ep.scriptContent || ep.content || '').trim()
+  const { resolveNovelEpisodeStoryProse } = await import('./novel-chapter-prose.js')
+  return resolveNovelEpisodeStoryProse(ep)
 }
 
 /** 上一章正文尾部（跨章衔接预检） */
 export async function loadPrevChapterContentTail(dramaId: number, beforeChapter: number, maxChars = 2000): Promise<string> {
   const body = await loadPrevChapterContent(dramaId, beforeChapter)
   if (!body) return ''
-  // 章缝只认故事正文，剥离变更记录/一致性提醒，避免假「夜里」与假动作污染
-  const { splitProseAndChangeRecord } = await import('../../common/novel/novel-change-record.js')
-  let prose = splitProseAndChangeRecord(body).prose || body
-  prose = prose.replace(/【[*＊]?一致性提醒[*＊]?】[\s\S]*$/, '').trim() || prose
+  const { stripChapterSeamNoise } = await import('./novel-chapter-prose.js')
+  const prose = stripChapterSeamNoise(body) || body
   if (!prose) return ''
   return prose.length <= maxChars ? prose : prose.slice(-maxChars)
 }
@@ -199,14 +198,10 @@ export async function loadNextChapterContentHead(
   const nextNum = afterChapter + 1
   const ep = await findSiblingEpisode(dramaId, nextNum)
   if (!ep) return ''
-  const body = (ep.scriptContent || ep.content || '').trim()
-  if (!body) return ''
-  const { splitProseAndChangeRecord } = await import('../../common/novel/novel-change-record.js')
-  let prose = splitProseAndChangeRecord(body).prose || body
-  prose = prose.replace(/【[*＊]?一致性提醒[*＊]?】[\s\S]*$/, '').trim() || prose
+  const { resolveNovelEpisodeStoryProse } = await import('./novel-chapter-prose.js')
+  const prose = resolveNovelEpisodeStoryProse(ep)
   if (!prose) return ''
-  const head = prose.length <= maxChars ? prose : prose.slice(0, maxChars)
-  return head
+  return prose.length <= maxChars ? prose : prose.slice(0, maxChars)
 }
 
 /** 上章开篇+结尾摘录（ cliff/起因 常在开篇，勿只注入章末） */

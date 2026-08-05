@@ -167,6 +167,8 @@ export async function runChapterCraftPipelineHook(args: {
           prompt: fixedPrompt,
           existingText: content,
           mode: 'rewrite',
+          // craft 重生沿用「是否看下章」：用户重写才看；一次生成/数字作家不看
+          includeNextChapter: generateArgs.includeNextChapter ?? generateArgs.mode === 'rewrite',
         },
         billing
           ? { ...billing, reason: `小说章节质量重生成（第${rewriteAttempts}次）` }

@@ -14,12 +14,16 @@ import { logTaskError, logTaskStart, logTaskSuccess, logTaskWarn } from '../../c
 import {
   buildContinueNovelMessages,
   buildGenerateNovelChapterMessages,
+  generateNovelChapterFull,
   continueNovelChapter,
   generateNovelOutline,
   generateNovelPremise,
   generateNovelWritingBrief,
 } from '../../services/novel/novel-writing.js'
 import { polishNovelChapterProse } from '../../services/novel/novel-prose-polish.js'
+import { resolveChapterBeatBudgets, shouldUseBeatSequentialGenerate } from '../../services/novel/novel-chapter-beat-budget.js'
+import { isBeatSequentialGenerateEnabled } from '../../common/novel/novel-meta.js'
+import { stripSeamReplayOpening } from '../../services/novel/novel-chapter-seam.js'
 import { normalizeNovelTemporalNumerals } from '../../common/novel/novel-temporal-numerals.js'
 import { detectChapterSeamColdOpen } from '../../services/novel/novel-chapter-seam.js'
 import { loadPrevChapterContentTail } from '../../services/novel/novel-continuity.js'
@@ -29,6 +33,11 @@ import { batchGenerateNovelChapters } from '../../services/batch/batch-generatio
 import { runNovelChapterPipeline, postProcessNovelChapterContent, checkAndSaveChapterContinuity } from '../../services/novel/novel-chapter-pipeline.js'
 import { runChapterCraftContinueHook } from '../../services/novel/novel-chapter-craft-hook.js'
 import { isContinuityRewriteAbortError } from '../../services/novel/novel-continuity-errors.js'
+import {
+  OutlineDramaFieldsError,
+  prepareOutlineDramaForChapterWrite,
+} from '../../services/novel/novel-outline-drama-ensure.js'
+import { upgradePromptToDramaOutline } from '../../services/novel/novel-outline-drama-fields.js'
 import { checkNovelChapterContinuity } from '../../services/novel/novel-continuity-check.js'
 import { resolveFullChapterForAudit, detachChangeRecordForStorage } from '../../services/novel/novel-causal-chain/index.js'
 import type { TextBillingContext } from '../../services/ai/ai.js'
@@ -736,14 +745,43 @@ app.post('/chapters/:id/generate/stream', async (c) => {
   if (!pack || !isNovelProject(pack.drama)) return notFound(c, '章节不存在')
 
   const body = await c.req.json().catch(() => ({}))
-  const { text: chapterOutline } = resolveChapterOutline(pack)
+  const { text: oldChapterOutline } = resolveChapterOutline(pack)
   let prompt = typeof body.prompt === 'string' ? body.prompt.trim() : ''
-  if (!prompt && chapterOutline) prompt = chapterOutline
+  if (!prompt && oldChapterOutline) prompt = oldChapterOutline
   if (!prompt) return badRequest(c, '写作说明不能为空（请填写本章大纲或写作说明）')
-  if (prompt.length > 4000) return badRequest(c, '写作说明过长')
+  if (prompt.length > 8000) return badRequest(c, '写作说明过长')
 
   const existingText = typeof body.text === 'string' ? body.text : (pack.episode.content || '')
-  const meta = parseNovelMetadata(pack.drama.metadata)
+  let meta = parseNovelMetadata(pack.drama.metadata)
+  const billingPrep = novelTextBilling(user, '小说大纲补全', id)
+  let chapterOutline = oldChapterOutline
+  try {
+    const prepared = await prepareOutlineDramaForChapterWrite({
+      meta,
+      chapterNumber: pack.episode.episodeNumber,
+      title: pack.drama.title,
+      billing: billingPrep,
+      fallbackChapterOutline: oldChapterOutline,
+    })
+    meta = prepared.meta
+    chapterOutline = prepared.writingChapterOutline || oldChapterOutline
+    prompt = upgradePromptToDramaOutline({
+      prompt,
+      oldChapterOutline,
+      writingChapterOutline: chapterOutline,
+    })
+    if (prepared.outlineChanged) {
+      await updateNovelDrama(pack.drama.id, {
+        metadata: mergeNovelMetadata(pack.drama.metadata, { outline: meta.outline }),
+        updatedAt: now(),
+      })
+    }
+  } catch (err: any) {
+    if (err instanceof OutlineDramaFieldsError) {
+      return badRequest(c, err.message)
+    }
+    throw err
+  }
   const targetLength = resolveTargetChapterChars(body, meta)
   const rewriteMode = body.rewrite === true
   if (rewriteMode && !existingText.trim()) {
@@ -764,11 +802,123 @@ app.post('/chapters/:id/generate/stream', async (c) => {
     mode: rewriteMode ? 'rewrite' as const : 'generate' as const,
   }
 
+  const outlineAlignForBeats = (await import('../../services/novel/novel-outline-boundary.js')).alignNovelChapterOutlineBoundary({
+    chapterOutline,
+    writingBrief: prompt,
+    existingText,
+    mode: rewriteMode ? 'rewrite' : 'generate',
+    chapterNumber: pack.episode.episodeNumber,
+  })
+  const beatBudgets = resolveChapterBeatBudgets({
+    chapterOutline,
+    userTarget: targetLength,
+    endpointPending: outlineAlignForBeats.endpointPending,
+  })
+  const useBeatSequential = shouldUseBeatSequentialGenerate({
+    beatCount: beatBudgets.beatCount,
+    enabled: isBeatSequentialGenerateEnabled(meta),
+  })
+
+  const billing = novelTextBilling(user, rewriteMode ? '小说章节重写（流式）' : '小说章节生成（流式）', id)
+  const skipCheck = body.skip_continuity_check === true
+
+  if (useBeatSequential) {
+    logTaskStart('Novel', 'generate-chapter-stream', {
+      chapterId: id,
+      targetLength,
+      rewrite: rewriteMode,
+      mode: 'beat_sequential',
+      beats: beatBudgets.beatCount,
+    })
+    return sseResponse(c, async (send) => {
+      send({ started: true, status: '按大纲拍点分段生成中…', mode: 'beat_sequential' })
+      let generated = ''
+      try {
+        generated = await generateNovelChapterFull(generateArgs, billing)
+        send({ phase: 'review', status: '正在审校（连贯性 / 质量 / 大纲边界）…' })
+        try {
+          const post = await postProcessNovelChapterContent({
+            content: generated,
+            dramaId: pack.drama.id,
+            episodeId: id,
+            chapterNumber: pack.episode.episodeNumber,
+            dramaTitle: pack.drama.title,
+            meta,
+            chapterOutline,
+            billing,
+            skipCheck,
+            generateArgs,
+            onProgress: (status) => send({ phase: 'review', status }),
+          })
+          const hardReject = post.hard_reject === true || post.outline_compliance?.hardReject === true
+          send({
+            content: hardReject ? '' : post.content,
+            continuity_check: post.check,
+            continuity_ledger: post.ledger,
+            chapter_craft: post.craft,
+            outline_compliance: post.outline_compliance,
+            ai_detection: post.ai_detection,
+            hard_reject: hardReject,
+            status: hardReject ? '未通过' : '完成',
+          })
+          send({ done: true })
+          return
+        } catch (postErr: any) {
+          // 正文已生成：审校链路 LLM busy 时不得整单失败，否则 UI 一直挂旧章缝结论
+          logTaskWarn('Novel', 'generate-stream-beat-sequential-post-degraded', {
+            chapterId: id,
+            error: postErr?.message || String(postErr),
+          })
+          const chapterNumber = pack.episode.episodeNumber
+          let body = generated
+          if (chapterNumber >= 2) {
+            try {
+              const prevTail = await loadPrevChapterContentTail(pack.drama.id, chapterNumber, 1600)
+              const purged = stripSeamReplayOpening({
+                content: body,
+                chapterNumber,
+                prevChapterTail: prevTail,
+                chapterOutline,
+              })
+              if (purged.stripped) body = purged.text
+            } catch { /* ignore */ }
+          }
+          let continuity_check = null
+          if (!skipCheck) {
+            continuity_check = await checkAndSaveChapterContinuity({
+              content: body,
+              dramaId: pack.drama.id,
+              episodeId: id,
+              chapterNumber,
+              dramaTitle: pack.drama.title,
+              meta,
+              chapterOutline,
+              billing,
+            })
+          }
+          send({
+            content: body,
+            continuity_check,
+            status: '完成（审校降级）',
+            degraded: true,
+          })
+          send({ done: true })
+          return
+        }
+      } catch (err: any) {
+        logTaskWarn('Novel', 'generate-stream-beat-sequential-fail', {
+          chapterId: id,
+          error: err?.message || String(err),
+          hadGenerated: [...generated].length,
+        })
+        send({ error: err?.message || '生成失败' })
+      }
+    })
+  }
+
   const { messages, options, minLen, maxLen } = await buildGenerateNovelChapterMessages(generateArgs)
 
   logTaskStart('Novel', 'generate-chapter-stream', { chapterId: id, targetLength, maxLen, rewrite: rewriteMode })
-  const billing = novelTextBilling(user, rewriteMode ? '小说章节重写（流式）' : '小说章节生成（流式）', id)
-  const skipCheck = body.skip_continuity_check === true
   return streamChatCompletionWithPolish(
     c,
     messages,
@@ -808,11 +958,27 @@ app.post('/chapters/:id/generate/stream', async (c) => {
               draftChars: [...pre].length,
               polishChars: [...polished].length,
             })
-            return pre
+            polished = pre
           }
         } catch {
           /* ignore */
         }
+      }
+      // 流式路径必须本地 purge（不经 generateNovelChapterFull）
+      if (chapterNumber >= 2) {
+        try {
+          const prevTail = await loadPrevChapterContentTail(pack.drama.id, chapterNumber, 1600)
+          const purged = stripSeamReplayOpening({
+            content: polished,
+            chapterNumber,
+            prevChapterTail: prevTail,
+            chapterOutline,
+          })
+          if (purged.stripped) {
+            logTaskWarn('Novel', 'stream-seam-purged-after-polish', { chapterNumber })
+            polished = purged.text
+          }
+        } catch { /* ignore */ }
       }
       return polished
     },
@@ -853,7 +1019,43 @@ app.post('/chapters/:id/generate/stream', async (c) => {
           chapterId: id,
           error: err?.message || String(err),
         })
-        throw err
+        // 润色稿已出：审校失败时降级返回，避免 UI 一直挂旧章缝结论
+        const chapterNumber = pack.episode.episodeNumber
+        let body = polished
+        if (chapterNumber >= 2) {
+          try {
+            const prevTail = await loadPrevChapterContentTail(pack.drama.id, chapterNumber, 1600)
+            const purged = stripSeamReplayOpening({
+              content: body,
+              chapterNumber,
+              prevChapterTail: prevTail,
+              chapterOutline,
+            })
+            if (purged.stripped) body = purged.text
+          } catch { /* ignore */ }
+        }
+        let continuity_check = null
+        if (!skipCheck) {
+          continuity_check = await checkAndSaveChapterContinuity({
+            content: body,
+            dramaId: pack.drama.id,
+            episodeId: id,
+            chapterNumber,
+            dramaTitle: pack.drama.title,
+            meta,
+            chapterOutline,
+            billing,
+          })
+        }
+        logTaskWarn('Novel', 'generate-stream-post-process-degraded', {
+          chapterId: id,
+          chars: [...body].length,
+        })
+        return {
+          content: body,
+          continuity_check,
+          degraded: true,
+        }
       }
     },
   )
@@ -872,14 +1074,42 @@ app.post('/chapters/:id/generate', async (c) => {
   if (!pack || !isNovelProject(pack.drama)) return notFound(c, '章节不存在')
 
   const body = await c.req.json().catch(() => ({}))
-  const { text: chapterOutline } = resolveChapterOutline(pack)
+  const { text: oldChapterOutline } = resolveChapterOutline(pack)
   let prompt = typeof body.prompt === 'string' ? body.prompt.trim() : ''
-  if (!prompt && chapterOutline) prompt = chapterOutline
+  if (!prompt && oldChapterOutline) prompt = oldChapterOutline
   if (!prompt) return badRequest(c, '写作说明不能为空（请填写本章大纲或写作说明）')
-  if (prompt.length > 4000) return badRequest(c, '写作说明过长')
+  if (prompt.length > 8000) return badRequest(c, '写作说明过长')
 
   const existingText = typeof body.text === 'string' ? body.text : (pack.episode.content || '')
-  const meta = parseNovelMetadata(pack.drama.metadata)
+  let meta = parseNovelMetadata(pack.drama.metadata)
+  let chapterOutline = oldChapterOutline
+  try {
+    const prepared = await prepareOutlineDramaForChapterWrite({
+      meta,
+      chapterNumber: pack.episode.episodeNumber,
+      title: pack.drama.title,
+      billing: novelTextBilling(user, '小说大纲补全', id),
+      fallbackChapterOutline: oldChapterOutline,
+    })
+    meta = prepared.meta
+    chapterOutline = prepared.writingChapterOutline || oldChapterOutline
+    prompt = upgradePromptToDramaOutline({
+      prompt,
+      oldChapterOutline,
+      writingChapterOutline: chapterOutline,
+    })
+    if (prepared.outlineChanged) {
+      await updateNovelDrama(pack.drama.id, {
+        metadata: mergeNovelMetadata(pack.drama.metadata, { outline: meta.outline }),
+        updatedAt: now(),
+      })
+    }
+  } catch (err: any) {
+    if (err instanceof OutlineDramaFieldsError) {
+      return badRequest(c, err.message)
+    }
+    throw err
+  }
   const targetLength = resolveTargetChapterChars(body, meta)
   const rewriteMode = body.rewrite === true
   if (rewriteMode && !existingText.trim()) {

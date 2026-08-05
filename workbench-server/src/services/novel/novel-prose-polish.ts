@@ -21,6 +21,7 @@ import {
 import { normalizeNovelTemporalNumerals } from '../../common/novel/novel-temporal-numerals.js'
 import { diversifyNovelProseTells } from '../../common/novel/novel-prose-diversify.js'
 import { splitProseAndChangeRecord } from './novel-causal-chain/index.js'
+import { stripLengthAdjustInstructionEcho } from '../../common/novel/novel-change-record.js'
 
 /** 按目标字数估算 completion tokens（中文约 1.5～2 字/token，留余量） */
 export function chapterLengthTokenBudget(maxLen: number): number {
@@ -32,6 +33,7 @@ function finalizePolishedProse(draft: string, polished: string, layoutReference?
   const trimmedDraft = draft.trim()
   let out = sanitizeModelCreativeOutput(polished.trim()) || trimmedDraft
   out = sanitizeModelCreativeOutput(out) || trimmedDraft
+  out = stripLengthAdjustInstructionEcho(out) || out
   if (looksLikeModelThinkingLeak(out) || (/^【任务理解】|^让我仔细分析|^【润色原则】/m.test(out) && !/「/.test(out.slice(0, 500)))) {
     logTaskWarn('Novel', 'prose-polish-thinking-leak', {})
     out = sanitizeModelCreativeOutput(trimmedDraft) || trimmedDraft
@@ -180,7 +182,8 @@ export async function ensureNovelChapterWithinLength(
     over
       ? '当前任务：将章节正文**压缩到目标字数区间**，保留全部关键情节与人物关系，删注水与重复描写。'
       : '当前任务：将章节正文**补写到目标字数区间**，只在本稿已有场面上加厚冲突、反应与细节；禁止另起更早开篇时空，禁止另起结局。',
-    '只输出处理后的简体中文正文；输入即待处理正文，勿引入本稿之外的旧稿结构。',
+    '只输出处理后的完整简体中文正文；禁止输出【硬性字数】【待补写正文】【待压缩正文】等说明标记或任务复述。',
+    '输入即待处理正文，勿引入本稿之外的旧稿结构。',
   ].join('\n')
 
   for (let attempt = 0; attempt < 2; attempt++) {
@@ -245,5 +248,7 @@ export async function ensureNovelChapterWithinLength(
   } else if (finalN > Math.round(maxLen * 1.05) || finalN < Math.round(minLen * 0.9)) {
     logTaskWarn('Novel', 'chapter-length-band-miss', { chars: finalN, minLen, maxLen })
   }
+  const { stripIntraChapterNearDuplicate } = await import('./novel-intra-chapter-dedupe.js')
+  body = stripIntraChapterNearDuplicate(body).text
   return changeBlock ? `${body.trim()}\n\n${changeBlock}` : body.trim()
 }

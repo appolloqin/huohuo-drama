@@ -403,7 +403,11 @@ export async function consumeNovelSSE(
         const json = JSON.parse(payload) as NovelStreamEvent
         if (json.error) throw new Error(json.error)
         if ((json as { heartbeat?: boolean }).heartbeat) continue
-        if (typeof json.status === 'string' && json.status.trim()) onStatus?.(json.status.trim())
+        if (typeof json.status === 'string' && json.status.trim()) {
+          const st = json.status.trim()
+          // 忽略服务端编码损坏的进度串（全是 ?/…/空白），避免状态条显示乱码
+          if (!/^[?？\uFFFD\s.…·]+$/.test(st) && !/^[?？]{3,}/.test(st)) onStatus?.(st)
+        }
         if (json.started) onStarted?.()
         if (json.polishing) onStatus?.('正在润色正文…')
         // 勿把审校进度行当正文块写入编辑器（编码损坏时形如 ???? 2/3 ???）

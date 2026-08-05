@@ -851,10 +851,19 @@ function notifyOutlineCompliance(oc) {
 
 function notifyChapterCraft(craft) {
   if (craft && craft.passed === false) {
+    const missingGates = craft.drama_gates
+      ? Object.entries(craft.drama_gates)
+        .filter(([, g]) => g && g.level === '无')
+        .map(([code]) => code)
+        .slice(0, 4)
+      : []
+    const tip = missingGates.length
+      ? `；大纲未落地：${missingGates.join('、')}`
+      : ''
     toast.warning(tx(tm.value.novel.chapterCraftToastWarn, {
       score: craft.score ?? 0,
       min: craft.min_score ?? 70,
-    }))
+    }) + tip)
   }
 }
 

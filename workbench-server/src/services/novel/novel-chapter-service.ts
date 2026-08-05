@@ -1,6 +1,8 @@
 import type { EpisodeRow } from '../../db/repos/types.js'
 import { countNovelChars } from '../../common/novel/novel-char-limit.js'
 import { splitProseAndChangeRecord } from '../../common/novel/novel-change-record.js'
+import { stripLengthAdjustInstructionEcho } from '../../common/novel/novel-change-record.js'
+import { stripIntraChapterNearDuplicate } from './novel-intra-chapter-dedupe.js'
 import { mergeEpisodeMetadata } from '../../common/drama/episode-meta.js'
 import {
   resolveChapterProse,
@@ -50,7 +52,9 @@ export function hydrateNovelEpisode<T extends EpisodeRow>(row: T): T {
 export function saveChapterContent(args: SaveChapterContentArgs): SaveChapterContentResult {
   const { dramaId, episodeId, chapterNumber, content, vol, existingMetadata } = args
   const raw = typeof content === 'string' ? content : ''
-  const { prose, changeBlock } = splitProseAndChangeRecord(raw)
+  const cleaned = stripLengthAdjustInstructionEcho(raw) || raw
+  const deduped = stripIntraChapterNearDuplicate(cleaned).text
+  const { prose, changeBlock } = splitProseAndChangeRecord(deduped)
   const p = writeChapter({
     dramaId,
     episodeId,

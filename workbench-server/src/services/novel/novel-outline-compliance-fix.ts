@@ -92,6 +92,7 @@ function scoreOutlineCandidate(args: {
   existingText?: string
   prevChapterTail?: string
   nextChapterOutline?: string
+  nextChapterHead?: string
   chapterNumber: number
 }): number {
   const check = detectOutlineCompliance({
@@ -101,6 +102,7 @@ function scoreOutlineCandidate(args: {
     existingText: args.existingText,
     prevChapterTail: args.prevChapterTail,
     nextChapterOutline: args.nextChapterOutline,
+    nextChapterHead: args.nextChapterHead,
     chapterNumber: args.chapterNumber,
   })
   if (check.ok) return 10_000
@@ -120,6 +122,8 @@ function scoreOutlineCandidate(args: {
       r.code === 'outline_endpoint_overshoot'
       || r.code === 'chapter_event_replay'
       || r.code === 'draft_orphan_replay'
+      || r.code === 'catalyst_agency_fail'
+      || r.code === 'chapter_forward_seam_copy'
     ) score -= 25
   }
   const beats = extractOutlineBeatPhrases(args.chapterOutline || '').filter(b => [...b].length >= 6)
@@ -269,12 +273,19 @@ export async function maybeFixOutlineCompliance(args: {
   maxLen?: number
   maxRounds?: number
   onProgress?: (status: string) => void
+  /**
+   * rewrite??????/?????generate / continue / ???????????
+   * ?? rewrite????????
+   */
+  mode?: 'generate' | 'rewrite' | 'continue'
 }): Promise<OutlineComplianceFixResult> {
   const {
     dramaId, chapterNumber, chapterOutline, writingBrief, existingText, billing,
     maxRounds = OUTLINE_COMPLIANCE_MAX_ROUNDS,
     onProgress,
+    mode = 'rewrite',
   } = args
+  const considerNext = mode === 'rewrite'
   let content = args.content.trim()
   if (!content) {
     return { content, fixed: false, passed: true, attempts: 0, reasons: [] }
@@ -284,7 +295,7 @@ export async function maybeFixOutlineCompliance(args: {
     chapterOutline,
     writingBrief,
     existingText,
-    mode: 'rewrite',
+    mode: mode === 'continue' ? 'continue' : mode === 'generate' ? 'generate' : 'rewrite',
     chapterNumber,
   })
   const alignedBrief = boundary.alignedBrief || writingBrief
@@ -317,8 +328,12 @@ export async function maybeFixOutlineCompliance(args: {
   const prevChapterTail = chapterNumber >= 2
     ? await loadPrevChapterContentTail(dramaId, chapterNumber, 8000)
     : ''
-  const nextChapterOutline = await loadNextChapterOutline(dramaId, chapterNumber)
-  const nextChapterHead = await loadNextChapterContentHead(dramaId, chapterNumber, 1000)
+  const nextChapterOutline = considerNext
+    ? await loadNextChapterOutline(dramaId, chapterNumber)
+    : ''
+  const nextChapterHead = considerNext
+    ? await loadNextChapterContentHead(dramaId, chapterNumber, 1000)
+    : ''
   const { loadPrevChapterEndSnapshot } = await import('./novel-chapter-end-snapshot.js')
   const prevSnapshot = chapterNumber >= 2
     ? await loadPrevChapterEndSnapshot(dramaId, chapterNumber)
@@ -330,7 +345,8 @@ export async function maybeFixOutlineCompliance(args: {
     writingBrief: briefForDetect ?? alignedBrief,
     existingText,
     prevChapterTail,
-    nextChapterOutline: nextChapterOutline || undefined,
+    nextChapterOutline: considerNext ? (nextChapterOutline || undefined) : undefined,
+    nextChapterHead: considerNext ? (nextChapterHead || undefined) : undefined,
     chapterNumber,
     prevSnapshot,
   })
@@ -338,12 +354,12 @@ export async function maybeFixOutlineCompliance(args: {
   const detect = async (text: string, briefForDetect?: string) => {
     const brief = briefForDetect ?? alignedBrief
     const local = detectLocal(text, brief)
-    onProgress?.('正在模型审大纲章界…')
+    onProgress?.('??????????')
     const modelReasons = await auditOutlineBoundaryWithModel({
       content: text,
       chapterOutline,
       writingBrief: brief,
-      nextChapterOutline: nextChapterOutline || undefined,
+      nextChapterOutline: considerNext ? (nextChapterOutline || undefined) : undefined,
       prevChapterTail: prevChapterTail || undefined,
       prevSnapshotBlock: prevSnapshot
         ? (await import('./novel-chapter-end-snapshot.js')).formatChapterEndSnapshotBlock(prevSnapshot)
@@ -366,6 +382,7 @@ export async function maybeFixOutlineCompliance(args: {
     existingText,
     prevChapterTail,
     nextChapterOutline: nextChapterOutline || undefined,
+    nextChapterHead: nextChapterHead || undefined,
     chapterNumber,
   })
 
@@ -411,9 +428,11 @@ export async function maybeFixOutlineCompliance(args: {
       'outline_boundary_model',
       'head_orphan_span',
       'draft_orphan_replay',
+      'catalyst_agency_fail',
     ])
     return reasons.reduce((s, r) => {
       if (r.code === 'chapter_seam_cold_open') return s + 220
+      if (r.code === 'catalyst_agency_fail') return s + 180
       return s + (hard.has(r.code) ? 100 : 40)
     }, 0)
   }
@@ -422,11 +441,13 @@ export async function maybeFixOutlineCompliance(args: {
   const seamHardRank = (reasons: OutlineComplianceReason[]): number => {
     let rank = 0
     if (reasons.some(r => r.code === 'chapter_seam_cold_open')) rank += 1000
+    if (reasons.some(r => r.code === 'catalyst_agency_fail')) rank += 500
     if (reasons.some(r => r.code === 'early_beats_missing')) rank += 300
     // soft: overshoot / replay / orphan ? do not dominate adoption
     if (reasons.some(r => r.code === 'outline_endpoint_overshoot')) rank += 120
     if (reasons.some(r => r.code === 'outline_boundary_model')) rank += 100
     if (reasons.some(r => r.code === 'next_chapter_beat_leak')) rank += 180
+    if (reasons.some(r => r.code === 'chapter_forward_seam_copy')) rank += 140
     if (reasons.some(r => r.code === 'chapter_event_replay')) rank += 60
     if (reasons.some(r => r.code === 'head_orphan_span')) rank += 80
     if (reasons.some(r => r.code === 'draft_orphan_replay')) rank += 40
@@ -496,7 +517,7 @@ export async function maybeFixOutlineCompliance(args: {
 
   for (let round = 1; round <= maxRounds; round++) {
     attempts = round
-    onProgress?.(`正在修正大纲落实 ${round}/${maxRounds} 轮…`)
+    onProgress?.(`???????? ${round}/${maxRounds} ??`)
     const orphan = lastReasons.find(r => r.code === 'draft_orphan_replay')?.detail
     // ??????????? best ???????????????????
     const rewriteBase = bestStillOriginal ? original : best
@@ -567,7 +588,7 @@ export async function maybeFixOutlineCompliance(args: {
     originalHasSeamIssue
     && bestReasons.some(r => r.code === 'chapter_seam_cold_open')
   ) {
-    onProgress?.('正在冷开篇核修…')
+    onProgress?.('????????')
     const nuclearBase = bestStillOriginal ? original : best
     const nuclear = await rewriteOnceForOutline({
       content: nuclearBase,
@@ -715,7 +736,7 @@ export async function maybeFixOutlineCompliance(args: {
     deliverOverLength,
   })
 
-  // ???????????/??????? + reasons?????????????
+  // ????????
   if (deliverStillSeam) {
     logTaskWarn('Novel', 'outline-compliance-hard-reject', {
       chapterNumber,
@@ -733,6 +754,9 @@ export async function maybeFixOutlineCompliance(args: {
     }
   }
 
+  // catalyst_agency_fail?????????? C ????????? chapter_seam_cold_open
+  const deliverStillAgency = lastReasons.some(r => r.code === 'catalyst_agency_fail')
+  const deliverStillForward = lastReasons.some(r => r.code === 'chapter_forward_seam_copy')
   const deliverStillOrphan = lastReasons.some(r => r.code === 'draft_orphan_replay')
   const softOnly = lastReasons.length > 0 && lastReasons.every(r => [
     'early_beats_missing',
@@ -741,6 +765,8 @@ export async function maybeFixOutlineCompliance(args: {
     'next_chapter_beat_leak',
     'chapter_event_replay',
     'draft_orphan_replay',
+    'catalyst_agency_fail',
+    'chapter_forward_seam_copy',
     'brief_pacing',
     'brief_pending_overshoot',
     'named_as_generic_epithet',
@@ -750,7 +776,14 @@ export async function maybeFixOutlineCompliance(args: {
     'opening_unexplained_name',
   ].includes(r.code))
 
-  if (deliverStillOvershoot || deliverOverLength || deliverStillEventReplay || deliverStillOrphan) {
+  if (
+    deliverStillOvershoot
+    || deliverOverLength
+    || deliverStillEventReplay
+    || deliverStillOrphan
+    || deliverStillAgency
+    || deliverStillForward
+  ) {
     logTaskWarn('Novel', 'outline-compliance-soft-warn', {
       chapterNumber,
       codes: lastReasons.map(r => r.code),
@@ -760,6 +793,8 @@ export async function maybeFixOutlineCompliance(args: {
       deliverOverLength,
       deliverStillEventReplay,
       deliverStillOrphan,
+      deliverStillAgency,
+      deliverStillForward,
       softOnly,
     })
   }

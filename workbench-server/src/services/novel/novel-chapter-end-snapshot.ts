@@ -35,6 +35,22 @@ function firstSentence(s: string, max = 80): string {
   return [...one].length > max ? `${[...one].slice(0, max).join('')}…` : one
 }
 
+/** 章末「刚发生」须取尾句，勿取 truncTail 窗口首句（易把章中高潮当成章末契约） */
+function lastSentence(s: string, max = 100): string {
+  const t = s.replace(/\s+/g, ' ').trim()
+  if (!t) return ''
+  const parts = t
+    .split(/(?<=[。！？])/)
+    .map(x => x.trim())
+    .filter(x => [...x].length >= 6)
+  const one = (parts.length ? parts[parts.length - 1]! : t).trim()
+  return [...one].length > max ? `${[...one].slice(0, max).join('')}…` : one
+}
+
+function normCompact(s: string): string {
+  return s.replace(/\s+/g, '')
+}
+
 /** 账本字段若像旅程/人物表倾倒，优先用章末正文猜测（避免污染章缝契约） */
 function ledgerFieldBloated(v?: string | null, softMax = 40): boolean {
   const t = (v || '').replace(/\s+/g, ' ').trim()
@@ -72,9 +88,18 @@ export function deriveChapterEndSnapshot(args: {
     || guessCastLabel(tail)
     || castFromLedger
     || '未明示'
-  const last_event = (!ledgerFieldBloated(ledger?.actions, 80) && clean(ledger?.actions, 160))
-    || firstSentence(tail, 100)
+  const proseLast = lastSentence(tail, 120)
+  const actionClean = clean(ledger?.actions, 160)
+  // 账本 actions 仅当出现在真正章末附近才采用，避免章中高潮写入契约
+  const actionNearEnd = !!(
+    actionClean
+    && !ledgerFieldBloated(ledger?.actions, 80)
+    && normCompact(prose.slice(-560)).includes(normCompact(actionClean).slice(0, 8))
+  )
+  const last_event = (actionNearEnd && actionClean)
+    || proseLast
     || clean(ledger?.delta, 160)
+    || firstSentence(tail, 100)
     || '未明示'
   const open_threads = clean(ledger?.foreshadowing, 120)
   const closedList = extractClosedDeliveryBeats(prose)
@@ -131,8 +156,13 @@ function guessPlaceLabel(text: string): string | undefined {
 function guessCastLabel(text: string): string | undefined {
   const names = text.match(/[\u4e00-\u9fff]{2,3}(?=连|却|把|将|从|在|蹲|趴|说|道|盯|退)/g)
   if (!names?.length) return undefined
-  const uniq = [...new Set(names)].slice(0, 3)
-  return uniq.join('、')
+  const stop = new Set([
+    '耳朵', '眼睛', '嘴巴', '鼻子', '手指', '手心', '掌心', '胸口',
+    '自己', '什么', '这个', '那个', '东西', '么东', '好是', '一声',
+    '手里', '怀里', '眼前', '心里', '脸上', '身上', '门口', '屋里',
+  ])
+  const uniq = [...new Set(names)].filter(n => !stop.has(n)).slice(0, 3)
+  return uniq.length ? uniq.join('、') : undefined
 }
 
 /** 交付/呈递类动作（结构信号，非场面剧本） */
@@ -328,7 +358,50 @@ export async function loadPrevChapterEndSnapshot(
   if (prevNum < 1) return null
   const ep = await episodesRepo.findEpisodeByDramaAndNumber(dramaId, prevNum)
   if (!ep) return null
-  return readEpisodeChapterEndSnapshot(ep.metadata, ep.episodeNumber)
+  const stored = readEpisodeChapterEndSnapshot(ep.metadata, ep.episodeNumber)
+
+  const { resolveNovelEpisodeStoryProse } = await import('./novel-chapter-prose.js')
+  const prose = resolveNovelEpisodeStoryProse(ep)
+  if (!prose) return stored
+
+  const { hashNovelContent } = await import('../ai/ai-text-detection.js')
+  const hash = hashNovelContent(prose)
+  const eventOk = snapshotLastEventAlignedWithProse(stored, prose)
+  if (stored?.content_hash && stored.content_hash === hash && eventOk) return stored
+
+  // hash 不一致，或 last_event 不在当前正文尾（常见：账本 actions 污染）→ 仅按正文重算
+  const fresh = deriveChapterEndSnapshot({
+    chapterNumber: ep.episodeNumber,
+    content: prose,
+    contentHash: hash,
+  })
+  if (fresh) {
+    try {
+      await persistChapterEndSnapshot({ episodeId: ep.id, snapshot: fresh })
+    } catch {
+      // 读路径尽力刷新；写失败仍返回 fresh 供本轮章缝使用
+    }
+    return fresh
+  }
+  return stored
+}
+
+/** last_event 须能在真正章末附近找到痕迹；否则视为过期契约 */
+function snapshotLastEventAlignedWithProse(
+  snap: ChapterEndSnapshot | null | undefined,
+  prose: string,
+): boolean {
+  const last = snap?.last_event?.trim()
+  if (!last || last === '未明示') return true
+  const norm = (s: string) => s.replace(/\s+/g, '')
+  const tip = norm(prose.slice(-560))
+  const key = norm(last).slice(0, 16)
+  if (key.length < 6) return true
+  if (tip.includes(key)) return true
+  for (let w = Math.min(12, key.length); w >= 6; w--) {
+    if (tip.includes(key.slice(0, w))) return true
+  }
+  return false
 }
 
 export async function persistChapterEndSnapshot(args: {
