@@ -25,7 +25,8 @@ import { resolveContinuityRewriteMax, resolveContinuityStagnantStreak } from '..
 import type { NovelContinuityLedger } from '../../common/novel/novel-continuity-state.js'
 import type { ContinuityCheckResult, ContinuityRewriteLogEntry } from '../../common/novel/novel-continuity-state.js'
 import { continuityRuleLabel } from '../../common/novel/novel-continuity-rules.js'
-import { logTaskError } from '../../common/task/task-logger.js'
+import { logTaskError, logTaskWarn } from '../../common/task/task-logger.js'
+import { enforceAssembledLengthFloor, countNovelChars } from '../../common/novel/novel-char-limit.js'
 
 /** ??/?????????????????????????? UI */
 function buildHardRejectContinuityCheck(
@@ -85,7 +86,6 @@ import { resolveEffectiveChapterTarget } from './novel-chapter-target.js'
 import { runNovelChapterAiHumanizeHook } from './novel-chapter-ai-humanize-hook.js'
 import { loadPrevChapterContentTail } from './novel-continuity.js'
 import { detectChapterSeamColdOpen } from './novel-chapter-seam.js'
-import { logTaskWarn } from '../../common/task/task-logger.js'
 import type { EpisodeAiDetection } from '../../common/drama/episode-meta.js'
 
 async function runOutlineComplianceGate(args: {
@@ -217,6 +217,7 @@ export async function postProcessNovelChapterContent(args: {
   } = args
 
   let content = args.content
+  const assembledBaseline = args.content
   // ??????????????????????????? generateNovelChapterFull?
   if (chapterNumber >= 2) {
     try {
@@ -570,6 +571,43 @@ export async function postProcessNovelChapterContent(args: {
   }
 
   content = normalizeNovelTemporalNumerals(preserveNovelLineLayout('', content))
+  {
+    const minLen = Math.round(Math.min(20000, Math.max(500, Number(generateArgs?.targetLength) || 3000)) * 0.88)
+    const floored = enforceAssembledLengthFloor({
+      assembled: assembledBaseline,
+      candidate: content,
+      minLen,
+    })
+    if (floored.rejected) {
+      logTaskWarn('Novel', 'post-process-refuse-short-delivery', {
+        chapterNumber,
+        assembled: countNovelChars(assembledBaseline),
+        candidate: countNovelChars(content),
+        floor: floored.floor,
+      })
+      content = floored.text
+    }
+  }
+
+  // 一致性未通过：不交付正文（避免覆盖/落库毒稿；审校结果仍返回给 UI）
+  if (check && check.passed === false) {
+    logTaskWarn('Novel', 'post-process-continuity-fail-block-deliver', {
+      chapterNumber,
+      score: check.score,
+      rules: (check.blocking_items || []).map((i: { rule?: string }) => i.rule).slice(0, 8),
+    })
+    return {
+      content: '',
+      check,
+      ledger,
+      craft,
+      causal_change_record: causalChangeRecord,
+      outline_compliance: outlineCompliance,
+      ai_detection: aiDetection,
+      hard_reject: true,
+    }
+  }
+
   return {
     content,
     check,
@@ -628,6 +666,7 @@ export async function runNovelChapterPipeline(args: {
   onPhase?.('chapter')
   assertNotStopped()
   let content = await generateNovelChapterFull(generateArgs, billing)
+  const assembledBaseline = content
   let rewritten = false
   let rewriteAttempts = 0
   let check: ContinuityCheckResult | null = null
@@ -1087,6 +1126,46 @@ export async function runNovelChapterPipeline(args: {
     if (detached.changeBlock) {
       content = detached.prose
       causalChangeRecord = detached.changeBlock
+    }
+  }
+
+  if (content.trim()) {
+    const minLen = Math.round(Math.min(20000, Math.max(500, Number(generateArgs?.targetLength) || 3000)) * 0.88)
+    const floored = enforceAssembledLengthFloor({
+      assembled: assembledBaseline,
+      candidate: content,
+      minLen,
+    })
+    if (floored.rejected) {
+      logTaskWarn('Novel', 'pipeline-refuse-short-delivery', {
+        chapterNumber,
+        assembled: countNovelChars(assembledBaseline),
+        candidate: countNovelChars(content),
+        floor: floored.floor,
+      })
+      content = floored.text
+    }
+  }
+
+  // 一致性未通过：不交付正文，避免覆盖原文 / 数字作家落库毒稿
+  if (check && check.passed === false) {
+    logTaskWarn('Novel', 'pipeline-continuity-fail-block-deliver', {
+      chapterNumber,
+      score: check.score,
+      rules: (check.blocking_items || []).map((i: { rule?: string }) => i.rule).slice(0, 8),
+    })
+    return {
+      content: '',
+      check,
+      ledger,
+      rewritten,
+      rewrite_attempts: rewriteAttempts,
+      globalUpdated,
+      causal_change_record: causalChangeRecord,
+      outline_compliance: outlineCompliance,
+      craft,
+      ai_detection: aiDetection,
+      hard_reject: true,
     }
   }
 

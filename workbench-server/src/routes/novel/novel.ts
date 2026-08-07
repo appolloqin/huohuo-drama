@@ -834,7 +834,14 @@ app.post('/chapters/:id/generate/stream', async (c) => {
       send({ started: true, status: '按大纲拍点分段生成中…', mode: 'beat_sequential' })
       let generated = ''
       try {
-        generated = await generateNovelChapterFull(generateArgs, billing)
+        generated = await generateNovelChapterFull({
+          ...generateArgs,
+          onBeatProgress: ({ status, textDelta, polishing }) => {
+            if (polishing) send({ polishing: true, phase: 'polish', status: status || '正在润色正文…' })
+            else if (status) send({ status })
+            if (textDelta) send({ text: textDelta })
+          },
+        }, billing)
         send({ phase: 'review', status: '正在审校（连贯性 / 质量 / 大纲边界）…' })
         try {
           const post = await postProcessNovelChapterContent({

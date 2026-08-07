@@ -109,6 +109,46 @@ export function outlineBeatCoveredIn(haystack: string, phrase: string): boolean 
 }
 
 /**
+ * 【本章起因】覆盖：施事与结果物须同窗共现，禁止仅物体名词误命中。
+ * 例：「苏婉拿出…糠饼」不得因开篇「糠皮/半块饼」就判已落地。
+ * 分句（拒绝糠饼，决定进山）须各分句均覆盖。
+ */
+export function outlineCatalystCoveredIn(haystack: string, phrase: string): boolean {
+  const raw = phrase.trim()
+  if (!raw) return false
+  const clauses = raw.split(/[，,、]/).map(s => s.trim()).filter(s => charLen(s) >= 4)
+  if (clauses.length >= 2) {
+    return clauses.every(c => outlineCatalystCoveredIn(haystack, c))
+  }
+  const p = normalizeLite(raw)
+  if (p.length < 8) return outlineBeatCoveredIn(haystack, raw)
+
+  const h = normalizeLite(haystack)
+  const agent = p.slice(0, 2)
+  const right = p.slice(Math.floor(p.length * 0.45))
+  const objectTokens = beatAnchorTokens(right).filter(t => t.length >= 2)
+  if (!objectTokens.length) return outlineBeatCoveredIn(haystack, raw)
+
+  // 开头像人名时：施事必须出现（挡住「只有糠皮、没有苏婉拿出」）
+  const looksLikeName = /^[\u4e00-\u9fff]{2}/.test(p)
+  if (looksLikeName && !h.includes(agent)) return false
+
+  const searchFrom = looksLikeName ? Math.max(0, h.indexOf(agent)) : 0
+  const window = h.slice(searchFrom, searchFrom + 320)
+  if (!objectTokens.some(t => window.includes(t))) return false
+
+  const left = p.slice(0, Math.max(4, Math.floor(p.length * 0.45)))
+  const leftAnchors = beatAnchorTokens(left).filter(t => {
+    if (t.length < 2) return false
+    if (t === agent || t.startsWith(agent) || agent.startsWith(t)) return false
+    return true
+  })
+  if (leftAnchors.some(t => window.includes(t))) return true
+  // 意译：共现窗内对整句仍有覆盖（须窗内不止孤立物体词）
+  return coverBeatPhrase(window, raw) && charLen(window) >= 20
+}
+
+/**
  * 过短片段（常见为章名「精准击杀」）不参与覆盖硬门槛。
  * 有更长拍点时，去掉无标点且 ≤6 字的标题型拍点。
  */

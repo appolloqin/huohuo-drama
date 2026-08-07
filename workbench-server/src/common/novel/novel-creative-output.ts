@@ -46,10 +46,12 @@ function validateOutlineStructure(trimmed: string, kind: 'outline' | 'outline_sk
 }
 
 function validateOutlineChapterCount(trimmed: string, totalChapters: number): void {
-  const { ok, maxChapter, missing } = validateOutlineChapterCoverage(trimmed, totalChapters)
+  const { ok, maxChapter, missing, missingChapters } = validateOutlineChapterCoverage(trimmed, totalChapters)
   if (!ok) {
+    const sample = missingChapters.slice(0, 12).join('、')
+    const more = missingChapters.length > 12 ? `等共 ${missing} 章` : `（共 ${missing} 章）`
     throw new Error(
-      `全书大纲分章概要不完整：仅生成到第 ${maxChapter} 章，缺少 ${missing} 章（计划 ${totalChapters} 章）。请重试生成大纲`,
+      `全书大纲分章概要不完整：已解析到第 ${maxChapter} 章，仍缺第 ${sample}${more}（计划 ${totalChapters} 章）。请重试生成大纲`,
     )
   }
 }

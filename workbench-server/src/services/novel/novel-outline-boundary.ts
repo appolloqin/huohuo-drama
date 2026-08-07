@@ -22,10 +22,10 @@ const BRIEF_PLOT_DRIVE = /情节目标|篇幅侧重|须写|重点刻画|破局|�
  * 不列举猎物/陷阱等场面词。
  */
 const BRIEF_STRUCTURAL_SETUP =
-  /离别|叮嘱|出门前|出门|离家|锁门|居家|门槛|炕上|刚醒|穿好|准备停当|开场铺垫|目送|送别|喝口再走/
+  /离别|叮嘱|出门前|出门|离家|锁门|居家|门槛|炕上|刚醒|穿好|准备停当|开场铺垫|目送|送别|喝口再走|进山|上山/
 
 /** 元说明里易诱发「日循环重开」的时空/送别措辞（无大纲重叠时剔除或清洗） */
-const BRIEF_SETUP_CUE = /目送|送别|叮嘱|清晨|黎明|天没亮|刚醒|炕沿|门槛|离家时|出门前/
+const BRIEF_SETUP_CUE = /目送|送别|叮嘱|清晨|黎明|天没亮|刚醒|炕沿|门槛|离家时|出门前|进山/
 
 export type NovelOutlineBoundaryAlignment = {
   lastBeat: string
@@ -125,7 +125,22 @@ export function pruneBriefToOutlineBeats(brief: string, outline: string): {
   }
 
   const clauses = splitBriefClauses(src)
-  if (clauses.length < 2) return { brief: src, dropped: [] }
+  // 单句毒 brief（如「情节目标：清晨出门进山」）也必须裁
+  if (clauses.length < 2) {
+    const clause = (clauses[0] || src).trim()
+    const setup = BRIEF_STRUCTURAL_SETUP.test(clause)
+    const plot = BRIEF_PLOT_DRIVE.test(clause)
+    const cue = BRIEF_SETUP_CUE.test(clause)
+    const overlap = briefClauseOverlapsOutline(clause, beats)
+    if ((setup || plot || cue) && !overlap) {
+      const stub = [
+        '【写作说明已按本章大纲裁剪】与大纲拍点无关的旧起势/过期情节要求已剔除；结构以本章大纲为准。',
+        `须落实拍点：${beats.slice(0, 8).join('；')}`,
+      ].join('\n')
+      return { brief: stub, dropped: [clause.slice(0, 48)] }
+    }
+    return { brief: src, dropped: [] }
+  }
 
   const kept: string[] = []
   const dropped: string[] = []
@@ -174,17 +189,66 @@ export function pruneBriefToOutlineBeats(brief: string, outline: string): {
 
   if (!dropped.length) return { brief: src, dropped: [] }
 
+  if (!kept.length) {
+    return {
+      brief: buildOutlineOnlyWritingStub(outline),
+      dropped,
+    }
+  }
+
   const stub = [
     '【写作说明已按本章大纲裁剪】与大纲拍点无关的旧起势/过期情节要求已剔除；结构以本章大纲为准。',
     `须落实拍点：${beats.slice(0, 8).join('；')}`,
   ].join('\n')
 
-  if (!kept.length) return { brief: stub, dropped }
-
   return {
     brief: `${kept.join('。')}。\n${stub}`,
     dropped,
   }
+}
+
+/**
+ * 上章事实与写作说明起势冲突时剔除说明（M1+M2：大纲/事实 > brief）。
+ * 例：上章已在林中入夜，brief 仍写「清晨出门」→ 丢。
+ */
+export function pruneBriefAgainstPrevSeam(args: {
+  brief: string
+  prevSeamHint: string
+  outline: string
+}): { brief: string; dropped: string[] } {
+  const brief = args.brief.trim()
+  const hint = args.prevSeamHint.trim()
+  const outline = args.outline.trim()
+  if (!brief || !hint) return { brief, dropped: [] }
+
+  const beats = outline ? extractOutlineBeatPhrases(outline) : []
+  const nightLike = /夜|戌|亥|子时|傍晚|黄昏|昏暗|摸黑|入夜/.test(hint)
+  const alreadyOut = /林|山|坡|洼|雪地|野外|后山|沟/.test(hint)
+    && !/炕|屋|家中|门口/.test(hint)
+
+  const dropped: string[] = []
+  const kept: string[] = []
+  for (const clause of splitBriefClauses(brief)) {
+    const overlap = beats.length ? briefClauseOverlapsOutline(clause, beats) : false
+    if (overlap) {
+      kept.push(clause)
+      continue
+    }
+    const dayRestart = BRIEF_SETUP_CUE.test(clause) || /出门|离家|进山|上山打猎/.test(clause)
+    if (dayRestart && (nightLike || alreadyOut)) {
+      dropped.push(clause.slice(0, 48))
+      continue
+    }
+    kept.push(clause)
+  }
+  if (!dropped.length) return { brief, dropped: [] }
+  if (!kept.length) {
+    return {
+      brief: outline ? buildOutlineOnlyWritingStub(outline) : brief,
+      dropped,
+    }
+  }
+  return { brief: kept.join('。') + '。', dropped }
 }
 
 function isEndpointPending(lastBeat: string): boolean {
@@ -224,6 +288,8 @@ export function alignNovelChapterOutlineBoundary(args: {
   existingText?: string
   mode?: 'generate' | 'rewrite' | 'continue'
   chapterNumber?: number
+  /** 上章事实短提示（time/place/last_event），用于剔除与接缝冲突的 brief 起势 */
+  prevSeamHint?: string
 }): NovelOutlineBoundaryAlignment {
   const outline = args.chapterOutline?.trim() || ''
   const brief = args.writingBrief?.trim() || ''
@@ -259,9 +325,25 @@ export function alignNovelChapterOutlineBoundary(args: {
     const pruned = pruneBriefToOutlineBeats(alignedBrief, outline)
     if (pruned.dropped.length) {
       conflictNotes.push(
-        `写作说明含与本章大纲无关的情节要求，已剔除：${pruned.dropped.slice(0, 3).join('；')}`,
+        `brief-plot-discarded:写作说明含与本章大纲无关的情节要求，已剔除：${pruned.dropped.slice(0, 3).join('；')}`,
       )
       alignedBrief = pruned.brief
+    }
+  }
+
+  // 上章事实 vs brief 起势（M1+M2）
+  const prevHint = args.prevSeamHint?.trim() || ''
+  if (alignedBrief && prevHint) {
+    const seamPruned = pruneBriefAgainstPrevSeam({
+      brief: alignedBrief,
+      prevSeamHint: prevHint,
+      outline,
+    })
+    if (seamPruned.dropped.length) {
+      conflictNotes.push(
+        `brief-plot-discarded:写作说明起势与上章事实冲突，已剔除：${seamPruned.dropped.slice(0, 3).join('；')}`,
+      )
+      alignedBrief = seamPruned.brief
     }
   }
 

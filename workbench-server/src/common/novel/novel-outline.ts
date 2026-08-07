@@ -205,11 +205,39 @@ export function parseVolumeRanges(
   return volumes
 }
 
+export function listMissingOutlineChapters(
+  fullOutline: string,
+  totalChapters: number,
+): number[] {
+  return listMissingOutlineChaptersInRange(fullOutline, 1, totalChapters)
+}
+
+/** 检查 [from, to] 闭区间内缺哪些章号 */
+export function listMissingOutlineChaptersInRange(
+  fullOutline: string,
+  fromChapter: number,
+  toChapter: number,
+): number[] {
+  const map = parseChapterOutlines(fullOutline)
+  const missing: number[] = []
+  const from = Math.max(1, fromChapter)
+  const to = Math.max(from, toChapter)
+  for (let n = from; n <= to; n++) {
+    if (!map.has(n)) missing.push(n)
+  }
+  return missing
+}
+
 export function validateOutlineChapterCoverage(
   fullOutline: string,
   totalChapters: number,
-): { ok: boolean; maxChapter: number; missing: number } {
+): { ok: boolean; maxChapter: number; missing: number; missingChapters: number[] } {
   const maxChapter = getMaxParsedChapterNumber(fullOutline)
-  const missing = Math.max(0, totalChapters - maxChapter)
-  return { ok: maxChapter >= totalChapters, maxChapter, missing }
+  const missingChapters = listMissingOutlineChapters(fullOutline, totalChapters)
+  return {
+    ok: missingChapters.length === 0 && maxChapter >= totalChapters,
+    maxChapter,
+    missing: missingChapters.length,
+    missingChapters,
+  }
 }

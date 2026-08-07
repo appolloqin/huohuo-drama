@@ -1,4 +1,5 @@
 import { countNovelChars } from '../../common/novel/novel-char-limit.js'
+import { buildHumanizeExcerptList } from '../../common/novel/novel-detect-excerpts.js'
 import { chatCompletionText, type ChatMessage, type TextBillingContext } from './ai.js'
 import { WEBNOVEL_HUMAN_PROSE_STYLE, WEBNOVEL_STAT_FINGERPRINT_GUIDE } from '../../agents/webnovel-prose-style.js'
 import { buildDehumanizerSystem, dehumanizerCompletionOptions } from './ai-dehumanizer-prompt.js'
@@ -9,6 +10,7 @@ export const MAX_HUMANIZE_CHARS = 120000
 export type HumanizeDetectionHint = {
   probability?: number
   verdict?: string
+  perplexity?: number
   signals?: Array<{ key: string; score: number }>
   suggestions?: Array<{
     signal_key?: string
@@ -153,13 +155,69 @@ function buildPass3LexicalUser(text: string, hints: string, excerpt?: string): s
     '【专项·用词分布】',
     '问题：用词偏模型化（过密抽象词或过稀空转）。',
     '做法（只改摘录附近与明显空泛句，其余不动）：',
-    '- 换成/补上具体名词、物件、气味、触感、声响；少用微微/缓缓/猛地/似乎/仿佛空转',
+    '- 换成/补上具体名词、物件、气味、触感、声响；少用微微/缓缓/猛地/似乎/仿佛/四肢百骸/病根/酸软无力空转',
     '- 同一动作换不同动词，勿全程「看/走/拿」',
     '- 勿注水、勿改情节结局',
     excerpt ? `- 优先处理附近：${excerpt.slice(0, 80)}` : '',
     '- 只输出完整正文',
     '',
     hints ? `【AI 检测参考】\n${hints}` : '',
+    '',
+    '【当前稿】',
+    text,
+  ].filter(Boolean).join('\n')
+}
+
+/** C2：检测定点精修（excerpt-first，零具名文学处方） */
+export function buildExcerptFirstHumanizeUser(
+  text: string,
+  hints: HumanizeDetectionHint | null | undefined,
+  opts?: { target?: number; title?: string },
+): string {
+  const hintsStr = formatDetectionHints(hints) || '（无结构化建议）'
+  const { items, usedFallback, wideWindow } = buildHumanizeExcerptList(hints?.suggestions, {
+    text,
+    probability: hints?.probability,
+    perplexity: hints?.perplexity,
+    target: opts?.target ?? 39,
+  })
+  const title = opts?.title || '【专项·检测定点精修】'
+  const pplHeavy = (hints?.signals?.find(s => s.key === 'perplexity')?.score ?? 0) >= 0.55
+    || (hints?.probability ?? 0) >= 70
+    || (hints?.perplexity != null && hints.perplexity > 0 && hints.perplexity < 3)
+  const listLines = items.length
+    ? items.map((it, i) => `${i + 1}. [${it.signal_key}] ${it.text}`)
+    : ['（无摘录：仅按统计指纹轻触，其余不动）']
+
+  const scopeRules = wideWindow || pplHeavy
+    ? [
+      '1. 开篇约前 500 字必须重写句式与用词（可保留专名与事实）；另改下列摘录所在整段（非整章）',
+      '2. 目标：提高对检测模型的不可预测性（换搭配、拆过顺长句、段长参差）；勿只改半句敷衍',
+      '3. 未点名段落尽量保留；保专名、情节、数字；禁止堆语气词、另造情节',
+      '4. 只输出完整正文',
+    ]
+    : [
+      '1. 下列「须改片段」在正文中首次出现处：向前后扩到最近句界，最多再 ±1 句；找不到则改该串字面邻域 ±40 字',
+      '2. 其余原文逐字保留；保专名、情节、数字',
+      '3. 禁止整章换腔、堆语气词、用另一套空转词替换',
+      '4. 只输出完整正文',
+    ]
+
+  return [
+    title,
+    '说明：只改检测已定位的片段邻域，降低对本次检测模型的续写可预测性；不做文学开篇课，不点名具体范文切口。',
+    usedFallback ? '说明：无定位建议，仅扰动文首/文中样本窗。' : '',
+    wideWindow ? '说明：当前困惑度极低（样本窗已加宽），须实质改写开篇与命中段，禁止微调敷衍。' : '',
+    pplHeavy
+      ? '说明：本次主因是困惑度偏低——须刻意换非常用搭配、打乱过顺句式，使检测模型更难猜下一句；仍保持网文可读，勿诗化、勿改情节。'
+      : '',
+    '硬性：',
+    ...scopeRules,
+    '',
+    '【须改片段】',
+    ...listLines,
+    '',
+    hintsStr ? `【AI 检测参考】\n${hintsStr}` : '',
     '',
     '【当前稿】',
     text,
@@ -254,61 +312,14 @@ function pickSuggestionExcerpt(hints: HumanizeDetectionHint | null | undefined, 
 }
 
 function buildDetectionPassUser(text: string, hints: HumanizeDetectionHint | null | undefined): string {
-  const hintsStr = formatDetectionHints(hints) || '（无结构化建议：按统计指纹轻修，其余不动）'
-  const phrase = pickPhraseRepetitionTarget(hints, text)
-  const top = pickTopSignalKey(hints)
-
-  const transitionScore = hints?.signals?.find(s => s.key === 'transition_patterns')?.score ?? 0
-  const hasTransitionHit = !!hints?.suggestions?.some(s => s.signal_key === 'transition_patterns')
-
-  // 段落均匀常为最高维却此前无专项 → 优先打散分段
-  if (top === 'paragraph_uniformity') {
-    return buildPass3ParagraphUniformityUser(
-      text,
-      hintsStr,
-      pickSuggestionExcerpt(hints, 'paragraph_uniformity'),
-    )
-  }
-  // 衔接词命中时优先（即使用词分布更高——否则会一直改词库而留下「紧接着/微微」）
-  if (top === 'transition_patterns' || (hasTransitionHit && transitionScore >= 0.38)) {
-    return buildPass3TransitionUser(
-      text,
-      hintsStr,
-      pickSuggestionExcerpt(hints, 'transition_patterns'),
-    )
-  }
-  // 短语重复有明确命中时优先专项（即使总分不是最高）
-  if (phrase && (top === 'phrase_repetition' || (phrase.count != null && phrase.count >= 4))) {
-    return buildPass3PhraseRepetitionUser(text, phrase.match_text, phrase.count, hintsStr)
-  }
-  if (top === 'colloquial_markers') {
-    return buildPass3ColloquialUser(text, hintsStr, pickSuggestionExcerpt(hints, 'colloquial_markers'))
-  }
-  if (top === 'sentence_uniformity') {
-    return buildPass3SentenceUniformityUser(text, hintsStr, pickSuggestionExcerpt(hints, 'sentence_uniformity'))
-  }
-  if (top === 'lexical_pattern') {
-    return buildPass3LexicalUser(text, hintsStr, pickSuggestionExcerpt(hints, 'lexical_pattern'))
-  }
-  if (phrase) {
-    return buildPass3PhraseRepetitionUser(text, phrase.match_text, phrase.count, hintsStr)
-  }
-  return buildPass3User(text, hintsStr)
+  return buildExcerptFirstHumanizeUser(text, hints)
 }
 
-/** 高 AI 率时追加：专门打散 LLM 续写可预测性（对应困惑度 PPL 检测） */
-function buildPass4PerplexityUser(text: string): string {
-  return [
-    '【第4轮·困惑度扰动】',
-    '说明：火火 AI 率主要用「同类 LLM 能否轻松续写下文」衡量；PPL 越低越像 AI。本轮在保情节前提下刻意降低可预测性。',
-    '要求：',
-    '- 打乱最顺的句法：换词、倒装、省略；仍保持网文叙述连贯，严禁诗化碎句',
-    '- 替换高频 AI 搭配为不常见但自然的中文；勿造错字、乱码或语义漂移',
-    '- 只输出完整正文',
-    '',
-    '【当前稿】',
-    text,
-  ].join('\n')
+/** 高 AI 率追加轮：与 DetectionPass 共用 excerpt-first，避免双路径漂移 */
+function buildPass4PerplexityUser(text: string, hints?: HumanizeDetectionHint | null): string {
+  return buildExcerptFirstHumanizeUser(text, hints, {
+    title: '【第4轮·检测定点扰动】',
+  })
 }
 
 function shouldRunPerplexityPass(hints?: HumanizeDetectionHint | null): boolean {
@@ -386,7 +397,7 @@ export async function humanizeAiText(args: {
     finalText = await runPass(
       [
         { role: 'system', content: system },
-        { role: 'user', content: buildPass3User(pass2, hintsStr) },
+        { role: 'user', content: buildExcerptFirstHumanizeUser(pass2, args.detection) },
       ],
       pass3Options,
       billing,
@@ -398,7 +409,7 @@ export async function humanizeAiText(args: {
     finalText = await runPass(
       [
         { role: 'system', content: system },
-        { role: 'user', content: buildPass4PerplexityUser(finalText) },
+        { role: 'user', content: buildPass4PerplexityUser(finalText, args.detection) },
       ],
       pass4Options,
       billing,
@@ -418,7 +429,7 @@ export async function humanizeAiText(args: {
  * 调用方自行决定是否进入本轮（不套用 shouldRunDetectionPass）。
  */
 export async function humanizeAiTextDetectionPass(
-  args: { text: string; detection?: HumanizeDetectionHint | null },
+  args: { text: string; detection?: HumanizeDetectionHint | null; temperature?: number },
   billing?: TextBillingContext,
 ): Promise<{ content: string; char_count: number }> {
   const trimmed = args.text.trim()
@@ -430,10 +441,13 @@ export async function humanizeAiTextDetectionPass(
   const system = await buildDehumanizerSystem()
   const charCount = countNovelChars(trimmed)
   const tokenCeiling = Math.min(16384, Math.max(2048, Math.round(charCount * 2.2)))
+  const pplHeavy = (args.detection?.signals?.find(s => s.key === 'perplexity')?.score ?? 0) >= 0.55
+    || (args.detection?.probability ?? 0) >= 70
+    || (args.detection?.perplexity != null && args.detection.perplexity > 0 && args.detection.perplexity < 3)
   const options = await dehumanizerCompletionOptions({
     maxTokens: tokenCeiling,
-    // 章节精修宜稳：高温易整章漂移、AI 率反升
-    temperature: 0.55,
+    // PPL 极低时再升温，否则 ±1 句改写几乎拉不动困惑度
+    temperature: args.temperature ?? (pplHeavy ? 0.95 : 0.55),
   })
   const content = await runPass(
     [

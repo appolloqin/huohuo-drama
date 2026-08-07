@@ -47,6 +47,10 @@ export type EpisodeAiDetection = {
   humanize_passed?: boolean
   humanize_target?: number
   humanize_warning?: string
+  same_family_detect?: boolean
+  ai_detect_warning?: string
+  writing_model?: string
+  perplexity_model?: string
 }
 
 export type ProductionPipeline = 'ai_video' | 'frame_slideshow'

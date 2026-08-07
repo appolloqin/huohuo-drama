@@ -143,9 +143,42 @@ export function phraseAppearsIn(haystack: string, phrase: string): boolean {
   return false
 }
 
+/**
+ * 章缝「上章已完成该拍」判定（题材无关）：长句要求更长连续重合。
+ * 避免「赵大彪会不会」6 字短窗把两条不同悬念问句判成同一拍已完成。
+ */
+export function phraseStronglyAppearsIn(haystack: string, phrase: string): boolean {
+  const h = normalizeText(haystack)
+  const p = normalizeText(phrase)
+  if (p.length < 4 || h.length < 4) return false
+  if (h.includes(p)) return true
+  // 短拍：保持与 phraseAppearsIn 相近；长拍：至少 8 字或句长 35% 连续窗
+  const minW = p.length <= 8
+    ? (p.length <= 4 ? 4 : 5)
+    : Math.max(8, Math.min(16, Math.floor(p.length * 0.35)))
+  const maxW = Math.min(24, p.length)
+  if (minW > maxW) return false
+  for (let w = maxW; w >= minW; w--) {
+    for (let i = 0; i <= p.length - w; i++) {
+      if (h.includes(p.slice(i, i + w))) return true
+    }
+  }
+  return false
+}
+
 /** 戏剧标签：须落地的情节拍（含起因——仅当前序未写到时才写过程） */
 const DRAMA_PLOT_TAGS = new Set([
   '本章起因', '欲望', '阻碍', '局面变化', '人物选择', '章末问题', '信息增量',
+])
+
+/**
+ * 章缝冷开篇硬门槛起点：
+ * - 戏剧标签大纲 →【本章起因】
+ * - 无标签（「/」分隔等）→ 第一条实质拍
+ * 其余拍点留给整章大纲落实，不进开篇硬拦。
+ */
+const COLD_OPEN_STRUCTURAL_TAGS = new Set([
+  '本章起因',
 ])
 
 /**
@@ -265,12 +298,33 @@ export function extractOutlineBeatPhrases(outline: string, max = 12): string[] {
 }
 
 /**
+ * 悬念钩子拍（题材无关）：问句收尾，或「会不会/能否…」类未决问法。
+ * 这类不是「已完成事件」，且易与上章末悬念措辞短窗误叠。
+ */
+export function isSuspenseHookBeat(beat: string): boolean {
+  const t = beat.trim()
+  if (!t) return false
+  if (/[？?]\s*$/.test(t)) return true
+  return /会不会|能否|是否会|要不要|该不该/.test(t)
+}
+
+/**
+ * 章缝倒序/过期用的有序拍点（题材无关）：去掉悬念钩子拍，不按标签名白名单。
+ */
+export function extractSeamOrderBeatPhrases(outline: string, max = 12): string[] {
+  return extractOutlineBeatItems(outline, max * 2)
+    .filter(i => !isSuspenseHookBeat(i.beat))
+    .slice(0, max)
+    .map(i => i.beat)
+}
+
+/**
  * 本章情节拍是否已在上章正文出现（大纲过期 → 易诱发后退写）。
  * 【本章起因】同样：仅当前序已覆盖时才算过期。
  */
 export function findStaleOutlineBeats(outline: string, prevText: string): string[] {
   if (!outline.trim() || !prevText.trim()) return []
-  return extractOutlineBeatPhrases(outline).filter(beat => phraseAppearsIn(prevText, beat))
+  return extractSeamOrderBeatPhrases(outline).filter(beat => phraseAppearsIn(prevText, beat))
 }
 
 export function buildOutlineStaleBlock(args: {
@@ -354,7 +408,7 @@ export function detectOutlineBeatOrderRewind(args: {
   const { content, chapterNumber, prevChapterTail, chapterOutline } = args
   if (chapterNumber < 2 || !prevChapterTail?.trim() || !chapterOutline?.trim()) return null
 
-  const beats = extractOutlineBeatPhrases(chapterOutline)
+  const beats = extractSeamOrderBeatPhrases(chapterOutline)
   if (beats.length < 2) return null
 
   const prev = prevChapterTail.trim()
@@ -542,51 +596,63 @@ export function detectChapterSeamColdOpen(args: {
 
   if (!chapterOutline?.trim() || !prevChapterTail?.trim()) return null
 
-  const beats = filterSubstantiveOutlineBeats(extractOutlineBeatPhrases(chapterOutline))
-  if (beats.length < 2) return null
+  const beatItems = extractOutlineBeatItems(chapterOutline)
+  const taggedCatalyst = beatItems
+    .filter(i => i.tag && COLD_OPEN_STRUCTURAL_TAGS.has(i.tag))
+    .map(i => i.beat)
+  // 有【本章起因】用起因；否则用全部实质拍里的第一条（标签/无标签同一规则）
+  const phrasesForCold = taggedCatalyst.length >= 1
+    ? taggedCatalyst
+    : beatItems.map(i => i.beat)
+  const beats = filterSubstantiveOutlineBeats(phrasesForCold)
+  if (beats.length < 1) return null
+
+  // 冷开篇用普通拍点覆盖（允许意译）；catalyst 共现窗留给整章起因落地/agency
+  const cover = (hay: string, beat: string) => outlineBeatCoveredIn(hay, beat)
 
   const opening = content.trim().slice(0, Math.min(content.trim().length, 1400))
   if ([...opening].length < 80) return null
 
-  const early = beats.slice(0, Math.ceil(beats.length / 2))
+  // 统一：只要求本章起点拍（起因或第一条实质拍）
+  const early = beats.slice(0, 1)
   const stale = findStaleOutlineBeats(chapterOutline, prevChapterTail)
   const staleSet = new Set(stale.map(s => normalizeText(s)))
   const required = early.filter(b => !staleSet.has(normalizeText(b)))
   if (!required.length) return null
 
-  // 与大纲落实共用锚点/意译覆盖，避免猎捕等意译正文被字面窗误杀
-  const hit = required.filter(b => outlineBeatCoveredIn(opening, b))
-  const need = Math.max(1, Math.ceil(required.length / 2))
+  const hit = required.filter(b => cover(opening, b))
+  const need = 1
   // 开篇头段（约前 400 字）0 命中、后段才命中 = 离家/重开骨架后再切入大纲 → 仍判冷开篇
   const headLen = Math.min(400, Math.max(160, Math.floor([...opening].length / 3)))
   const head = [...opening].slice(0, headLen).join('')
-  const headHit = required.filter(b => outlineBeatCoveredIn(head, b))
+  const headHit = required.filter(b => cover(head, b))
   // 共处离场桥 / 夜→晨醒桥：头段可稍后进入大纲拍点，不判杂交冷头
   const bridgeHead = headLooksLikeCopresenceBridge(head, prevChapterTail, prevSnapshot)
     || headLooksLikeOvernightBridge(head, prevChapterTail, prevSnapshot)
-  // 头段已有任一前段拍点 → 不算杂交冷头（允许先蹲守再收套）
+  // 头段已有起点拍 → 不算杂交冷头（允许先蹲守再收套）
   const hybridColdHead = headHit.length === 0 && hit.length > 0 && [...head].length >= 120 && !bridgeHead
 
   if (hit.length >= need && !hybridColdHead) return null
 
   const weak = isWeakSeamContinuation(prevChapterTail, opening)
-  // 前段 0 命中：不依赖弱承接（避免同场景用词假强承接漏检）
+  // 0 命中：不依赖弱承接（避免同场景用词假强承接漏检）
   // 杂交冷头：头段无拍点、后段才有 → 不依赖弱承接
   if (!weak && hit.length > 0 && !hybridColdHead) return null
 
-  const missing = required.filter(b => !outlineBeatCoveredIn(opening, b))
+  const missing = required.filter(b => !cover(opening, b))
   const missingForMsg = missing.length
     ? missing
-    : required.filter(b => !outlineBeatCoveredIn(head, b))
+    : required.filter(b => !cover(head, b))
+  const gateLabel = taggedCatalyst.length >= 1 ? '本章起因' : '本章起点拍'
   return {
     layer: 'hard',
     rule: 'chapter_seam_replay',
     message:
       hybridColdHead
-        ? `章缝冷开篇：开篇头段未进入本章大纲前段（缺失如「${missingForMsg.slice(0, 2).join('；')}」），疑似先写更早节点再切入。请紧接上章已发生事实之后起笔，直接推进本章大纲前段；禁止开篇时空早于上章末。`
+        ? `章缝冷开篇：开篇头段未进入${gateLabel}（缺失如「${missingForMsg.slice(0, 2).join('；')}」），疑似先写更早节点再切入。请紧接上章已发生事实之后起笔，直接推进${gateLabel}；禁止开篇时空早于上章末。`
         : hit.length === 0
-          ? `章缝冷开篇：开篇未命中本章大纲前段任一拍点（缺失如「${missingForMsg.slice(0, 2).join('；')}」）。请紧接上章已发生事实之后起笔，直接推进本章大纲前段；禁止开篇时空早于上章末。`
-          : `章缝冷开篇：开篇与上章末弱承接，且未进入本章大纲前段（缺失如「${missingForMsg.slice(0, 2).join('；')}」）。请紧接上章已发生事实之后起笔，直接推进本章大纲前段；禁止开篇时空早于上章末。`,
+          ? `章缝冷开篇：开篇未命中${gateLabel}（缺失如「${missingForMsg.slice(0, 2).join('；')}」）。请紧接上章已发生事实之后起笔，直接推进${gateLabel}；禁止开篇时空早于上章末。`
+          : `章缝冷开篇：开篇与上章末弱承接，且未进入${gateLabel}（缺失如「${missingForMsg.slice(0, 2).join('；')}」）。请紧接上章已发生事实之后起笔，直接推进${gateLabel}；禁止开篇时空早于上章末。`,
   }
 }
 

@@ -1,5 +1,6 @@
 import {
   promptLogprobs,
+  getTextConfigWithModels,
   type ChatCompletionOptions,
   type TextBillingContext,
 } from './ai.js'
@@ -11,6 +12,10 @@ import {
   type AiDetectionSignal,
 } from './ai-text-detection.js'
 import { countNovelChars } from '../../common/novel/novel-char-limit.js'
+import {
+  crossModelDetectWarning,
+  sameFamilyDetect,
+} from '../../common/novel/novel-model-family.js'
 
 export const AI_PERPLEXITY_METHOD = 'perplexity_v1' as const
 export const AI_STATISTICAL_FALLBACK_METHOD = 'statistical_v1_fallback' as const
@@ -71,6 +76,20 @@ export async function detectAiTextWithPerplexity(
     ...statistical.signals.slice(0, 6),
   ]
 
+  let writingModel: string | undefined
+  let sameFamily: boolean | undefined
+  let aiDetectWarning: string | undefined
+  try {
+    const { cfg } = await getTextConfigWithModels()
+    writingModel = cfg.model
+    if (writingModel && perplexityModel) {
+      sameFamily = sameFamilyDetect(writingModel, perplexityModel)
+      aiDetectWarning = crossModelDetectWarning({ sameFamily })
+    }
+  } catch {
+    // 配置不可用时跳过同系标注
+  }
+
   return {
     probability,
     confidence: confidenceFromCharCount(charCount),
@@ -91,6 +110,9 @@ export async function detectAiTextWithPerplexity(
     analyzed_tokens: tokenCount,
     sampled_char_count: sampledCharCount,
     perplexity_model: perplexityModel,
+    writing_model: writingModel,
+    same_family_detect: sameFamily,
+    ai_detect_warning: aiDetectWarning,
   }
 }
 

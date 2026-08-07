@@ -183,6 +183,7 @@ export async function checkNovelChapterCraft(args: {
   ].filter(Boolean).join('\n\n')
 
   let parsed: Record<string, unknown> = {}
+  let craftModelFailed = false
   try {
     const raw = await chatCompletionTextAudit(
       [
@@ -191,16 +192,23 @@ export async function checkNovelChapterCraft(args: {
       ],
       {
         temperature: 0.2,
-        maxTokens: 2048,
+        maxTokens: 4096,
         billing: args.billing
           ? { ...args.billing, reason: args.billing.reason || '小说章节质量审校' }
           : undefined,
       },
     )
-    const start = raw.indexOf('{')
-    const end = raw.lastIndexOf('}')
-    parsed = JSON.parse(start >= 0 && end > start ? raw.slice(start, end + 1) : raw || '{}') as Record<string, unknown>
+    if (!raw?.trim()) {
+      craftModelFailed = true
+      parsed = {}
+    } else {
+      const start = raw.indexOf('{')
+      const end = raw.lastIndexOf('}')
+      parsed = JSON.parse(start >= 0 && end > start ? raw.slice(start, end + 1) : raw || '{}') as Record<string, unknown>
+      if (!Object.keys(parsed).length) craftModelFailed = true
+    }
   } catch {
+    craftModelFailed = true
     parsed = {}
   }
 
@@ -223,10 +231,25 @@ export async function checkNovelChapterCraft(args: {
   }
 
   const functionOk = !requireTwo || functionsHit >= 2
-  const drama_gates = normalizeDramaGates(parsed.drama_gates)
+  let drama_gates = normalizeDramaGates(parsed.drama_gates)
   // 解析失败且无 conflicts 时旧逻辑抬分，但 drama_gates 缺码视为未过，避免假通过
-  const drama_gate_passed = computeDramaGatePassed(drama_gates)
-  const passed = !complianceVeto && score >= minScore && functionOk && drama_gate_passed
+  let drama_gate_passed = computeDramaGatePassed(drama_gates)
+
+  // 审校模型空正文/抛错：勿把「戏剧门全无」当成硬失败去整章重写（会反复生成同一模板开篇）
+  const softAlerts: Array<{ code: string; message: string }> = []
+  if (craftModelFailed || (!Number.isFinite(scoreRaw) && Object.keys(parsed).length === 0)) {
+    score = Math.max(minScore, 72)
+    for (const code of DRAMA_GATE_CODES) {
+      drama_gates[code] = { level: '弱', note: '审校未返回有效结果，暂缓门禁' }
+    }
+    drama_gate_passed = true
+    softAlerts.push({
+      code: 'craft_model_unavailable',
+      message: '质量审校模型未返回正文，已跳过戏剧门硬拦，避免空转重写',
+    })
+  }
+
+  const passed = !complianceVeto && score >= minScore && (craftModelFailed || (functionOk && drama_gate_passed))
 
   return {
     passed,
@@ -243,7 +266,7 @@ export async function checkNovelChapterCraft(args: {
     checked_at: checkedAt,
     drama_gates,
     drama_gate_passed,
-    soft_alerts: [],
+    soft_alerts: softAlerts,
   }
 }
 

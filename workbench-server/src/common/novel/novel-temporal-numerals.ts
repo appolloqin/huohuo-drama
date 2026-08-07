@@ -36,9 +36,13 @@ function parseCnMonthToken(token: string): number | null {
   return null
 }
 
-/** 一～三十一日（含廿/卅） */
+/** 一～三十一日（含廿/卅/初一～初十） */
 function parseCnDayToken(token: string): number | null {
   if (/^\d+$/.test(token)) return Number(token)
+  // 农历「初一」～「初十」
+  if (token.startsWith('初') && token.length >= 2) {
+    return parseCnDayToken(token.slice(1))
+  }
   if (token === '十') return 10
   if (token === '二十') return 20
   if (token === '三十') return 30
@@ -195,20 +199,39 @@ export function normalizeNovelTemporalNumerals(text: string): string {
     return n != null ? `${n}月` : full
   })
 
-  // 十五日 / 二十一日 / 廿三日
-  out = out.replace(/([正廿卅一二三四五六七八九十]{1,3})日/g, (full, token: string) => {
-    if (token === '正') return full
+  // 十五日 / 二十一日 / 廿三日 / 初三日
+  out = out.replace(/(初?[正廿卅一二三四五六七八九十]{1,3})日/g, (full, token: string) => {
+    if (token === '正' || token === '初正') return full
     const n = parseCnDayToken(token)
     return n != null && n >= 1 && n <= 31 ? `${n}日` : full
+  })
+
+  // 农历常见省略「日」：11月十七 / 正月十五 / 12月初三（勿伤「1月十七天」时长说法）
+  out = out.replace(
+    /(\d{1,2})月(初?[廿卅一二三四五六七八九十]{1,3})(?![日号岁个天点]|份)/g,
+    (full, month: string, token: string) => {
+      const n = parseCnDayToken(token)
+      return n != null && n >= 1 && n <= 31 ? `${month}月${n}` : full
+    },
+  )
+
+  // 十七号 / 初三号
+  out = out.replace(/(初?[廿卅一二三四五六七八九十]{1,3})号/g, (full, token: string) => {
+    const n = parseCnDayToken(token)
+    return n != null && n >= 1 && n <= 31 ? `${n}号` : full
   })
 
   out = normalizeNovelClockNumerals(out)
 
   // 凌晨三时 / 下午四时
-  out = out.replace(/(十[一二]?|[两一二三四五六七八九])时(?![候间刻])/g, (full, token: string) => {
-    const n = parseCnHourToken(token)
-    return n != null ? `${n}时` : full
-  })
+  // 勿伤成语/口语：「一时半会儿」「一时半刻」「一时兴起」等
+  out = out.replace(
+    /(十[一二]?|[两一二三四五六七八九])时(?![候间刻]|半会儿?|半刻|三刻|兴起)/g,
+    (full, token: string) => {
+      const n = parseCnHourToken(token)
+      return n != null ? `${n}时` : full
+    },
+  )
 
   out = normalizeNovelMoneyNumerals(out)
   out = normalizeNovelDialogueQuotes(out)

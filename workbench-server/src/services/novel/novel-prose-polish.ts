@@ -143,13 +143,14 @@ export async function polishNovelChapterProse(
     return out
   } catch (err: any) {
     logTaskWarn('Novel', 'prose-polish-skipped', { error: err?.message || 'empty' })
-    const fallback = sanitizeModelCreativeOutput(trimmed) || trimmed
+    const fallback = sanitizeModelCreativeOutput(bodyToPolish) || bodyToPolish
     const laidOut = preserveNovelLineLayout(layoutRef, fallback)
-    let out = normalizeNovelTemporalNumerals(laidOut)
+    // 润色失败也必须打散套话/开篇骨架，否则 DeepSeek 空正文时「痛。像…」会原样交付
+    let out = diversifyNovelProseTells(normalizeNovelTemporalNumerals(laidOut))
     if (opts?.mode !== 'segment' && opts?.minLen != null && opts?.maxLen != null) {
       out = await ensureNovelChapterWithinLength(out, opts.minLen, opts.maxLen, billing)
     }
-    return out
+    return changeBlock ? `${out.trim()}\n\n${changeBlock}` : out
   }
 }
 

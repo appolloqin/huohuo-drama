@@ -16,9 +16,9 @@ import {
 import { detectChapterBodyEventReplay } from './novel-chapter-end-snapshot.js'
 import { detectBriefPendingStateOvershoot } from './novel-brief-compliance.js'
 import { filterDraftByChapterOutline } from './novel-draft-outline-filter.js'
-import { filterSubstantiveOutlineBeats, outlineBeatCoveredIn, beatAnchorTokens } from './novel-outline-beat-cover.js'
+import { filterSubstantiveOutlineBeats, outlineBeatCoveredIn, beatAnchorTokens, outlineCatalystCoveredIn } from './novel-outline-beat-cover.js'
 
-export { outlineBeatCoveredIn, filterSubstantiveOutlineBeats } from './novel-outline-beat-cover.js'
+export { outlineBeatCoveredIn, filterSubstantiveOutlineBeats, outlineCatalystCoveredIn } from './novel-outline-beat-cover.js'
 
 export type OutlineComplianceReasonCode =
   | 'early_beats_missing'
@@ -290,11 +290,11 @@ export function detectCatalystAgencyFail(args: {
   if (!catalysts.length) return null
 
   const prev = args.prevChapterTail || ''
-  const pending = catalysts.filter(c => !prev.trim() || !outlineBeatCoveredIn(prev, c))
+  const pending = catalysts.filter(c => !prev.trim() || !outlineCatalystCoveredIn(prev, c))
   if (!pending.length) return null
 
   const head = halfSlice(args.content)
-  const covered = pending.some(c => outlineBeatCoveredIn(head, c))
+  const covered = pending.some(c => outlineCatalystCoveredIn(head, c))
   if (covered) return null
 
   const headNorm = normalizeLite(head)

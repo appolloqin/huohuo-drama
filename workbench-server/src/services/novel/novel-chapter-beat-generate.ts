@@ -48,7 +48,7 @@ import {
   detectCatalystAgencyFail,
   detectChapterForwardSeamCopy,
 } from './novel-outline-compliance.js'
-import { outlineBeatCoveredIn } from './novel-outline-beat-cover.js'
+import { outlineBeatCoveredIn, outlineCatalystCoveredIn } from './novel-outline-beat-cover.js'
 import { buildNovelWriteContext, loadNextChapterContentHead, loadPrevChapterContentTail } from './novel-continuity.js'
 import {
   assertOutlineChapterFields,
@@ -74,6 +74,17 @@ export type BeatSequentialGenerateArgs = {
   mode?: 'generate' | 'rewrite'
   /** 默认仅 rewrite；一次生成/数字作家为 false */
   includeNextChapter?: boolean
+  /**
+   * 每拍落稿后回调（供 SSE 流式预览）。
+   * textDelta 为相对上一拍的增量，前端按 chunk 拼接。
+   */
+  onBeatProgress?: (info: {
+    beatIndex: number
+    beatTotal: number
+    status: string
+    textDelta?: string
+    polishing?: boolean
+  }) => void
 }
 
 function priorTail(frozen: string): string {
@@ -249,9 +260,9 @@ async function generateFirstBeatWithSeamGuard(args: Parameters<typeof generateOn
 
   const catalysts = extractOutlineCatalystPhrases(args.chapterOutline || '')
   const pending = catalysts.filter(c =>
-    !args.prevTail?.trim() || !outlineBeatCoveredIn(args.prevTail, c),
+    !args.prevTail?.trim() || !outlineCatalystCoveredIn(args.prevTail, c),
   )
-  const catalystCovered = (body: string) => pending.some(c => outlineBeatCoveredIn(body, c))
+  const catalystCovered = (body: string) => pending.some(c => outlineCatalystCoveredIn(body, c))
 
   if (pending.length > 0 && !catalystCovered(text)) {
     const nuclearHint = [
@@ -321,9 +332,17 @@ export async function generateNovelChapterByBeats(
     targetLength = 3000,
     mode = 'generate',
     includeNextChapter,
+    onBeatProgress,
   } = args
   const isRewrite = mode === 'rewrite'
   const withNext = includeNextChapter ?? isRewrite
+
+  const prevTail = chapterNumber >= 2
+    ? await loadPrevChapterContentTail(dramaId, chapterNumber, 1600)
+    : ''
+  const prevSnap = chapterNumber >= 2
+    ? await loadPrevChapterEndSnapshot(dramaId, chapterNumber)
+    : null
 
   const outlineAlign = alignNovelChapterOutlineBoundary({
     chapterOutline,
@@ -331,6 +350,9 @@ export async function generateNovelChapterByBeats(
     existingText,
     mode,
     chapterNumber,
+    prevSeamHint: prevSnap
+      ? [prevSnap.time, prevSnap.place, prevSnap.last_event].filter(Boolean).join(' · ')
+      : prevTail.slice(-240),
   })
   const userTarget = Math.min(20000, Math.max(500, targetLength))
   const beatBudgets = resolveChapterBeatBudgets({
@@ -361,13 +383,6 @@ export async function generateNovelChapterByBeats(
     bookOutline: meta.outline,
   })
 
-  const prevTail = chapterNumber >= 2
-    ? await loadPrevChapterContentTail(dramaId, chapterNumber, 1600)
-    : ''
-  const prevSnap = chapterNumber >= 2
-    ? await loadPrevChapterEndSnapshot(dramaId, chapterNumber)
-    : null
-
   const outlineDramaCheck = assertOutlineChapterFields(
     [meta.outline || '', chapterOutline || ''].join('\n\n'),
     chapterNumber,
@@ -389,6 +404,8 @@ export async function generateNovelChapterByBeats(
     '',
     OUTLINE_DRAMA_PRIORITY_LINE,
     '',
+    '【情节优先序】本章大纲（含【本章起因】）> 上章已发生事实 > 写作说明。写作说明不得另起出门/进山等与大纲或上章事实冲突的起势。',
+    '',
     '当前任务：**按拍点分段写作**——每次只写用户指定的「本拍」；已写正文已冻结。',
     '结构与章末止点服从【本章大纲边界】；禁止为凑字越过末拍。',
     `整章目标合计约 ${userTarget} 字（${minLen}～${maxLen}）；各拍自有预算，勿把字数挪到未写拍点。`,
@@ -406,7 +423,7 @@ export async function generateNovelChapterByBeats(
 
   const pendingCatalysts = chapterNumber >= 2 && chapterOutline?.trim()
     ? extractOutlineCatalystPhrases(chapterOutline).filter(c =>
-      !prevTail.trim() || !outlineBeatCoveredIn(prevTail, c),
+      !prevTail.trim() || !outlineCatalystCoveredIn(prevTail, c),
     )
     : []
   const pendingCatalystBlock = pendingCatalysts.length
@@ -508,6 +525,13 @@ export async function generateNovelChapterByBeats(
     }
     parts.push(piece.trim())
     frozen = parts.join('\n\n')
+    const textDelta = parts.length === 1 ? piece.trim() : `\n\n${piece.trim()}`
+    onBeatProgress?.({
+      beatIndex: i,
+      beatTotal: items.length,
+      status: `按大纲拍点 ${i + 1}/${items.length}…`,
+      textDelta,
+    })
     logTaskWarn('Novel', 'novel-beat-done', {
       beat: item.index,
       phase: item.phase,
@@ -621,6 +645,12 @@ export async function generateNovelChapterByBeats(
   }
 
   const draftBeforePolish = draft
+  onBeatProgress?.({
+    beatIndex: items.length,
+    beatTotal: items.length,
+    status: '正在润色正文…',
+    polishing: true,
+  })
   let polished = normalizeNovelTemporalNumerals(
     await polishNovelChapterProse(draft, billing, {
       minLen,

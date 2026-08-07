@@ -27,11 +27,21 @@ type AddCreditInput = {
   resourceId?: number
 }
 
-export function parseConfigSettings(settings: string | null | undefined): Record<string, any> {
-  if (!settings) return {}
+/**
+ * MySQL `settings JSON` 经 mysql2/drizzle 常直接得到 object；SQLite 多为 JSON 字符串。
+ * 两者都必须能解析，否则困惑度模型等字段会「已写入库但 API 回显为空」。
+ */
+export function parseConfigSettings(
+  settings: string | Record<string, unknown> | null | undefined,
+): Record<string, any> {
+  if (settings == null || settings === '') return {}
+  if (typeof settings === 'object' && !Array.isArray(settings)) {
+    return { ...settings }
+  }
+  if (typeof settings !== 'string') return {}
   try {
     const parsed = JSON.parse(settings)
-    return parsed && typeof parsed === 'object' ? parsed : {}
+    return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : {}
   } catch {
     return {}
   }
@@ -49,14 +59,20 @@ export function resolveThinkingEnabled(settings: Record<string, unknown> | strin
   return false
 }
 
-export function resolveCreditCostFromConfig(config: { settings?: string | null }, fallback = 0): number {
+export function resolveCreditCostFromConfig(
+  config: { settings?: string | Record<string, unknown> | null },
+  fallback = 0,
+): number {
   const parsed = parseConfigSettings(config.settings)
   const raw = Number(parsed.creditCost)
   if (!Number.isFinite(raw) || raw < 0) return fallback
   return Math.floor(raw)
 }
 
-export function resolveTextCreditsFromTokens(settings: string | null | undefined, totalTokens: number): number {
+export function resolveTextCreditsFromTokens(
+  settings: string | Record<string, unknown> | null | undefined,
+  totalTokens: number,
+): number {
   const parsed = parseConfigSettings(settings)
   const unit = Math.max(0, Math.floor(Number(parsed.creditTokenUnit || 0)))
   const cost = Math.max(0, Math.floor(Number(parsed.creditTokenCost || 0)))
@@ -95,7 +111,7 @@ export function resolveTokenUsage(
 export async function chargeTextUsage(input: {
   userId: number
   role?: string
-  config: { settings?: string | null; provider?: string | null; model?: string | null }
+  config: { settings?: string | Record<string, unknown> | null; provider?: string | null; model?: string | null }
   totalTokens: number
   tokensEstimated?: boolean
   reason: string

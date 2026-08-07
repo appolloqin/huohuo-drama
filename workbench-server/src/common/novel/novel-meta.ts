@@ -58,6 +58,11 @@ export type NovelMetadata = {
   ai_humanize_max?: number
   /** 自动去 AI 味过关概率（含），默认 39 */
   ai_humanize_target?: number
+  /**
+   * 偏好异模型困惑度检测（C2）。
+   * true 时同系检测 warning 加前缀；不阻断、不改写作模型。默认 false。
+   */
+  prefer_cross_model_detect?: boolean
 }
 
 export function parseNovelMetadata(raw: JsonColumnInput): NovelMetadata {
@@ -124,6 +129,7 @@ export function parseNovelMetadata(raw: JsonColumnInput): NovelMetadata {
         if (!Number.isFinite(n)) return undefined
         return Math.min(60, Math.max(20, Math.round(n)))
       })(),
+      prefer_cross_model_detect: parsed.prefer_cross_model_detect === true ? true : undefined,
     }
   } catch {
     return {}
@@ -241,4 +247,9 @@ export function resolveAiHumanizeTarget(meta: NovelMetadata): number {
   const n = meta.ai_humanize_target
   if (Number.isFinite(n)) return Math.min(60, Math.max(20, Math.round(n!)))
   return DEFAULT_AI_HUMANIZE_TARGET
+}
+
+/** C2：小说 meta 优先；未设则 false（文本服务 settings 由检测侧另读） */
+export function resolvePreferCrossModelDetect(meta: NovelMetadata): boolean {
+  return meta.prefer_cross_model_detect === true
 }

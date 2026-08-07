@@ -140,9 +140,15 @@ export async function getTextConfigWithModels(): Promise<{
 /** 启发式：哪些型号更可能支持 logprobs（仅作排序参考，不再注入未配置的型号） */
 function supportsLogprobsHeuristic(model: string): boolean {
   const m = model.toLowerCase()
-  if (/qwen3\.5|qwen3\.7|qwen-max|vl|omni|tts/i.test(m)) return false
-  if (/qwen-plus|qwen-turbo|qwen3-(?!5|7)/i.test(m)) return true
-  return !/3\.5|thinking/i.test(m)
+  // qwen3.5/3.7/3.8 常不支持 OpenAI compat completions/logprobs
+  if (/qwen3\.(5|7|8)|qwen3-[578]|qwen-max|vl|omni|tts/i.test(m)) return false
+  if (/qwen-plus|qwen-turbo|qwen3-(?!5|7|8)/i.test(m)) return true
+  return !/3\.[578]|thinking/i.test(m)
+}
+
+function isPerplexityModelHardFail(err: unknown): boolean {
+  const msg = err instanceof Error ? err.message : String(err || '')
+  return /unsupported model|does not support|logprobs|not support.*compat/i.test(msg)
 }
 
 /**
@@ -244,6 +250,9 @@ const TOOL_MEMORY_BLOCK_PATTERNS: RegExp[] = [
   /<tool_call\b[^>]*>[\s\S]*?<\/tool_call>/gi,
   /<tool_result\b[^>]*>[\s\S]*?<\/tool_result>/gi,
   /<function_call\b[^>]*>[\s\S]*?<\/function_call>/gi,
+  // 模型幻觉的笔记本/扩展伪标签，如 <jupytext.ext.vars>{...}</jupytext.ext.vars>
+  /<jupytext(?:\.[a-z0-9_-]+)+(?:\s[^>]*)?>[\s\S]*?<\/jupytext(?:\.[a-z0-9_-]+)+>/gi,
+  /<[a-z][\w-]*\.(?:ext|vars|meta|tool|data)\b[^>]*>[\s\S]*?<\/[a-z][\w.-]*>/gi,
 ]
 
 const THINKING_OPEN_TAG = /^<(?:redacted_thinking|thinking|think|reasoning)\b[^>]*>/i
@@ -279,8 +288,13 @@ export function stripThinkingArtifactsFromText(text: string): string {
   for (const pattern of TOOL_MEMORY_BLOCK_PATTERNS) {
     result = result.replace(pattern, '')
   }
-  // 未闭合的 memory / tool 块：从开标签起丢弃到文末
+  // 未闭合的 memory / tool / jupytext 伪标签：从开标签起丢弃到文末
   result = result.replace(/<(?:memory|tool_call|tool_result|function_call)\b[^>]*>[\s\S]*$/gi, '')
+  result = result.replace(/<jupytext(?:\.[a-z0-9_-]+)+(?:\s[^>]*)?>[\s\S]*$/gi, '')
+  result = result.replace(/<[a-z][\w-]*\.(?:ext|vars|meta|tool|data)\b[^>]*>[\s\S]*$/gi, '')
+  // 残留的成对/自闭合点号标签（正文不应出现）
+  result = result.replace(/<\/?jupytext(?:\.[a-z0-9_-]+)+(?:\s[^>]*)?\/?>/gi, '')
+  result = result.replace(/<\/?[a-z][\w-]*\.(?:ext|vars|meta|tool|data)\b[^>]*\/?>/gi, '')
   result = result.replace(DS_THINK_BLOCK, '')
   // DeepSeek / 部分网关：正文前的  块（含未闭合）
   result = result.replace(DS_THINK_LEAD, '')
@@ -302,6 +316,8 @@ export function looksLikeModelThinkingLeak(text: string): boolean {
   if (!t) return false
   if (THINKING_OPEN_TAG.test(t) || DS_THINK_OPEN.test(t)) return true
   if (/<(?:memory|tool_call|tool_result|function_call)\b/i.test(t)) return true
+  if (/<jupytext(?:\.[a-z0-9_-]+)+/i.test(t)) return true
+  if (/<[a-z][\w-]*\.(?:ext|vars|meta|tool|data)\b/i.test(t)) return true
   if (THINKING_LEAK_ENGLISH.test(t)) return true
   if (THINKING_LEAK_CN_META.test(t)) return true
   const latin = (t.match(/[A-Za-z]/g) || []).length
@@ -474,6 +490,25 @@ function extractCjkNarrativeFromMixed(text: string): string {
   return keep.join('\n').replace(/\n{3,}/g, '\n\n').trim()
 }
 
+/** 从混杂 reasoning 中抽出可解析 / 像审校结果的 JSON */
+export function extractJsonBlobFromText(text: string): string {
+  if (!text?.trim()) return ''
+  const start = text.indexOf('{')
+  const end = text.lastIndexOf('}')
+  if (start < 0 || end <= start) return ''
+  const slice = text.slice(start, end + 1).trim()
+  try {
+    JSON.parse(slice)
+    return slice
+  } catch {
+    // 审校 JSON 偶发尾逗号等：仍可交给下游 parseChapterCraft
+    if (/"score"\s*:|"functions_hit"\s*:|"passed"\s*:|"conflicts"\s*:/.test(slice) && slice.length >= 40) {
+      return slice
+    }
+    return ''
+  }
+}
+
 export function salvageProseFromReasoningMessage(message: unknown): string {
   if (!message || typeof message !== 'object') return ''
   const msg = message as Record<string, unknown>
@@ -492,18 +527,28 @@ export function salvageProseFromReasoningMessage(message: unknown): string {
     }
   }
   for (const raw of candidates) {
+    // 优先：reasoning 末尾夹带的 JSON（关思考后 deepseek-v4 仍常把审校结果塞进 reasoning）
+    const jsonBlob = extractJsonBlobFromText(raw)
+    if (jsonBlob) return jsonBlob
+
     const cleaned = sanitizeModelCreativeOutput(raw)
     if (cleaned && cleaned.length >= 80) {
       const cjk = (cleaned.match(/[\u4e00-\u9fff]/g) || []).length
       const punct = (cleaned.match(/[。！？「」]/g) || []).length
       if (cjk >= 60 && punct >= 2) return cleaned
     }
+    // 审校/结构化：JSON 或短评常被塞进 reasoning
+    if (cleaned && cleaned.length >= 40) {
+      const looksJson = /^\s*[\{\[]/.test(cleaned) || /"[a-z_]+"\s*:/.test(cleaned)
+      const cjk = (cleaned.match(/[\u4e00-\u9fff]/g) || []).length
+      if (looksJson && (cjk >= 8 || cleaned.length >= 60)) return cleaned
+    }
     // sanitize 过严时：从混杂 reasoning 里抽中文叙事块
     const narrative = extractCjkNarrativeFromMixed(raw)
-    if (narrative.length >= 120) {
+    if (narrative.length >= 80) {
       const cjk = (narrative.match(/[\u4e00-\u9fff]/g) || []).length
       const punct = (narrative.match(/[。！？「」]/g) || []).length
-      if (cjk >= 80 && punct >= 2 && !looksLikeModelThinkingLeak(narrative)) return narrative
+      if (cjk >= 40 && punct >= 1 && !looksLikeModelThinkingLeak(narrative)) return narrative
     }
   }
   return ''
@@ -548,6 +593,12 @@ function describeEmptyCompletion(data: any, model: string, requestedMaxTokens?: 
         return `${prefix}：MiniMax 只返回了 reasoning、content 为空（finish=${finish}）。将自动关闭 reasoning_split 重试；若仍失败请换非推理模型或检查网关是否忽略 thinking.disabled`
       }
       return `${prefix}：MiniMax 思考输出挤占正文（已请求 thinking.type=disabled）。请提高 max_completion_tokens 或换模型`
+    }
+    if (cfg && isDeepSeekV4FamilyModel(cfg.model)) {
+      if (underCap) {
+        return `${prefix}：已请求 thinking.disabled，但网关仍只返回 reasoning_content、content 为空（finish=${finish}）。属模型/代理未遵守关思考，非设置未关；将抢救 reasoning 或重试`
+      }
+      return `${prefix}：已请求 thinking.disabled，仍被 reasoning 占满。请换官方 DeepSeek 端点、换非 V4-flash，或提高 max_tokens`
     }
     return `${prefix}：输出 token 被推理/思考过程占满，正文 content 为空。请提高 max_tokens（建议 16384+）`
   }
@@ -611,6 +662,10 @@ function resolveRequestMaxTokens(cfg: AIConfig, options: ChatCompletionOptions):
   if (isMiniMaxTextConfig(cfg) && maxTokens >= 1024) {
     maxTokens = Math.min(32768, Math.max(maxTokens, Math.round(maxTokens * 1.15) + 384))
   }
+  // DeepSeek V4：关思考仍可能漏 reasoning；短调用 4096 不够稳，抬到至少 8192
+  if (isDeepSeekV4FamilyModel(cfg.model) && maxTokens >= 512 && maxTokens < 8192) {
+    maxTokens = Math.min(16384, Math.max(8192, maxTokens * 2))
+  }
   return Math.min(32768, maxTokens)
 }
 
@@ -635,6 +690,8 @@ function buildChatCompletionRequestBody(
   delete extra.thinking
   delete extra.enable_thinking
   delete extra.reasoning_split
+  delete extra.reasoning_effort
+  delete extra.thinking_budget
   const body: Record<string, unknown> = {
     model: cfg.model,
     messages,
@@ -655,14 +712,30 @@ function buildChatCompletionRequestBody(
   return body
 }
 
+/** DeepSeek V4：默认开思考；关思考后部分网关仍把正文塞进 reasoning_content */
+export function isDeepSeekV4FamilyModel(model: string): boolean {
+  return /deepseek-v[34]|deepseek-chat|deepseek-reasoner/i.test(model || '')
+}
+
 /** DeepSeek-V4 / reasoner / 阿里等：把关思考写进最终请求体 */
 export function applyNonMiniMaxThinkingDisable(body: Record<string, unknown>, cfg: AIConfig): void {
   const provider = cfg.provider.toLowerCase()
   const model = cfg.model.toLowerCase()
+  // 避免 extraBody / 兼容字段把思考又打开
+  delete body.reasoning_effort
+  delete body.thinking_budget
   body.enable_thinking = false
   const reasoningLike = /reasoner|thinking|deepseek-v[34]|deepseek-r1|r1-|o[134]-|gpt-5|gemini.*thinking/i.test(model)
-  if (reasoningLike || provider === 'ali' || provider === 'deepseek') {
+  const deepseekFamily = provider === 'deepseek' || isDeepSeekV4FamilyModel(model)
+  if (reasoningLike || provider === 'ali' || deepseekFamily) {
+    // Chat Completions 官方：thinking.type=disabled
     body.thinking = { type: 'disabled' }
+  }
+  if (deepseekFamily) {
+    // Responses / 部分兼容网关：reasoning.effort=none 才真正关思考
+    body.reasoning = { effort: 'none' }
+  } else {
+    delete body.reasoning
   }
 }
 
@@ -752,7 +825,8 @@ async function chatCompletionWithConfig(
   options: ChatCompletionOptions,
   cfg: AIConfig,
 ): Promise<string> {
-  const maxAttempts = isMiniMaxTextConfig(cfg) ? 3 : 2
+  const deepseekV4 = isDeepSeekV4FamilyModel(cfg.model)
+  const maxAttempts = isMiniMaxTextConfig(cfg) || deepseekV4 ? 3 : 2
   let lastErr: Error | null = null
   let attemptOptions: ChatCompletionOptions = { ...options }
   let attemptMessages = messages
@@ -770,20 +844,24 @@ async function chatCompletionWithConfig(
         || isTransientNetworkError(lastErr)
       if (retriable && attempt < maxAttempts) {
         const prev = resolveRequestMaxTokens(cfg, attemptOptions)
-        // 按调用方预算温和上浮，避免空正文重试直接飙到 16384
-        const bumped = Math.min(16384, Math.max(prev + 1536, Math.round(prev * 1.35)))
+        // DeepSeek V4：空正文时直接抬到 ≥8192，并追加纠偏；避免 2048→3584 仍被 reasoning 占满
+        const bumped = deepseekV4
+          ? Math.min(16384, Math.max(8192, prev * 2, prev + 4096))
+          : Math.min(16384, Math.max(prev + 1536, Math.round(prev * 1.35)))
         attemptOptions = {
           ...attemptOptions,
           maxTokens: bumped,
           enableThinking: false,
           minimaxReasoningSplit: false,
         }
-        if (isMiniMaxTextConfig(cfg) && attempt === 1) {
+        if ((isMiniMaxTextConfig(cfg) || deepseekV4) && attempt === 1) {
           attemptMessages = [
             ...messages,
             {
               role: 'user',
-              content: '【系统纠偏】上一次只输出了思考未输出正文。请直接输出最终可用的简体中文正文，不要思考过程、不要英文、不要 XML 标签。',
+              content: deepseekV4
+                ? '【系统纠偏】上一次只输出了思考（reasoning），content 为空。请关闭思考，直接输出最终可用的简体中文正文或 JSON，不要思考过程、不要英文分析、不要 XML 标签。'
+                : '【系统纠偏】上一次只输出了思考未输出正文。请直接输出最终可用的简体中文正文，不要思考过程、不要英文、不要 XML 标签。',
             },
           ]
         }
@@ -1044,6 +1122,10 @@ export async function promptLogprobs(
         return { ...result, model }
       } catch (completionsErr: any) {
         logTaskWarn('AI', 'perplexity-chat-fallback', { model, error: completionsErr?.message })
+        // 明确不兼容的型号：勿再走 chat 续写硬撑，直接试下一候选
+        if (isPerplexityModelHardFail(completionsErr)) {
+          throw completionsErr instanceof Error ? completionsErr : new Error(String(completionsErr?.message || completionsErr))
+        }
         const result = await chatContinuationLogprobs(text, modelOptions)
         return { ...result, model }
       }

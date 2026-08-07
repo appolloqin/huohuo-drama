@@ -142,6 +142,16 @@ const a7 = alignNovelChapterOutlineBoundary({
 })
 assert(!/目送|清晨|离家时/.test(a7.alignedBrief), 'aligned brief sanitized leave-home meta')
 
+// M1：单句毒 brief「清晨出门进山」须剔除
+const a8 = alignNovelChapterOutlineBoundary({
+  chapterOutline: '【本章起因】设好简易陷阱成功猎获两只肥野兔 / 【欲望】带猎物回家 / 【阻碍】归途遇赵大彪',
+  writingBrief: '情节目标：清晨出门进山打猎。',
+  prevSeamHint: '入夜 · 北疆后山林洼 · 掌心一带枯茎未决',
+})
+assert(!/清晨|出门|进山/.test(a8.alignedBrief), 'single-clause poison brief stripped')
+assert(a8.conflictNotes.some(n => /brief-plot-discarded|已剔除/.test(n)), 'brief-plot-discarded noted')
+assert(/陷阱|野兔|大纲/.test(a8.alignedBrief), 'outline stub or beats retained')
+
 const src = fs.readFileSync(
   path.join(path.dirname(fileURLToPath(import.meta.url)), '../src/services/novel/novel-outline-boundary.ts'),
   'utf8',

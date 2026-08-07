@@ -40,11 +40,17 @@ const TRANSITION_ALTS: Array<{ needle: string; alts: string[] }> = [
   { needle: '默默', alts: ['一声不吭', '没吭声'] },
 ]
 
-/** 用词分布常见空转（与衔接词打散一并做） */
+/** 用词分布常见空转 / 同模型高概率抽象词（与衔接词打散一并做） */
 const LEXICAL_ALTS: Array<{ needle: string; alts: string[] }> = [
   { needle: '猛地', alts: ['猛一', '忽地', '一下子'] },
   { needle: '似乎', alts: ['像是', '大概'] },
   { needle: '悄然', alts: ['悄悄', '没声响地'] },
+  { needle: '四肢百骸', alts: ['浑身', '手脚', '一身骨头缝'] },
+  { needle: '五脏六腑', alts: ['五脏', '肚子里', '内里'] },
+  { needle: '病根', alts: ['老毛病', '亏空', '底子'] },
+  { needle: '酸软无力', alts: ['软得撑不住', '没劲', '发虚'] },
+  { needle: '实打实', alts: ['真的', '正经', '硬是'] },
+  { needle: '完好无损', alts: ['没伤', '好好的', '没豁口'] },
 ]
 
 function replaceAllRotating(text: string, needle: string, alts: string[]): string {
@@ -61,15 +67,98 @@ function replaceAllRotating(text: string, needle: string, alts: string[]): strin
   return out
 }
 
+/**
+ * 打散「没有A，没有B」对称骨架（同模型高概率句式）。
+ * 最多改 2 处，避免误伤列举。
+ */
+export function diversifySymmetricMeiYou(text: string, maxReplace = 2): string {
+  if (!text?.trim() || maxReplace <= 0) return text
+  let left = maxReplace
+  return text.replace(/没有([^，。！？\n]{2,16})，没有([^，。！？\n]{2,16})/g, (full, a, b) => {
+    if (left <= 0) return full
+    left -= 1
+    const mode = left % 2
+    if (mode === 0) return `没有${a}。${b}也摸不着`
+    return `没见着${a}，${b}也没有`
+  })
+}
+
+/** 打散「这X不属于那个…」长定语骨架：在「不属于」处断句意向（轻触） */
+export function diversifyBuShuYuSkeleton(text: string, maxReplace = 2): string {
+  if (!text?.trim() || maxReplace <= 0) return text
+  let left = maxReplace
+  return text.replace(
+    /这([^，。！？\n]{1,12})不属于那个([^，。！？\n]{8,80})/g,
+    (full, x, rest) => {
+      if (left <= 0) return full
+      left -= 1
+      const cut = rest.slice(0, 24)
+      const tail = rest.slice(24)
+      return `这${x}……哪像那个${cut}${tail ? '…' : ''}`
+    },
+  )
+}
+
+/**
+ * 打散「这不是A，是B」对比骨架（同模型高概率：这不是梦…是年份地点…）。
+ */
+export function diversifyZheBuShiSkeleton(text: string, maxReplace = 2): string {
+  if (!text?.trim() || maxReplace <= 0) return text
+  let left = maxReplace
+  return text.replace(
+    /这不是([^，。！？\n]{2,28})，是([^。！？\n]{4,48})/g,
+    (full, a, b) => {
+      if (left <= 0) return full
+      left -= 1
+      const mode = left % 2
+      if (mode === 0) return `${b}——哪还有什么${a}`
+      return `哪是${a}。就是${b}`
+    },
+  )
+}
+
+/**
+ * 打散「极A极B」叠加强度（如极轻极浅）。
+ */
+export function diversifyJiAJiB(text: string, maxReplace = 3): string {
+  if (!text?.trim() || maxReplace <= 0) return text
+  let left = maxReplace
+  return text.replace(/极([^，。！？\s、；]{1,4})极([^，。！？\s、；]{1,4})/g, (full, a, b) => {
+    if (left <= 0) return full
+    left -= 1
+    return `${a}得发${b}`
+  })
+}
+
+/**
+ * 打散开篇「痛。像…捅/扎/刺进…」句式骨架（不点名具体喻体）。
+ * 仅改文首，避免误伤后文。
+ */
+export function diversifyPainOpenSkeleton(text: string): string {
+  if (!text?.trim()) return text
+  const headEnd = Math.min(text.length, 120)
+  const head = text.slice(0, headEnd)
+  const rest = text.slice(headEnd)
+  const next = head.replace(
+    /^痛。[^\n]{0,12}像[^，。]{2,28}(?:捅进|扎进|刺进)[^。\n]{0,28}。/,
+    '太阳穴里一下子炸开，疼得他差点没憋住喘。',
+  )
+  return next + rest
+}
+
 /** 确定性打散 AI 衔接词与空转修饰（润色/去 AI 味收口） */
 export function diversifyAiTransitionTells(text: string): string {
   if (!text?.trim()) return text
-  let out = text
+  let out = diversifyPainOpenSkeleton(text)
   for (const { needle, alts } of TRANSITION_ALTS) {
     out = replaceAllRotating(out, needle, alts)
   }
   for (const { needle, alts } of LEXICAL_ALTS) {
     out = replaceAllRotating(out, needle, alts)
   }
+  out = diversifySymmetricMeiYou(out)
+  out = diversifyBuShuYuSkeleton(out)
+  out = diversifyZheBuShiSkeleton(out)
+  out = diversifyJiAJiB(out)
   return out
 }

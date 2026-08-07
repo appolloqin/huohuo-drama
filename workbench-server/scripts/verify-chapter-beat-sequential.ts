@@ -43,6 +43,19 @@ if (!t.includes('前面一句') && !/[。！？]$/.test(t)) {
   throw new Error(`unexpected truncate: ${t}`)
 }
 
+// 拍点进度回调签名：供 SSE 按拍推送 textDelta
+{
+  const deltas: string[] = []
+  const onBeatProgress = (info: { textDelta?: string; status: string }) => {
+    if (info.textDelta) deltas.push(info.textDelta)
+  }
+  onBeatProgress({ status: '按大纲拍点 1/2…', textDelta: '第一拍。' })
+  onBeatProgress({ status: '按大纲拍点 2/2…', textDelta: '\n\n第二拍。' })
+  if (deltas.join('') !== '第一拍。\n\n第二拍。') {
+    throw new Error(`beat delta concat failed: ${JSON.stringify(deltas)}`)
+  }
+}
+
 console.log('verify-chapter-beat-sequential OK', {
   beats: budgets.beatCount,
   truncateSample: t,

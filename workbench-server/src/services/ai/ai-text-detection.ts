@@ -63,6 +63,10 @@ export type AiDetectionResult = {
   sampled_char_count?: number
   fallback_reason?: string
   perplexity_model?: string
+  /** 写作主模型与困惑度模型是否同系（C2） */
+  same_family_detect?: boolean
+  ai_detect_warning?: string
+  writing_model?: string
   suggestions?: AiDetectionSuggestion[]
 }
 

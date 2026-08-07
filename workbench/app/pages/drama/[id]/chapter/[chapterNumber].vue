@@ -205,7 +205,7 @@
             :placeholder="tm.novel.editorPlaceholder"
             @input="onEditorInput"
           />
-          <div v-if="streamWaiting" class="stream-waiting">{{ streamStatusText || tm.novel.streamWaiting }}</div>
+          <div v-if="streamWaiting || (chapterBusy && streamStatusText)" class="stream-waiting">{{ streamStatusText || tm.novel.streamWaiting }}</div>
           <div class="editor-foot">
             <span class="editor-word-count">{{ tx(tm.novel.chapterWordCount, { n: formatNovelWords(charCount) }) }}</span>
           </div>
@@ -824,14 +824,17 @@ function isSeamFailCompliance(oc) {
   )
 }
 
-function isSeamFailContinuity(check) {
-  if (!check || check.passed) return false
-  const blob = [
-    check.summary || '',
-    ...(check.conflicts || []),
-    ...(check.blocking_items || []).map(i => `${i.rule || ''} ${i.message || ''}`),
-  ].join('\n')
-  return /章缝冷开篇|cold_open|chapter_seam_cold_open/.test(blob)
+/** 一致性未通过 / 章缝·大纲硬拒：不覆盖原文、不落库 */
+function shouldRevertForFailedAudit(meta, check) {
+  if (meta?.hard_reject || meta?.outline_compliance?.hardReject) return true
+  if (isSeamFailCompliance(meta?.outline_compliance)) return true
+  if (check && check.passed === false) return true
+  return false
+}
+
+function revertAuditFailToast(kind) {
+  const label = kind === 'rewrite' ? '重写' : '生成'
+  return `本次${label}未通过一致性审校，未保存；已恢复原文。`
 }
 
 function notifyOutlineCompliance(oc) {
@@ -962,34 +965,26 @@ async function enqueueAiRewrite() {
         (finalContent, meta) => {
           streamWaiting.value = false
           streamStatusText.value = ''
-          if (finalContent) {
-            content = stripNovelChangeRecord(finalContent)
-            chapterBody.value = content
-          }
           if (meta?.continuity_check !== undefined) {
             continuityCheck.value = meta.continuity_check
-            if (meta.continuity_check && !meta.continuity_check.passed && !meta?.hard_reject) {
-              toast.warning(tx(tm.value.novel.continuityCheckToastFailed, { score: meta.continuity_check.score }))
-            }
           }
           notifyOutlineCompliance(meta?.outline_compliance)
           notifyChapterCraft(meta?.chapter_craft)
           notifyAiHumanize(meta?.ai_detection)
-          if (meta?.hard_reject || meta?.outline_compliance?.hardReject) {
-            // 硬拒不落库；恢复重写前正文（可能本身也有章缝问题，勿误认「又生成了毒稿」）
+          if (shouldRevertForFailedAudit(meta, meta?.continuity_check)) {
             content = ''
             chapterBody.value = bodyBackup
-            toast.error('本次重写未过章缝硬拒，未保存。已恢复重写前原文；须承接上章事实（可顺叙或先果后因），勿重做收束、勿整段不交代来者。')
-          } else if (isSeamFailCompliance(meta?.outline_compliance) || isSeamFailContinuity(meta?.continuity_check)) {
-            content = ''
-            chapterBody.value = bodyBackup
-            toast.error('重写开篇未接上章末（章缝冷开篇），未保存；请再试一次')
+            toast.error(revertAuditFailToast('rewrite'))
+          } else if (finalContent) {
+            content = stripNovelChangeRecord(finalContent)
+            chapterBody.value = content
           }
         },
         (status) => {
           // 润色/审校阶段保留已流式正文，仅更新状态条
           streamStatusText.value = status
-          if (/润色|审校|大纲|AI 痕迹|去AI/.test(status)) streamWaiting.value = true
+          // 勿用「大纲」匹配拍点进度（会把 streamWaiting 又拉回 true，盖住已流出的正文）
+          if (/润色|审校|AI 痕迹|去AI|降低 AI/.test(status)) streamWaiting.value = true
         },
       )
     } else {
@@ -1000,27 +995,20 @@ async function enqueueAiRewrite() {
         rewrite: true,
       })
       const resText = stripNovelChangeRecord(res.content || '')
-      if (res.outline_compliance?.hardReject || res.hard_reject) {
-        content = ''
-        chapterBody.value = bodyBackup
-        toast.error('本次重写未过章缝硬拒，未保存。已恢复原文；须承接上章事实，手法可多样，但勿吃书。')
-      } else if (isSeamFailCompliance(res.outline_compliance) || isSeamFailContinuity(res.continuity_check)) {
-        content = ''
-        chapterBody.value = bodyBackup
-        toast.error('重写开篇未接上章末（章缝冷开篇），未保存；请再试一次')
-      } else if (resText) {
-        content = resText
-        chapterBody.value = resText
-      }
       if (res.continuity_check !== undefined) {
         continuityCheck.value = res.continuity_check
-        if (res.continuity_check && !res.continuity_check.passed && !res.outline_compliance?.hardReject) {
-          toast.warning(tx(tm.value.novel.continuityCheckToastFailed, { score: res.continuity_check.score }))
-        }
       }
       notifyOutlineCompliance(res.outline_compliance)
       notifyChapterCraft(res.chapter_craft)
       notifyAiHumanize(res.ai_detection)
+      if (shouldRevertForFailedAudit(res, res.continuity_check)) {
+        content = ''
+        chapterBody.value = bodyBackup
+        toast.error(revertAuditFailToast('rewrite'))
+      } else if (resText) {
+        content = resText
+        chapterBody.value = resText
+      }
     }
     if (content) {
       lastContinuePos.value = -1
@@ -1083,29 +1071,25 @@ async function enqueueFullGeneration() {
         (finalContent, meta) => {
           streamWaiting.value = false
           streamStatusText.value = ''
-          if (finalContent) {
-            content = stripNovelChangeRecord(finalContent)
-            chapterBody.value = content
-          }
           if (meta?.continuity_check !== undefined) {
             continuityCheck.value = meta.continuity_check
-            if (meta.continuity_check && !meta.continuity_check.passed && !meta?.hard_reject) {
-              toast.warning(tx(tm.value.novel.continuityCheckToastFailed, { score: meta.continuity_check.score }))
-            }
           }
           notifyOutlineCompliance(meta?.outline_compliance)
           notifyChapterCraft(meta?.chapter_craft)
           notifyAiHumanize(meta?.ai_detection)
-          if (meta?.hard_reject || meta?.outline_compliance?.hardReject) {
-            // 硬拒：勿保留流式毒稿；回滚重写/生成前正文
+          if (shouldRevertForFailedAudit(meta, meta?.continuity_check)) {
             content = ''
             chapterBody.value = bodyBackup
-            toast.error('本次生成未过章缝硬拒，未保存；已恢复原文。')
+            toast.error(revertAuditFailToast('generate'))
+          } else if (finalContent) {
+            content = stripNovelChangeRecord(finalContent)
+            chapterBody.value = content
           }
         },
         (status) => {
           streamStatusText.value = status
-          if (/润色|审校|大纲|AI 痕迹|去AI/.test(status)) streamWaiting.value = true
+          // 勿用「大纲」匹配拍点进度（会把 streamWaiting 又拉回 true，盖住已流出的正文）
+          if (/润色|审校|AI 痕迹|去AI|降低 AI/.test(status)) streamWaiting.value = true
         },
       )
     } else {
@@ -1115,23 +1099,20 @@ async function enqueueFullGeneration() {
         target_length: targetChapterChars.value,
       })
       const resText = stripNovelChangeRecord(res.content || '')
-      if (res.outline_compliance?.hardReject || res.hard_reject) {
-        content = ''
-        chapterBody.value = bodyBackup
-        toast.error('本次生成未过章缝硬拒，未保存；已恢复原文。')
-      } else if (resText) {
-        content = resText
-        chapterBody.value = resText
-      }
       if (res.continuity_check !== undefined) {
         continuityCheck.value = res.continuity_check
-        if (res.continuity_check && !res.continuity_check.passed && !res.outline_compliance?.hardReject) {
-          toast.warning(tx(tm.value.novel.continuityCheckToastFailed, { score: res.continuity_check.score }))
-        }
       }
       notifyOutlineCompliance(res.outline_compliance)
       notifyChapterCraft(res.chapter_craft)
       notifyAiHumanize(res.ai_detection)
+      if (shouldRevertForFailedAudit(res, res.continuity_check)) {
+        content = ''
+        chapterBody.value = bodyBackup
+        toast.error(revertAuditFailToast('generate'))
+      } else if (resText) {
+        content = resText
+        chapterBody.value = resText
+      }
     }
     if (content) {
       lastContinuePos.value = -1
