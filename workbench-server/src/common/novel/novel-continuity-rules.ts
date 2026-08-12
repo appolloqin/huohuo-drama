@@ -25,6 +25,8 @@ export const CONTINUITY_RULE_LABELS: Record<string, string> = {
   model_semantic: '语义一致',
   model_semantic_plot: '剧情场景',
   model_semantic_realm: '境界语义',
+  dimension_inconsistency: '维度自洽',
+  model_audit_parse_failed: '模型审解析失败',
   empty_content: '正文为空',
 }
 

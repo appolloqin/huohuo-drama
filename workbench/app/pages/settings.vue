@@ -129,7 +129,7 @@
     <aside class="settings-nav">
       <div class="nav-group">
         <div class="nav-group-label">{{ tm.settings.navBasic }}</div>
-        <button v-for="t in accountSettingsTabs" :key="t.id" :class="['nav-item', { active: tab === t.id }]" @click="tab = t.id">
+        <button v-for="t in accountSettingsTabs" :key="t.id" :class="['nav-item', { active: tab === t.id }]" @click="setSettingsTab(t.id)">
           <component :is="t.icon" :size="14" />
           {{ t.label }}
         </button>
@@ -143,7 +143,7 @@
         </div>
       <div v-if="advancedSectionOpen" class="nav-group">
         <div class="nav-group-label">{{ tm.settings.navAdvanced }}</div>
-        <button v-for="t in adminSettingsTabs" :key="t.id" :class="['nav-item', { active: tab === t.id }]" @click="tab = t.id">
+        <button v-for="t in adminSettingsTabs" :key="t.id" :class="['nav-item', { active: tab === t.id }]" @click="setSettingsTab(t.id)">
           <component :is="t.icon" :size="14" />
           {{ t.label }}
         </button>
@@ -1496,10 +1496,39 @@ const { messages: tm, init } = useI18n()
 
 // ── 页面壳层：侧栏 Tab / 账户 / 导航权限 ───────────────────
 const brandLogoVisible = ref(true)
-const tab = ref('account')
+const route = useRoute()
+const router = useRouter()
+const SETTINGS_TAB_IDS = new Set(['account', 'ai', 'nav', 'payments', 'users', 'agents', 'skills', 'lessons'])
+const ADVANCED_TAB_IDS = new Set(['agents', 'skills', 'lessons'])
+
+function parseSettingsTabQuery(raw: unknown): string {
+  const id = typeof raw === 'string' ? raw : Array.isArray(raw) ? String(raw[0] || '') : ''
+  return SETTINGS_TAB_IDS.has(id) ? id : 'account'
+}
+
+const tab = ref(parseSettingsTabQuery(route.query.tab))
 const advancedSectionOpen = ref(true)
 const { user, applyUserProfile } = useAuth()
 const isAdmin = computed(() => user.value?.role === 'admin')
+
+function resolveSettingsTab(raw: unknown): string {
+  let id = parseSettingsTabQuery(raw)
+  if (id === 'users' && !isAdmin.value) id = 'account'
+  if (ADVANCED_TAB_IDS.has(id) && !isAdmin.value) id = 'account'
+  return id
+}
+
+function setSettingsTab(id: string) {
+  const next = resolveSettingsTab(id)
+  if (ADVANCED_TAB_IDS.has(next)) advancedSectionOpen.value = true
+  tab.value = next
+  if (String(route.query.tab || '') !== next) {
+    void router.replace({ query: { ...route.query, tab: next } })
+  }
+}
+
+// 首次进入若带 ?tab=agents 等，展开高级区
+if (ADVANCED_TAB_IDS.has(tab.value)) advancedSectionOpen.value = true
 const preferredTextConfigId = ref(null)
 const preferredImageConfigId = ref(null)
 const preferredVideoConfigId = ref(null)
@@ -1708,13 +1737,24 @@ const adminSettingsTabs = computed(() => [
   { id: 'lessons', label: tm.value.settings.tabLessons, icon: Lightbulb },
 ])
 watch(advancedSectionOpen, (v) => {
-  if (!v && (tab.value === 'agents' || tab.value === 'skills' || tab.value === 'lessons')) tab.value = 'ai'
+  if (!v && (tab.value === 'agents' || tab.value === 'skills' || tab.value === 'lessons')) setSettingsTab('ai')
 })
 
 // 角色被降级 / 退出登录时，如果停留在管理员 Tab，强制回到默认页
 watch(isAdmin, (v) => {
-  if (!v && tab.value === 'users') tab.value = 'account'
+  if (!v && (tab.value === 'users' || ADVANCED_TAB_IDS.has(tab.value))) setSettingsTab('account')
 })
+
+// 浏览器前进/后退或刷新带 ?tab=
+watch(
+  () => route.query.tab,
+  (q) => {
+    const next = resolveSettingsTab(q)
+    if (tab.value === next) return
+    if (ADVANCED_TAB_IDS.has(next)) advancedSectionOpen.value = true
+    tab.value = next
+  },
+)
 
 // ── AI 服务配置（管理员）────────────────────────────────────
 const serviceConfigRows = ref([])
@@ -2148,7 +2188,12 @@ const imageHuohuoDoubaoMismatchHint = computed(() => {
   return tm.value.settings.imageHuohuoMismatch
 })
 
-function selectConfigsByServiceType(t) { return serviceConfigRows.value.filter(c => c.service_type === t) }
+function selectConfigsByServiceType(t) {
+  return serviceConfigRows.value
+    .filter(c => c.service_type === t)
+    .slice()
+    .sort((a, b) => (b.priority || 0) - (a.priority || 0) || (a.id || 0) - (b.id || 0))
+}
 function countActiveConfigsForType(t) { return selectConfigsByServiceType(t).filter(c => c.is_active).length }
 function formatModelListDisplay(m) { return Array.isArray(m) ? m.join(', ') : m || '—' }
 function formatBillingCreditCaption(c) {
@@ -2673,6 +2718,8 @@ function lookupAgentConfigRow(type) {
 const textModelOptionGroups = computed(() => {
   return serviceConfigRows.value
     .filter(c => c.service_type === 'text' && c.is_active && c.api_key)
+    .slice()
+    .sort((a, b) => (b.priority || 0) - (a.priority || 0) || (a.id || 0) - (b.id || 0))
     .map(c => ({
       label: `${c.provider} — ${c.name}`,
       models: Array.isArray(c.model) ? c.model : (c.model ? [c.model] : []),
@@ -2694,6 +2741,8 @@ const textModelPickerOptions = computed(() =>
 const textAuditModelPickerOptions = computed(() => {
   const groups = serviceConfigRows.value
     .filter(c => c.service_type === 'text' && c.is_active && c.api_key)
+    .slice()
+    .sort((a, b) => (b.priority || 0) - (a.priority || 0) || (a.id || 0) - (b.id || 0))
     .map(c => {
       const models = Array.isArray(c.model) ? c.model : (c.model ? [c.model] : [])
       return {
@@ -3331,6 +3380,8 @@ onMounted(async () => {
     await navigateTo('/login')
     return
   }
+  // 鉴权完成后再按角色校正并写回 ?tab=（刷新后停留在 AI 服务等）
+  setSettingsTab(resolveSettingsTab(route.query.tab))
   if (isAdmin.value) {
     const stale = adminSettingsReady.value && !serviceConfigRows.value.length
     if (!adminSettingsReady.value || stale) {

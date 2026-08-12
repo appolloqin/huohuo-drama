@@ -1,19 +1,18 @@
 /**
  * 大纲/写作说明落实（题材无关）：
- * Prompt 硬块 + 拍点覆盖（字面/锚点）+ 末拍越界 V2 + 名后「那/这+泛称」；
- * 越界/名后泛称复检失败则硬失败（见 outline-compliance-fix）。
- * 不含场面词规则表、不含启发式截断。
+ * 规则只做机械项：拍点覆盖、末拍越界、下章泄漏、旧稿孤儿回灌等。
+ * 章缝叙事/因果自洽（时辰、倒叙、先果后因、离场重开等）不走规则，见模型审
+ * `auditOutlineBoundaryWithModel`（outline-compliance-fix 内合并）。
  */
 import {
-  detectChapterSeamColdOpen,
-  detectOpeningMidDialogueColdStart,
-  detectOpeningUnexplainedNamedSpeech,
   detectForwardSeamCopyLexical,
   extractOutlineBeatPhrases,
+  extractOutlineBeatItems,
   extractOutlineCatalystPhrases,
+  extractOutlineBoundaryLastBeat,
   findStaleOutlineBeats,
+  isSuspenseHookBeat,
 } from './novel-chapter-seam.js'
-import { detectChapterBodyEventReplay } from './novel-chapter-end-snapshot.js'
 import { detectBriefPendingStateOvershoot } from './novel-brief-compliance.js'
 import { filterDraftByChapterOutline } from './novel-draft-outline-filter.js'
 import { filterSubstantiveOutlineBeats, outlineBeatCoveredIn, beatAnchorTokens, outlineCatalystCoveredIn } from './novel-outline-beat-cover.js'
@@ -36,6 +35,7 @@ export type OutlineComplianceReasonCode =
   | 'opening_unexplained_name'
   | 'brief_pacing'
   | 'brief_pending_overshoot'
+  | 'weather_process_soft'
 
 export type OutlineComplianceReason = {
   code: OutlineComplianceReasonCode
@@ -162,7 +162,11 @@ export function buildOutlineBeatHardBlock(args: {
   if (beats.length) {
     lines.push(...beats.slice(0, 10).map((b, i) => `  ${i + 1}) ${b}`))
     const last = beats[beats.length - 1]
-    lines.push(`2. **章末边界**：正文须在大纲最后拍点「${last}」附近收束；该拍一旦写完，禁止再展开大纲未写到的后续。`)
+    const { endingQuestion, actionBeat } = extractOutlineBoundaryLastBeat(outline)
+    lines.push(`2. **章末边界**：正文须在大纲最后行动拍「${actionBeat || last}」附近收束；该拍一旦写完，禁止再展开大纲未写到的后续。`)
+    if (endingQuestion && isSuspenseHookBeat(endingQuestion)) {
+      lines.push(`   **【章末问题】须保持未决**：「${endingQuestion}」——禁止本章揭晓答案/完成态，答案留给下章。`)
+    }
     lines.push('3. **优先级**：写作说明若目标超出大纲末拍，以大纲为准；未写进大纲的后续场面一律留给后章，不得本章写完。')
   } else if (outline) {
     lines.push(`  （大纲原文）${outline.slice(0, 200)}${outline.length > 200 ? '…' : ''}`)
@@ -219,15 +223,27 @@ function detectEarlyBeatsMissing(args: {
   prevChapterTail?: string
   chapterNumber: number
 }): OutlineComplianceReason | null {
-  const beats = substantiveBeats(extractOutlineBeatPhrases(args.chapterOutline))
-  if (beats.length < 2) return null
+  // 戏剧标签大纲：前段只逼「起因/局面/选择」，勿逼「欲望/阻碍」
+  // （欲望常是全书目标，逼开篇覆盖会诱发提前完成击杀等下章结果）
+  const items = extractOutlineBeatItems(args.chapterOutline)
+  const tagged = items.filter(i => i.tag)
+  let beats: string[]
+  if (tagged.length >= 3) {
+    const earlyTags = new Set(['本章起因', '局面变化', '人物选择'])
+    beats = substantiveBeats(
+      tagged.filter(i => earlyTags.has(i.tag!)).map(i => i.beat),
+    )
+  } else {
+    beats = substantiveBeats(extractOutlineBeatPhrases(args.chapterOutline))
+  }
+  if (beats.length < 1) return null
 
-  const early = beats.slice(0, Math.ceil(beats.length / 2))
+  const early = beats.slice(0, Math.max(1, Math.ceil(beats.length / 2)))
   const stale = args.chapterNumber >= 2 && args.prevChapterTail?.trim()
     ? findStaleOutlineBeats(args.chapterOutline, args.prevChapterTail)
     : []
   const staleSet = new Set(stale.map(s => normalizeLite(s)))
-  const required = early.filter(b => !staleSet.has(normalizeLite(b)))
+  const required = early.filter(b => !staleSet.has(normalizeLite(b)) && !isSuspenseHookBeat(b))
   if (!required.length) return null
 
   const head = headSlice(args.content)
@@ -290,7 +306,12 @@ export function detectCatalystAgencyFail(args: {
   if (!catalysts.length) return null
 
   const prev = args.prevChapterTail || ''
-  const pending = catalysts.filter(c => !prev.trim() || !outlineCatalystCoveredIn(prev, c))
+  // 与 findStaleOutlineBeats 一致：起因是否已在上章末落地，只看末短窗
+  const prevTip = prev.trim().slice(-500)
+  const pending = catalysts.filter(c =>
+    !prevTip
+    || !(outlineCatalystCoveredIn(prevTip, c) || outlineBeatCoveredIn(prevTip, c)),
+  )
   if (!pending.length) return null
 
   const head = halfSlice(args.content)
@@ -391,24 +412,151 @@ export function detectNextChapterBeatLeak(args: {
   const curBeats = substantiveBeats(extractOutlineBeatPhrases(curOutline))
   if (nextBeats.length < 2 || curBeats.length < 1) return null
 
-  const nextHits = nextBeats.filter(b => outlineBeatCoveredIn(args.content, b))
+  const coveredLoose = (b: string) =>
+    outlineBeatCoveredIn(args.content, b) || outlineResultBeatCoveredIn(args.content, b)
+
+  const nextHits = nextBeats.filter(coveredLoose)
   const curHits = curBeats.filter(b => outlineBeatCoveredIn(args.content, b))
   const nextNeed = Math.max(2, Math.ceil(nextBeats.length * 0.45))
   const curNeed = Math.max(1, Math.ceil(curBeats.length * 0.5))
 
-  if (nextHits.length < nextNeed) return null
-  // 本章拍点已够且下章命中不超过本章 → 视为正常交叉用词，不报
-  if (curHits.length >= curNeed && nextHits.length <= curHits.length) return null
+  // 下章【本章起因】单独命中也足以报警（常见：本章揭晓下章起因）
+  const nextCause = extractOutlineBeatItems(nextOutline).find(i => i.tag === '本章起因')?.beat
+  const causeHit = !!(nextCause && coveredLoose(nextCause))
 
-  const leaked = nextHits.slice(0, 3).join('；')
-  const curNote = curHits.length < curNeed
-    ? `本章拍点覆盖不足（${curHits.length}/${curBeats.length}）`
-    : `并抢写了下章主情节（下章命中 ${nextHits.length}/${nextBeats.length}）`
+  if (!causeHit && nextHits.length < nextNeed) return null
+  // 本章拍点已够且下章命中不超过本章 → 视为正常交叉用词，不报（起因抢戏除外）
+  if (!causeHit && curHits.length >= curNeed && nextHits.length <= curHits.length) return null
+
+  const leaked = (causeHit && nextCause ? [nextCause, ...nextHits] : nextHits)
+    .filter(Boolean)
+    .slice(0, 3)
+    .join('；')
+  const curNote = causeHit
+    ? '并提前写了下章【本章起因】'
+    : curHits.length < curNeed
+      ? `本章拍点覆盖不足（${curHits.length}/${curBeats.length}）`
+      : `并抢写了下章主情节（下章命中 ${nextHits.length}/${nextBeats.length}）`
   return {
     code: 'next_chapter_beat_leak',
     message:
       `正文已大段落实下章大纲拍点（如「${leaked}」），${curNote}。请只写本章大纲，把下章情节留给下一章。`,
     detail: leaked,
+  }
+}
+
+/** 抽象完成义（不绑场面：无套/勒/猎等专词） */
+const OUTLINE_ABSTRACT_DONE_RE = /成功|得手|奏效|成了|终于|如愿|得偿|完成|到手|搞定/
+
+/** 从结果态拍点抽出载荷名词（去掉抽象完成/达成壳，不绑场面手法） */
+function extractResultPayloadNoun(phrase: string): string {
+  const p = phrase.replace(/\s+/g, '')
+  // 优先取「成功/终于…」之后的尾段作载荷；否则剥常见达成动词再取尾名词
+  const afterDone = p.split(/成功|顺利|终于|得以|完成|达成/).pop() || p
+  const stripped = afterDone.replace(/取得|获得|拿到|带回|击败|打败|抓到|抓住|逮住|捕获|套住|猎获|击杀|打死/g, '')
+  const m = stripped.match(/([\u4e00-\u9fff]{2,4})$/)
+  return m?.[1] || ''
+}
+
+/**
+ * 下章起因/结果态是否已在正文落地（结构：载荷名词 + 抽象完成/持有，不枚举场面手法）。
+ */
+function pendingOutcomeCoveredIn(haystack: string, phrase: string): boolean {
+  if (outlineBeatCoveredIn(haystack, phrase)) return true
+  const p = phrase.replace(/\s+/g, '')
+  if (p.length < 6) return false
+  const h = haystack.replace(/\s+/g, '')
+  const obj = extractResultPayloadNoun(phrase)
+  if (!obj || obj.length < 2) return false
+  // 载荷、其连续二字、或「X↔X子」类通名变体（野兔↔兔子），不绑猎场专词表
+  const cores: string[] = [obj]
+  if (obj.length >= 2) {
+    for (let i = 0; i <= obj.length - 2; i++) cores.push(obj.slice(i, i + 2))
+    const last = obj[obj.length - 1]!
+    cores.push(`${last}子`, `野${last}`)
+  }
+  // 扫全部出现点（避免「野兔脚印」等早提抢先挡住后文完成态）
+  const hits: number[] = []
+  for (const c of [...new Set(cores)]) {
+    if (c.length < 2) continue
+    let from = 0
+    while (from < h.length) {
+      const i = h.indexOf(c, from)
+      if (i < 0) break
+      hits.push(i)
+      from = i + c.length
+    }
+  }
+  if (!hits.length) return false
+  for (const objAt of hits) {
+    const win = h.slice(Math.max(0, objAt - 28), Math.min(h.length, objAt + obj.length + 28))
+    if (OUTLINE_ABSTRACT_DONE_RE.test(win)) return true
+    if (/(?:手里|提着|怀里|拿到|带回|带着|拎着).{0,16}/.test(win)
+      || /.{0,16}(?:手里|提着|怀里|拿到|带回|带着|拎着)/.test(win)) {
+      return true
+    }
+  }
+  return false
+}
+
+function outlineResultBeatCoveredIn(haystack: string, phrase: string): boolean {
+  return pendingOutcomeCoveredIn(haystack, phrase)
+}
+
+/**
+ * 【章末问题】悬念被正文揭晓（题材无关）：
+ * 主路径——下章【本章起因】已在本章落地（即提前写出答案）；
+ * 辅路径——行动拍之后出现抽象完成义且文末不再保持未决。
+ */
+export function detectSuspenseEndingResolved(args: {
+  content: string
+  chapterOutline?: string
+  nextChapterOutline?: string
+}): OutlineComplianceReason | null {
+  const outline = args.chapterOutline?.trim() || ''
+  if (!outline) return null
+  const { endingQuestion, actionBeat } = extractOutlineBoundaryLastBeat(outline)
+  const q = endingQuestion.trim()
+  if (!q || !isSuspenseHookBeat(q)) return null
+
+  const raw = args.content.trim()
+  const total = charLen(raw)
+  if (total < 80) return null
+
+  const nextCause = extractOutlineBeatItems(args.nextChapterOutline || '')
+    .find(i => i.tag === '本章起因')?.beat
+  if (nextCause && pendingOutcomeCoveredIn(raw, nextCause)) {
+    return {
+      code: 'outline_endpoint_overshoot',
+      message:
+        `章末悬念「${q}」已在正文收束，并提前写下章起因「${nextCause}」。`
+        + `本章应停在「${actionBeat || '悬念之前'}」，把答案留给下章；请删除揭晓后文。`,
+      detail: q,
+    }
+  }
+
+  const compact = raw.replace(/\s+/g, '')
+  // 起势：优先大纲行动拍覆盖点；否则从中段起算（不绑场面词）
+  let afterIdx = Math.floor(compact.length * 0.4)
+  if (actionBeat) {
+    const off = firstBeatCoverOffset(raw, actionBeat)
+    if (off >= 0) afterIdx = Math.min(compact.length - 1, Math.max(0, Math.floor(off * 0.9)))
+  }
+  const afterSetup = compact.slice(afterIdx)
+  if (charLen(afterSetup) < 24) return null
+
+  const tail = afterSetup.slice(Math.floor(afterSetup.length * 0.35))
+  if (/能否|会不会|还不知道|不知能否|还没|尚未|未能|没能|未果|落空|没有成功/.test(tail)) {
+    return null
+  }
+
+  if (!OUTLINE_ABSTRACT_DONE_RE.test(afterSetup)) return null
+
+  return {
+    code: 'outline_endpoint_overshoot',
+    message:
+      `章末悬念「${q}」已被正文揭晓/收束。本章应停在「${actionBeat || '悬念之前'}」，把答案留给下章；请删除揭晓成功的后文。`,
+    detail: q,
   }
 }
 
@@ -428,11 +576,20 @@ function detectOutlineEndpointOvershoot(args: {
   content: string
   chapterOutline: string
 }): OutlineComplianceReason | null {
-  const beats = substantiveBeats(extractOutlineBeatPhrases(args.chapterOutline))
-  if (beats.length < 2) return null
+  const boundary = extractOutlineBoundaryLastBeat(args.chapterOutline)
+  const allBeats = substantiveBeats(extractOutlineBeatPhrases(args.chapterOutline))
+  // 硬止点用行动拍；勿用悬念问句/信息注记当「须写完」的末拍
+  const beats = boundary.actionBeat
+    ? substantiveBeats([
+      ...allBeats.filter(b => b !== boundary.endingQuestion && !isSuspenseHookBeat(b)),
+      boundary.actionBeat,
+    ].filter((b, i, arr) => arr.indexOf(b) === i))
+    : allBeats.filter(b => !isSuspenseHookBeat(b))
+  if (beats.length < 2 && !boundary.actionBeat) return null
+  if (beats.length < 1) return null
 
   const total = charLen(args.content)
-  const last = beats[beats.length - 1]
+  const last = boundary.actionBeat || beats[beats.length - 1]!
   const finalCut = [...args.content].slice(Math.floor(total * 0.8)).join('')
   const lastInFinale = outlineBeatCoveredIn(finalCut, last)
 
@@ -595,45 +752,22 @@ export function detectOutlineCompliance(args: {
   const reasons: OutlineComplianceReason[] = []
   const outline = args.chapterOutline?.trim() || ''
   const content = args.content?.trim() || ''
-  if (!content || charLen(content) < 200) {
+  // 空正文不得判通过（删毒全清后曾误走 ok，导致后续一致性审报 empty_content）
+  if (!content) {
+    return {
+      ok: false,
+      reasons: [{
+        code: 'outline_endpoint_overshoot',
+        message: '正文为空（可能已被大纲删毒清空），须按本章大纲重写',
+      }],
+    }
+  }
+  // 过短草稿跳过边界硬审，避免写作中途误拦
+  if (charLen(content) < 200) {
     return { ok: true, reasons: [] }
   }
 
-  // 无大纲时仍可做章末契约时辰/地点对照
-  if (args.chapterNumber >= 2 && (args.prevChapterTail || args.prevSnapshot)) {
-    const seamOnly = detectChapterSeamColdOpen({
-      content,
-      chapterNumber: args.chapterNumber,
-      prevChapterTail: args.prevChapterTail,
-      chapterOutline: outline || undefined,
-      prevSnapshot: args.prevSnapshot,
-    })
-    if (seamOnly && /时辰倒退|地点\/经过倒退/.test(seamOnly.message)) {
-      reasons.push({ code: 'chapter_seam_cold_open', message: seamOnly.message })
-    }
-    const eventReplay = detectChapterBodyEventReplay({
-      content,
-      chapterNumber: args.chapterNumber,
-      prevChapterBody: args.prevChapterTail,
-      prevSnapshot: args.prevSnapshot,
-    })
-    if (eventReplay) {
-      reasons.push({ code: 'chapter_event_replay', message: eventReplay.message })
-    }
-    const midDialogue = detectOpeningMidDialogueColdStart(content)
-    if (midDialogue) {
-      reasons.push({ code: 'opening_mid_dialogue', message: midDialogue.message })
-    }
-    const unexplainedName = detectOpeningUnexplainedNamedSpeech({
-      content,
-      chapterOutline: outline || undefined,
-      prevChapterTail: args.prevChapterTail,
-      prevSnapshot: args.prevSnapshot,
-    })
-    if (unexplainedName) {
-      reasons.push({ code: 'opening_unexplained_name', message: unexplainedName.message })
-    }
-  }
+  // 章缝叙事/因果（时辰、倒叙、离场、天候、人名半路开口等）不走规则硬审，见模型审
 
   let earlyMissing = false
   let requiredHitZero = false
@@ -650,33 +784,12 @@ export function detectOutlineCompliance(args: {
       requiredHitZero = /命中 0\//.test(early.message)
     }
 
-    const coldOpen = detectChapterSeamColdOpen({
-      content,
-      chapterNumber: args.chapterNumber,
-      prevChapterTail: args.prevChapterTail,
-      chapterOutline: outline,
-      prevSnapshot: args.prevSnapshot,
-    })
-    if (coldOpen && !reasons.some(r => r.code === 'chapter_seam_cold_open' && r.message === coldOpen.message)) {
-      reasons.push({
-        code: 'chapter_seam_cold_open',
-        message: coldOpen.message,
-      })
-    }
-
     const draftReplay = detectDraftOrphanReplay({
       content,
       existingText: args.existingText,
       chapterOutline: outline,
     })
     if (draftReplay) reasons.push(draftReplay)
-
-    const agencyFail = detectCatalystAgencyFail({
-      content,
-      chapterOutline: outline,
-      prevChapterTail: args.prevChapterTail,
-    })
-    if (agencyFail) reasons.push(agencyFail)
 
     const orphanSpan = detectHeadOrphanSpan({
       content,
@@ -688,6 +801,20 @@ export function detectOutlineCompliance(args: {
 
     const endpoint = detectOutlineEndpointOvershoot({ content, chapterOutline: outline })
     if (endpoint) reasons.push(endpoint)
+
+    const suspenseResolved = detectSuspenseEndingResolved({
+      content,
+      chapterOutline: outline,
+      nextChapterOutline: args.nextChapterOutline,
+    })
+    // 悬念揭晓优先保留（比「早期拍点比例越界」文案更贴本章止点）
+    if (suspenseResolved) {
+      const withoutGenericOvershoot = reasons.filter(
+        r => !(r.code === 'outline_endpoint_overshoot' && !/章末悬念/.test(r.message)),
+      )
+      reasons.length = 0
+      reasons.push(...withoutGenericOvershoot, suspenseResolved)
+    }
 
     const nextLeak = detectNextChapterBeatLeak({
       content,
@@ -818,6 +945,7 @@ export function buildOutlineComplianceFixPrompt(args: {
       ].join('')
       : '',
     '只输出简体中文小说正文；不要标题行、不要说明。',
+    '章末须停在大纲最后行动拍附近；若有【章末问题】须保持未决，**禁止揭晓答案/完成态**（留给下章）。',
     '章末须停在大纲最后拍点附近；**删掉该拍点之后的全部越界后文**。',
     '正文完成态不得超过大纲最后拍点所允许的程度；下章情节禁止提前写。',
     '**字数**：须落在与生成相同的目标区间（见系统提示）；删掉越界后文后，**只在大纲已列拍点内**写厚/补场面与反应顶满区间，禁止把删掉的越界高潮再写回来，禁止灌水空话。',

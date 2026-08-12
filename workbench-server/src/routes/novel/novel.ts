@@ -18,6 +18,7 @@ import {
   continueNovelChapter,
   generateNovelOutline,
   generateNovelPremise,
+  generateNovelTitle,
   generateNovelWritingBrief,
 } from '../../services/novel/novel-writing.js'
 import { polishNovelChapterProse } from '../../services/novel/novel-prose-polish.js'
@@ -39,7 +40,7 @@ import {
 } from '../../services/novel/novel-outline-drama-ensure.js'
 import { upgradePromptToDramaOutline } from '../../services/novel/novel-outline-drama-fields.js'
 import { checkNovelChapterContinuity } from '../../services/novel/novel-continuity-check.js'
-import { resolveFullChapterForAudit, detachChangeRecordForStorage } from '../../services/novel/novel-causal-chain/index.js'
+import { resolveFullChapterForAudit, detachChangeRecordForStorage, ensureCausalChangeRecordAppended, isCausalChainEnabled } from '../../services/novel/novel-causal-chain/index.js'
 import type { TextBillingContext } from '../../services/ai/ai.js'
 
 function novelTextBilling(
@@ -69,13 +70,27 @@ import {
   detectAiTextStatisticalFallback,
   detectAiTextWithPerplexity,
 } from '../../services/ai/ai-perplexity-detection.js'
-import { mergeEpisodeMetadata, parseEpisodeMetadata } from '../../common/drama/episode-meta.js'
+import {
+  mergeEpisodeMetadata,
+  parseEpisodeMetadata,
+  readEpisodeChapterStateCard,
+} from '../../common/drama/episode-meta.js'
+import { isStateCardStale } from '../../common/novel/novel-state-card.js'
 import { hydrateEpisodeRow } from '../../common/storage/text-blob-repo.js'
 import {
   finalizeChapterContinuity,
   getNovelContinuitySummary,
   rebuildNovelContinuityFromChapters,
 } from '../../services/novel/novel-continuity.js'
+import {
+  listChapterStateCardSummaries,
+  rebuildAllChapterStateCards,
+  rebuildChapterStateCard,
+  validateAllChapterStateCards,
+  STATE_CARD_SYNC_REBUILD_MAX_CHAPTERS,
+} from '../../services/novel/novel-state-card-service.js'
+import { createAndStartBatchJob } from '../../services/batch/batch-job-service.js'
+import * as episodesRepo from '../../db/repos/episodes/index.js'
 import { NovelMemoryManager, novelMemoryPaths, readAnchor, writeAnchor } from '../../services/novel/novel-memory/index.js'
 import fs from 'fs'
 
@@ -176,6 +191,37 @@ app.post('/generate-premise', async (c) => {
   } catch (err: any) {
     logTaskError('Novel', 'generate-premise', { error: err.message })
     return badRequest(c, err.message || '生成梗概失败')
+  }
+})
+
+// POST /novel/generate-title — 根据关键词生成书名（创建项目前可用）
+app.post('/generate-title', async (c) => {
+  const user = getAuthUser(c)
+  try {
+    await assertUserCanGenerate(user.id, user.role)
+  } catch (err: any) {
+    return badRequest(c, err.message)
+  }
+
+  const body = await c.req.json().catch(() => ({}))
+  const keywords = typeof body.keywords === 'string' ? body.keywords.trim() : ''
+  if (!keywords) return badRequest(c, '请先填写关键词')
+  if (keywords.length > 500) return badRequest(c, '关键词过长（最多 500 字）')
+
+  const genre = typeof body.genre === 'string' ? body.genre.trim() : undefined
+  const totalChapters = Number(body.total_chapters) || undefined
+
+  logTaskStart('Novel', 'generate-title', { keywordLen: keywords.length })
+  try {
+    const title = await generateNovelTitle(
+      { keywords, genre, totalChapters },
+      novelTextBilling(user, '小说书名生成'),
+    )
+    logTaskSuccess('Novel', 'generate-title', { len: title.length })
+    return success(c, { title })
+  } catch (err: any) {
+    logTaskError('Novel', 'generate-title', { error: err.message })
+    return badRequest(c, err.message || '生成书名失败')
   }
 })
 
@@ -375,8 +421,24 @@ app.post('/chapters/:id/continuity/check', async (c) => {
 
   logTaskStart('Novel', 'continuity-check', { chapterId: id })
   try {
+    let auditContent = content
+    let proseToSave: string | undefined
+    let changeRecordToSave: string | undefined
+    if (isCausalChainEnabled(meta)) {
+      const ensured = await ensureCausalChangeRecordAppended({
+        content: auditContent,
+        chapterNumber: pack.episode.episodeNumber,
+        billing: novelTextBilling(user, '小说一致性审校补变更记录', id),
+      })
+      if (ensured.fixed) {
+        auditContent = ensured.content
+        const detached = detachChangeRecordForStorage(ensured.content)
+        proseToSave = detached.prose || undefined
+        changeRecordToSave = detached.changeBlock || undefined
+      }
+    }
     const check = await checkNovelChapterContinuity({
-      content,
+      content: auditContent,
       chapterNumber: pack.episode.episodeNumber,
       dramaId: pack.drama.id,
       dramaTitle: pack.drama.title,
@@ -384,8 +446,15 @@ app.post('/chapters/:id/continuity/check', async (c) => {
       chapterOutline,
       billing: novelTextBilling(user, '小说一致性审校', id),
     })
-    const metadata = mergeEpisodeMetadata(pack.episode.metadata, { continuity_check: check })
-    await updateNovelChapter(id, { metadata, updatedAt: now() })
+    const metadata = mergeEpisodeMetadata(pack.episode.metadata, {
+      continuity_check: check,
+      ...(changeRecordToSave ? { causal_change_record: changeRecordToSave } : {}),
+    })
+    await updateNovelChapter(id, {
+      ...(proseToSave ? { content: proseToSave } : {}),
+      metadata,
+      updatedAt: now(),
+    })
     logTaskSuccess('Novel', 'continuity-check', { chapterId: id, score: check.score, passed: check.passed })
     return success(c, check)
   } catch (err: any) {
@@ -459,6 +528,248 @@ app.post('/dramas/:id/continuity/rebuild', async (c) => {
   } catch (err: any) {
     logTaskError('Novel', 'continuity-rebuild', { dramaId: id, error: err?.message })
     return badRequest(c, err?.message || '批量重建失败')
+  }
+})
+
+// GET /novel/dramas/:id/state-cards — 各章状态卡摘要
+app.get('/dramas/:id/state-cards', async (c) => {
+  const user = getAuthUser(c)
+  const id = Number(c.req.param('id'))
+  if (!await requireNovelDrama(id, user.id)) return notFound(c, '小说项目不存在')
+  const chapters = await listChapterStateCardSummaries(id)
+  return success(c, {
+    chapters,
+    sync_rebuild_max: STATE_CARD_SYNC_REBUILD_MAX_CHAPTERS,
+  })
+})
+
+// GET /novel/chapters/:id/state-card — 查看本章完整状态卡
+app.get('/chapters/:id/state-card', async (c) => {
+  const user = getAuthUser(c)
+  const id = Number(c.req.param('id'))
+  const pack = await episodeAndDramaForUser(id, user.id)
+  if (!pack || !isNovelProject(pack.drama)) return notFound(c, '章节不存在')
+  const content = (pack.episode.content || pack.episode.scriptContent || '').trim()
+  const card = readEpisodeChapterStateCard(pack.episode.metadata, pack.episode.episodeNumber)
+  const stale = !card || (content ? isStateCardStale(card, hashNovelContent(content)) : true)
+  return success(c, {
+    card,
+    stale,
+    has_card: !!card,
+    chapter_number: pack.episode.episodeNumber,
+  })
+})
+
+// POST /novel/chapters/:id/state-card/rebuild — 单章重抽状态卡
+app.post('/chapters/:id/state-card/rebuild', async (c) => {
+  const user = getAuthUser(c)
+  try {
+    await assertUserCanGenerate(user.id, user.role)
+  } catch (err: any) {
+    return badRequest(c, err.message)
+  }
+  const id = Number(c.req.param('id'))
+  const pack = await episodeAndDramaForUser(id, user.id)
+  if (!pack || !isNovelProject(pack.drama)) return notFound(c, '章节不存在')
+
+  const body = await c.req.json().catch(() => ({}))
+  const fromBody = typeof body.text === 'string' ? body.text.trim() : ''
+  const content = fromBody || (pack.episode.content || pack.episode.scriptContent || '').trim()
+  if (!content) return badRequest(c, '章节正文为空，无法生成状态卡')
+
+  const { text: chapterOutline } = resolveChapterOutline(pack)
+  logTaskStart('Novel', 'state-card-rebuild', { chapterId: id })
+  try {
+    const result = await rebuildChapterStateCard({
+      dramaId: pack.drama.id,
+      episodeId: id,
+      chapterNumber: pack.episode.episodeNumber,
+      content,
+      dramaTitle: pack.drama.title,
+      billing: novelTextBilling(user, '小说状态卡抽取', id),
+      preferLlm: body.project_only !== true,
+      outlineBeats: chapterOutline || undefined,
+      skipIfUnchanged: body.force !== true,
+    })
+    logTaskSuccess('Novel', 'state-card-rebuild', {
+      chapterId: id,
+      source: result.source,
+      hasCard: !!result.card,
+    })
+    return success(c, {
+      card: result.card,
+      source: result.source,
+      validation: result.validation ?? null,
+      repaired: !!result.repaired,
+    })
+  } catch (err: any) {
+    logTaskError('Novel', 'state-card-rebuild', { chapterId: id, error: err?.message })
+    return badRequest(c, err?.message || '状态卡重建失败')
+  }
+})
+
+// POST /novel/chapters/:id/state-card/validate — 校验本章卡（失败可重抽修复）
+app.post('/chapters/:id/state-card/validate', async (c) => {
+  const user = getAuthUser(c)
+  try {
+    await assertUserCanGenerate(user.id, user.role)
+  } catch (err: any) {
+    return badRequest(c, err.message)
+  }
+  const id = Number(c.req.param('id'))
+  const pack = await episodeAndDramaForUser(id, user.id)
+  if (!pack || !isNovelProject(pack.drama)) return notFound(c, '章节不存在')
+  const body = await c.req.json().catch(() => ({}))
+  const fromBody = typeof body.text === 'string' ? body.text.trim() : ''
+  const content = fromBody || (pack.episode.content || pack.episode.scriptContent || '').trim()
+  if (!content) return badRequest(c, '章节正文为空，无法校验状态卡')
+
+  logTaskStart('Novel', 'state-card-validate', { chapterId: id })
+  try {
+    const result = await rebuildChapterStateCard({
+      dramaId: pack.drama.id,
+      episodeId: id,
+      chapterNumber: pack.episode.episodeNumber,
+      content,
+      dramaTitle: pack.drama.title,
+      billing: novelTextBilling(user, '小说状态卡校验', id),
+      preferLlm: body.repair !== false,
+      skipIfUnchanged: false,
+    })
+    logTaskSuccess('Novel', 'state-card-validate', {
+      chapterId: id,
+      status: result.card?.validation_status,
+    })
+    return success(c, {
+      card: result.card,
+      validation: result.validation ?? null,
+      repaired: !!result.repaired,
+    })
+  } catch (err: any) {
+    logTaskError('Novel', 'state-card-validate', { chapterId: id, error: err?.message })
+    return badRequest(c, err?.message || '状态卡校验失败')
+  }
+})
+
+// POST /novel/dramas/:id/state-cards/rebuild — 全书串行重建（>40 章走 batch-job）
+app.post('/dramas/:id/state-cards/rebuild', async (c) => {
+  const user = getAuthUser(c)
+  try {
+    await assertUserCanGenerate(user.id, user.role)
+  } catch (err: any) {
+    return badRequest(c, err.message)
+  }
+  const id = Number(c.req.param('id'))
+  if (!await requireNovelDrama(id, user.id)) return notFound(c, '小说项目不存在')
+
+  const episodes = await episodesRepo.listSiblingEpisodesOrdered(id)
+  const withContent = episodes.filter(e => (e.content || e.scriptContent || '').trim())
+  const chapterCount = withContent.length
+
+  if (chapterCount > STATE_CARD_SYNC_REBUILD_MAX_CHAPTERS) {
+    logTaskStart('Novel', 'state-cards-rebuild-job', { dramaId: id, chapterCount })
+    try {
+      const { job, alreadyRunning } = await createAndStartBatchJob({
+        userId: user.id,
+        userRole: user.role,
+        dramaId: id,
+        kind: 'state_card_rebuild',
+      })
+      if (alreadyRunning) {
+        return c.json({
+          code: 409,
+          message: '该项目已有批量任务进行中',
+          data: { mode: 'batch_job', job, already_running: true, chapter_count: chapterCount },
+        }, 409)
+      }
+      logTaskSuccess('Novel', 'state-cards-rebuild-job', { dramaId: id, jobId: job.id })
+      return success(c, {
+        mode: 'batch_job',
+        job,
+        chapter_count: chapterCount,
+        sync_rebuild_max: STATE_CARD_SYNC_REBUILD_MAX_CHAPTERS,
+      })
+    } catch (err: any) {
+      logTaskError('Novel', 'state-cards-rebuild-job', { dramaId: id, error: err?.message })
+      return badRequest(c, err?.message || '创建状态卡批量任务失败')
+    }
+  }
+
+  logTaskStart('Novel', 'state-cards-rebuild-sync', { dramaId: id, chapterCount })
+  try {
+    const summary = await rebuildAllChapterStateCards({
+      dramaId: id,
+      billing: novelTextBilling(user, '小说状态卡批量重建', id),
+      preferLlm: true,
+      stopOnError: true,
+    })
+    logTaskSuccess('Novel', 'state-cards-rebuild-sync', { dramaId: id, ...summary })
+    return success(c, {
+      mode: 'sync',
+      chapter_count: chapterCount,
+      ...summary,
+    })
+  } catch (err: any) {
+    logTaskError('Novel', 'state-cards-rebuild-sync', { dramaId: id, error: err?.message })
+    return badRequest(c, err?.message || '状态卡批量重建失败')
+  }
+})
+
+// POST /novel/dramas/:id/state-cards/validate — 全书串行校验（>40 章走 batch-job）
+app.post('/dramas/:id/state-cards/validate', async (c) => {
+  const user = getAuthUser(c)
+  try {
+    await assertUserCanGenerate(user.id, user.role)
+  } catch (err: any) {
+    return badRequest(c, err.message)
+  }
+  const id = Number(c.req.param('id'))
+  if (!await requireNovelDrama(id, user.id)) return notFound(c, '小说项目不存在')
+
+  const episodes = await episodesRepo.listSiblingEpisodesOrdered(id)
+  const withContent = episodes.filter(e => (e.content || e.scriptContent || '').trim())
+  const chapterCount = withContent.length
+
+  if (chapterCount > STATE_CARD_SYNC_REBUILD_MAX_CHAPTERS) {
+    logTaskStart('Novel', 'state-cards-validate-job', { dramaId: id, chapterCount })
+    try {
+      const { job, alreadyRunning } = await createAndStartBatchJob({
+        userId: user.id,
+        userRole: user.role,
+        dramaId: id,
+        kind: 'state_card_validate',
+      })
+      if (alreadyRunning) {
+        return c.json({
+          code: 409,
+          message: '该项目已有批量任务进行中',
+          data: { mode: 'batch_job', job, already_running: true, chapter_count: chapterCount },
+        }, 409)
+      }
+      return success(c, {
+        mode: 'batch_job',
+        job,
+        chapter_count: chapterCount,
+        sync_rebuild_max: STATE_CARD_SYNC_REBUILD_MAX_CHAPTERS,
+      })
+    } catch (err: any) {
+      logTaskError('Novel', 'state-cards-validate-job', { dramaId: id, error: err?.message })
+      return badRequest(c, err?.message || '创建状态卡校验任务失败')
+    }
+  }
+
+  logTaskStart('Novel', 'state-cards-validate-sync', { dramaId: id, chapterCount })
+  try {
+    const summary = await validateAllChapterStateCards({
+      dramaId: id,
+      billing: novelTextBilling(user, '小说状态卡批量校验', id),
+      repairInvalid: true,
+    })
+    logTaskSuccess('Novel', 'state-cards-validate-sync', { dramaId: id, ...summary })
+    return success(c, { mode: 'sync', chapter_count: chapterCount, ...summary })
+  } catch (err: any) {
+    logTaskError('Novel', 'state-cards-validate-sync', { dramaId: id, error: err?.message })
+    return badRequest(c, err?.message || '状态卡批量校验失败')
   }
 })
 
@@ -809,10 +1120,18 @@ app.post('/chapters/:id/generate/stream', async (c) => {
     mode: rewriteMode ? 'rewrite' : 'generate',
     chapterNumber: pack.episode.episodeNumber,
   })
+  const prevTailForBeats = pack.episode.episodeNumber >= 2
+    ? await (await import('../../services/novel/novel-continuity.js')).loadPrevChapterContentTail(
+      pack.drama.id,
+      pack.episode.episodeNumber,
+      1600,
+    )
+    : ''
   const beatBudgets = resolveChapterBeatBudgets({
     chapterOutline,
     userTarget: targetLength,
     endpointPending: outlineAlignForBeats.endpointPending,
+    prevChapterTail: prevTailForBeats,
   })
   const useBeatSequential = shouldUseBeatSequentialGenerate({
     beatCount: beatBudgets.beatCount,

@@ -96,8 +96,8 @@ function assertChapterLengthOrThrow(
     : Math.round(target * 1.08)
   const { chars, within } = summarizeNovelChapterLength(content, minLen, maxLen)
   if (within) return
-  if (chars < minLen * 0.55) {
-    throw new Error(`第${chapterNumber}章正文过短（${chars} 字，目标至少 ${minLen} 字），疑似未写完，已中止批量撰写`)
+  if (chars < Math.round(minLen * 0.97)) {
+    throw new Error(`第${chapterNumber}章正文过短（${chars} 字，目标至少 ${minLen} 字），未达字数区间，已中止批量撰写`)
   }
 }
 function resolveNovelPrompt(ep: { scriptContent: string | null }, chapterOutline: string, premise: string) {

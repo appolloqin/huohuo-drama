@@ -2,11 +2,11 @@
  * 大纲边界对齐（生成前）：裁剪与大纲末拍冲突的写作说明，剔除与本章大纲零重叠的情节子句，
  * 标记重写旧稿越界，产出边界硬块。题材无关。
  */
-import { extractOutlineBeatPhrases, phraseAppearsIn } from './novel-chapter-seam.js'
+import { extractOutlineBeatPhrases, extractOutlineBoundaryLastBeat, phraseAppearsIn, isSuspenseHookBeat } from './novel-chapter-seam.js'
 import { detectOutlineCompliance } from './novel-outline-compliance.js'
 
 /** 大纲末拍：尚未落地的进行态（章末宜停在此处） */
-const PENDING_MARK = /决定|准备|打算|即将|尚未|还没|暂时|正要|快要/
+const PENDING_MARK = /决定|准备|打算|即将|尚未|还没|暂时|正要|快要|能否|会不会|是否会|该不该|要不要/
 
 /** 写作说明子句：已收束/已办成（易写出大纲未列的后续） */
 const DONE_MARK = /完成|解决|收场|了结|写完|落地|办妥|结束/
@@ -251,17 +251,21 @@ export function pruneBriefAgainstPrevSeam(args: {
   return { brief: kept.join('。') + '。', dropped }
 }
 
-function isEndpointPending(lastBeat: string): boolean {
+function isEndpointPending(lastBeat: string, endingQuestion?: string): boolean {
+  if (endingQuestion?.trim() && (isSuspenseHookBeat(endingQuestion) || PENDING_MARK.test(endingQuestion))) {
+    return true
+  }
   if (!lastBeat.trim()) return false
-  return PENDING_MARK.test(lastBeat)
+  return PENDING_MARK.test(lastBeat) || isSuspenseHookBeat(lastBeat)
 }
 
 function buildBoundaryBlock(args: {
   beats: string[]
   lastBeat: string
+  endingQuestion?: string
 }): string {
-  const { beats, lastBeat } = args
-  if (!lastBeat && !beats.length) return ''
+  const { beats, lastBeat, endingQuestion } = args
+  if (!lastBeat && !beats.length && !endingQuestion) return ''
   const lines = ['【本章大纲边界】']
   if (beats.length) {
     lines.push('- 须覆盖：')
@@ -274,6 +278,11 @@ function buildBoundaryBlock(args: {
     lines.push('- **人物**：仅上章末已出场者与本章大纲点名者；禁止无交代的「娘俩/一家三口」等未出场亲属称谓')
     lines.push('- **字数**：只在本章大纲已列拍点内写到目标附近；宁可略短，禁止用大纲未列情节凑字')
     lines.push('- **自检**：若去掉末拍之后的全部后文，本章情节是否仍完整？若是，那些后文即越界，勿写')
+  }
+  if (endingQuestion?.trim()) {
+    lines.push(
+      `- **章末悬念（禁止揭晓）**：「${endingQuestion.trim()}」——本章只把悬念立住，禁止写出肯定答案/成功收束；留给下章。`,
+    )
   }
   lines.push('- 写作说明或旧稿与上冲突时，一律以本章大纲边界为准；有下章大纲时只作禁写边界，禁止提前写')
   return lines.join('\n')
@@ -294,8 +303,12 @@ export function alignNovelChapterOutlineBoundary(args: {
   const outline = args.chapterOutline?.trim() || ''
   const brief = args.writingBrief?.trim() || ''
   const beats = outline ? extractOutlineBeatPhrases(outline) : []
-  const lastBeat = beats.length ? beats[beats.length - 1]! : (outline.slice(0, 40) || '')
-  const endpointPending = isEndpointPending(lastBeat)
+  const boundary = outline
+    ? extractOutlineBoundaryLastBeat(outline)
+    : { lastBeat: '', endingQuestion: '', actionBeat: '' }
+  const lastBeat = boundary.lastBeat || (beats.length ? beats[beats.length - 1]! : (outline.slice(0, 40) || ''))
+  const endingQuestion = boundary.endingQuestion
+  const endpointPending = isEndpointPending(lastBeat, endingQuestion)
   const conflictNotes: string[] = []
 
   let alignedBrief = brief
@@ -303,7 +316,7 @@ export function alignNovelChapterOutlineBoundary(args: {
     const kept: string[] = []
     const dropped: string[] = []
     for (const clause of splitBriefClauses(brief)) {
-      if (DONE_MARK.test(clause) && !PENDING_MARK.test(clause)) {
+      if (DONE_MARK.test(clause) && !PENDING_MARK.test(clause) && !isSuspenseHookBeat(clause)) {
         dropped.push(clause)
         continue
       }
@@ -313,7 +326,7 @@ export function alignNovelChapterOutlineBoundary(args: {
       conflictNotes.push(
         `写作说明含已收束目标，与大纲末拍「${lastBeat}」冲突，已降级：${dropped.slice(0, 2).join('；')}`,
       )
-      const stub = `本章止于大纲末拍「${lastBeat}」；下列目标留后章，本章不得写完：${dropped.join('；')}`
+      const stub = `本章止于大纲末拍「${lastBeat}」${endingQuestion ? `；悬念「${endingQuestion}」勿揭晓` : ''}；下列目标留后章，本章不得写完：${dropped.join('；')}`
       alignedBrief = kept.length
         ? `${kept.join('。')}。\n${stub}`
         : stub
@@ -371,7 +384,7 @@ export function alignNovelChapterOutlineBoundary(args: {
     }
   }
 
-  const boundaryBlock = buildBoundaryBlock({ beats, lastBeat })
+  const boundaryBlock = buildBoundaryBlock({ beats, lastBeat, endingQuestion })
 
   return {
     lastBeat,

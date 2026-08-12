@@ -507,6 +507,22 @@ export async function finalizeChapterContinuity(args: {
       })
       if (snap) await persistChapterEndSnapshot({ episodeId, snapshot: snap })
     }
+    // 缺状态卡时补投影
+    try {
+      const { readEpisodeChapterStateCard } = await import('../../common/drama/episode-meta.js')
+      const { syncStateCardAfterFinalize } = await import('./novel-state-card-service.js')
+      if (epRow && !readEpisodeChapterStateCard(epRow.metadata, chapterNumber)) {
+        await syncStateCardAfterFinalize({
+          episodeId,
+          chapterNumber,
+          content: trimmed,
+          dramaId,
+          ledger: existing,
+        })
+      }
+    } catch {
+      /* ignore */
+    }
     return { ledger: existing, globalUpdated: false }
   }
 
@@ -535,6 +551,20 @@ export async function finalizeChapterContinuity(args: {
     ...(snapshot ? { chapter_end_snapshot: snapshot } : {}),
   })
   await episodesRepo.updateEpisode(episodeId, { metadata: epMetadata, updatedAt: now() })
+
+  // 状态卡：finalize 后从 ledger/snapshot 投影（不再二次 LLM）
+  try {
+    const { syncStateCardAfterFinalize } = await import('./novel-state-card-service.js')
+    await syncStateCardAfterFinalize({
+      episodeId,
+      chapterNumber,
+      content: trimmed,
+      dramaId,
+      ledger,
+    })
+  } catch {
+    /* 卡失败不阻断账本落库 */
+  }
 
   const drama = await dramasRepo.findDramaById(dramaId)
   const meta = parseNovelMetadata(drama?.metadata)

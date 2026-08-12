@@ -73,6 +73,14 @@ export type ContinuityAuditBreakdown = {
   model_rejected?: string[]
 }
 
+/** 模型审 21 维逐轴判定（逻辑自洽） */
+export type ContinuityDimensionVerdict = {
+  dimension: string
+  status: 'ok' | 'fail' | 'na'
+  reason: string
+  excerpt?: string
+}
+
 export type ContinuityCheckResult = {
   passed: boolean
   score: number
@@ -84,6 +92,12 @@ export type ContinuityCheckResult = {
   checked_at: string
   content_hash: string
   audit?: ContinuityAuditBreakdown
+  /** 模型审 21 维逻辑自洽明细（有则展示） */
+  dimensions?: ContinuityDimensionVerdict[]
+  /** 模型审总因（通过/不通过） */
+  reason?: string
+  /** 模型 JSON 解析失败：不得伪造成通过分；改写正文无助于恢复 */
+  model_parse_failed?: boolean
 }
 
 /** 单章一致性修正尝试记录（存于 episodes.metadata.continuity_rewrite_log） */
@@ -117,6 +131,11 @@ const FIELD_LABELS: Record<keyof NovelContinuityFields, string> = {
 }
 
 const CONTINUITY_FIELD_KEYS = Object.keys(FIELD_LABELS) as (keyof NovelContinuityFields)[]
+
+/** 一致性账本 15 维中文名（审校注入/验收用，顺序固定） */
+export const CONTINUITY_LEDGER_DIM_LABELS: readonly string[] = CONTINUITY_FIELD_KEYS.map(
+  k => FIELD_LABELS[k],
+)
 
 function cleanField(v: unknown): string | undefined {
   if (typeof v !== 'string') return undefined
@@ -234,6 +253,24 @@ export function formatContinuityStateBlock(
     if (val) lines.push(`${FIELD_LABELS[key]}：${val}`)
   }
   if (lines.length === 1) return ''
+  return lines.join('\n')
+}
+
+/**
+ * 模型审用：列出全部 15 维（空则「未记录」），禁止漏维。
+ */
+export function formatContinuityLedgerAuditBlock(
+  fields: NovelContinuityFields | null | undefined,
+  title = '【一致性账本·15维——须逐维自洽】',
+): string {
+  const lines = [
+    title,
+    '说明：以逻辑自洽为准（6/15 维为检查轴）。维有记录不得无交代推翻；未记录不凭空捏造该维硬伤，但仍须结合正文与其它事实推断。允许合法倒叙/补叙。',
+  ]
+  for (const key of CONTINUITY_FIELD_KEYS) {
+    const val = fields?.[key]?.trim()
+    lines.push(`${FIELD_LABELS[key]}：${val || '未记录'}`)
+  }
   return lines.join('\n')
 }
 

@@ -5,7 +5,11 @@
  * 不依赖具体场景词（破门、提亲、村民等）；只凭大纲拍点顺序、文本重合与承接强度。
  */
 import type { AuditConflict } from './novel-continuity-precheck.js'
-import { filterSubstantiveOutlineBeats, outlineBeatCoveredIn } from './novel-outline-beat-cover.js'
+import {
+  filterSubstantiveOutlineBeats,
+  outlineBeatCoveredIn,
+  outlineCatalystCoveredIn,
+} from './novel-outline-beat-cover.js'
 import type { ChapterEndSnapshot } from '../../common/novel/novel-continuity-state.js'
 import {
   detectChapterSeamPresenceReentry,
@@ -168,7 +172,7 @@ export function phraseStronglyAppearsIn(haystack: string, phrase: string): boole
 
 /** 戏剧标签：须落地的情节拍（含起因——仅当前序未写到时才写过程） */
 const DRAMA_PLOT_TAGS = new Set([
-  '本章起因', '欲望', '阻碍', '局面变化', '人物选择', '章末问题', '信息增量',
+  '本章起因', '欲望', '阻碍', '局面变化', '人物选择', '章末问题',
 ])
 
 /**
@@ -189,9 +193,9 @@ const DRAMA_SETTING_TAGS = new Set([
   '本章时间', '本章地点', '本章人物',
 ])
 
-/** 戏剧标签：手法/调性，不进情节拍点序列 */
+/** 戏剧标签：手法/调性/信息注记，不进情节拍点序列（勿当章末硬止点） */
 const DRAMA_META_TAGS = new Set([
-  '冲突层', '情绪手法', '主题回响',
+  '冲突层', '情绪手法', '主题回响', '信息增量',
 ])
 
 const DRAMA_TAG_LINE_RE = /^【([^】]{1,24})】\s*(.*)$/
@@ -298,6 +302,31 @@ export function extractOutlineBeatPhrases(outline: string, max = 12): string[] {
 }
 
 /**
+ * 章末硬止点用拍：优先【人物选择】/【局面变化】等行动拍；
+ * 【章末问题】作悬念锚，不单独当「须写完」的末拍（避免信息增量类注记抢末位）。
+ */
+export function extractOutlineBoundaryLastBeat(outline: string): {
+  lastBeat: string
+  endingQuestion: string
+  actionBeat: string
+} {
+  const items = extractOutlineBeatItems(outline, 16)
+  const endingQuestion = items.find(i => i.tag === '章末问题')?.beat?.trim() || ''
+  const actionTags = new Set(['人物选择', '局面变化', '本章起因'])
+  const actionItems = items.filter(i => i.tag && actionTags.has(i.tag) && !isSuspenseHookBeat(i.beat))
+  const plotNonQ = items.filter(i => i.tag !== '章末问题' && !isSuspenseHookBeat(i.beat))
+  const actionBeat = (
+    [...actionItems].reverse().find(i => i.tag === '人物选择')
+    || [...actionItems].reverse().find(i => i.tag === '局面变化')
+    || plotNonQ[plotNonQ.length - 1]
+    || items[items.length - 1]
+  )?.beat?.trim() || ''
+  // 有悬念问句时，硬止点落在行动拍；否则用末条非问句情节拍
+  const lastBeat = (endingQuestion && actionBeat) ? actionBeat : (actionBeat || endingQuestion || '')
+  return { lastBeat, endingQuestion, actionBeat }
+}
+
+/**
  * 悬念钩子拍（题材无关）：问句收尾，或「会不会/能否…」类未决问法。
  * 这类不是「已完成事件」，且易与上章末悬念措辞短窗误叠。
  */
@@ -320,11 +349,42 @@ export function extractSeamOrderBeatPhrases(outline: string, max = 12): string[]
 
 /**
  * 本章情节拍是否已在上章正文出现（大纲过期 → 易诱发后退写）。
- * 【本章起因】同样：仅当前序已覆盖时才算过期。
+ * 【本章起因】看上章末短窗的意译覆盖（防「上章已进林、本章仍逼写踏入」；
+ * 不用过长窗，避免姓名共现窗钉在章中段导致假阴性）。
+ * 其余拍点仍严匹配，避免过宽过期误杀合法开篇。
  */
 export function findStaleOutlineBeats(outline: string, prevText: string): string[] {
   if (!outline.trim() || !prevText.trim()) return []
-  return extractSeamOrderBeatPhrases(outline).filter(beat => phraseAppearsIn(prevText, beat))
+  const catalystKeys = new Set(
+    extractOutlineCatalystPhrases(outline).map(c => normalizeText(c)),
+  )
+  const prevTip = prevText.trim().slice(-500)
+  return extractSeamOrderBeatPhrases(outline).filter(beat => {
+    if (catalystKeys.has(normalizeText(beat))) {
+      return outlineBeatCoveredIn(prevTip, beat) || outlineCatalystCoveredIn(prevTip, beat)
+    }
+    return phraseAppearsIn(prevText, beat)
+  })
+}
+
+/** 【本章起因】是否已在上章末短窗落地（拍点预算/生成跳过用） */
+export function isOutlineCatalystStaleInPrev(
+  beat: string,
+  tag: string | undefined,
+  prevTail: string,
+): boolean {
+  if (tag !== '本章起因' || !beat.trim() || !prevTail.trim()) return false
+  const tip = prevTail.trim().slice(-500)
+  return outlineBeatCoveredIn(tip, beat) || outlineCatalystCoveredIn(tip, beat)
+}
+
+/** 去掉上章已落地的【本章起因】拍，避免本章仍当 beat1 硬写 */
+export function filterStaleCatalystBeatItems<T extends { beat: string; tag?: string }>(
+  items: T[],
+  prevTail?: string,
+): T[] {
+  if (!prevTail?.trim() || !items.length) return items
+  return items.filter(i => !isOutlineCatalystStaleInPrev(i.beat, i.tag, prevTail))
 }
 
 export function buildOutlineStaleBlock(args: {
@@ -534,6 +594,64 @@ export function detectChapterSeamTimeRewind(args: {
   }
 }
 
+/** 降水/天候强度：越大越晚/越重；用于章缝天候倒退，不绑猎场专名 */
+type WeatherIntensity = { level: number; label: string }
+
+function findWeatherIntensity(text: string): WeatherIntensity | null {
+  const t = text.replace(/\s+/g, '')
+  if (!t) return null
+  // 3：已加重/密下
+  if (/越下越密|越下越大|越下越猛|大雪封|雪幕|封山|雪越下|雨越下|瓢泼大雨/.test(t)) {
+    return { level: 3, label: '雨雪已密/加重' }
+  }
+  // 2：已在地/途中踩踏（地面已有）
+  if (/踩实了雪|踩着(?:深)?雪|齐膝|没到(?:小腿|膝盖)|雪壳|积雪|厚雪|雪地上|雪窝|深雪|雪没过|雪盖没|雪埋|雪面|雪沫|雪打在|脚下的雪|咯吱.{0,6}雪|泥水没|淋透/.test(t)) {
+    return { level: 2, label: '雨雪已在地/途中' }
+  }
+  // 1：进行中（未强调初起）
+  if (/下着雪|飘着雪|落着雪|下着雨|飘着雨|雪花|雨点/.test(t)) {
+    return { level: 1, label: '雨雪进行中' }
+  }
+  return null
+}
+
+/** 开篇声称「雨雪才刚开始」——相对上章已落地/密下的倒退信号 */
+function openingClaimsWeatherOnset(opening: string): boolean {
+  const t = opening.replace(/\s+/g, '')
+  return /(?:雪|雨|雹|雪花|雨点).{0,16}(?:才开始|刚开始|刚刚开始)|(?:才开始|刚开始|刚刚).{0,8}(?:落|下|飘)|起初只是稀稀拉拉|稀稀拉拉几个|刚飘起|刚下起来/.test(t)
+}
+
+/**
+ * 章缝天候倒退（相位结构）：
+ * 上章末雨雪已在地/密下，开篇却写「才开始落/稀稀拉拉」且无跨日明示。
+ */
+export function detectChapterSeamWeatherRewind(args: {
+  content: string
+  chapterNumber: number
+  prevChapterTail?: string
+}): AuditConflict | null {
+  const { content, chapterNumber, prevChapterTail } = args
+  if (chapterNumber < 2 || !prevChapterTail?.trim()) return null
+
+  const prev = prevChapterTail.trim().slice(-1200)
+  const opening = content.trim().slice(0, Math.min(content.trim().length, 700))
+  // 天候倒退句常很短（「雪是下午才开始落的」），门槛略低于时辰检
+  if ([...opening].length < 24) return null
+
+  const prevWx = findWeatherIntensity(prev)
+  if (!prevWx || prevWx.level < 2) return null
+  if (!openingClaimsWeatherOnset(opening)) return null
+  if (SAME_DAY_REWIND_EXEMPT_RE.test(opening)) return null
+
+  return {
+    layer: 'hard',
+    rule: 'chapter_seam_replay',
+    message:
+      `章缝冷开篇（天候倒退）：上章末已是「${prevWx.label}」，本章开篇却写雨雪「才开始/稀稀拉拉」。`
+      + '请承接上章已有天候之后起笔，或开篇写明跨到另一场天气；禁止把已落地的雨雪重写成初起。',
+  }
+}
+
 /**
  * 章缝冷开篇（题材无关）：开篇未进入本章大纲前段拍点。
  * - 时辰倒退（日头正中→晨光等）
@@ -593,6 +711,8 @@ export function detectChapterSeamColdOpen(args: {
     }
     return timeHit
   }
+
+  // 天候倒退不进冷开篇硬拒（易误拦补叙）；见 outline-compliance weather_process_soft
 
   if (!chapterOutline?.trim() || !prevChapterTail?.trim()) return null
 
@@ -820,7 +940,11 @@ export function buildForcedSeamOpeningBlock(args: {
   prevTail?: string
   prevSnapshot?: import('../../common/novel/novel-continuity-state.js').ChapterEndSnapshot | null
 }): string {
-  const beats = extractOutlineBeatPhrases(args.chapterOutline || '').slice(0, 4)
+  const beatItems = extractOutlineBeatItems(args.chapterOutline || '')
+  const activeItems = filterStaleCatalystBeatItems(beatItems, args.prevTail)
+  const staleCatalystDropped = beatItems.some(i => i.tag === '本章起因')
+    && !activeItems.some(i => i.tag === '本章起因')
+  const beats = activeItems.map(i => i.beat).slice(0, 4)
   const beat1 = beats[0]
   const hasTail = !!args.prevTail?.trim()
   const snap = args.prevSnapshot
@@ -832,6 +956,9 @@ export function buildForcedSeamOpeningBlock(args: {
     : ''
   const closedBlock = snap?.closed_beats?.trim()
     ? `0f. **已闭合情节（同场合）**：上章已写完「${snap.closed_beats}」——同一时间/场地勿再掏出/递给/掰开；换日、换场或写明「又一次」后可写新交付；可一句回忆带过。`
+    : ''
+  const staleCatalystBlock = staleCatalystDropped
+    ? '0s. **【本章起因】已在上章落地**：开篇禁止重演踏入/进林过程；轻锚后直接进入下一实质拍（欲望/阻碍/局面变化等）。'
     : ''
   const bridgeBlock = copresent && beat1 && !quietToVisit
     ? [
@@ -854,7 +981,9 @@ export function buildForcedSeamOpeningBlock(args: {
       ? '1. 开篇须轻锚承接【上章结尾】完成态之后的新信息（手法自选），勿重做收束、勿复述已闭合交付。'
       : copresent
         ? '1. 第一段：轻锚承接【上章结尾】已在场状态（一句即可），禁止推门进来、禁止雪光重开直接提猎物进门。'
-        : '1. 第一段：轻锚点明【上章结尾】场合/状态后进入本章新拍（一句即可），禁止复述上章闭合高潮；禁止清晨离家、目送叮嘱、重起炉灶式开篇。'
+        : prevEndsWithDeparture(args.prevTail)
+          ? '1. 第一段：轻锚承接【上章结尾】已在途/离场状态，禁止倒退到封闭场合重演出发；可回忆半句，勿整段重演离家。'
+          : '1. 第一段：轻锚点明【上章结尾】场合/状态后进入本章新拍（一句即可），禁止复述上章闭合高潮；禁止清晨离家、目送叮嘱、重起炉灶式开篇。'
   const step2 = !beat1
     ? '2. 轻锚之后：立刻进入【本章大纲】第一个情节拍点。'
     : quietToVisit
@@ -868,10 +997,13 @@ export function buildForcedSeamOpeningBlock(args: {
     '0a. **轻锚（一句即可）**：须点明上章末场合/状态（如仍在炕上、屋里、夜里），再转入本章新信息；**禁止**把上章场面再演一遍。',
     '0a2. **轻锚篇幅**：接缝锚句合计 ≤ 铺垫拍预算约 8%；人名出场介绍也算进铺垫，不另开强制段。',
     '0b. **在场硬性**：上章末人物已在场共处时，禁止开篇再写进门/归来/抵达或凭空「在外一宿」；若要写归来或隔夜外出，须先承接离场。',
+    '0b2. **离场硬性**：上章末已离场/在途时，禁止开篇倒退到封闭场合/出入口重演出发；须从上章末途中状态之后承接。',
+    '0b3. **天候硬性**：上章末雨雪已落地/密下时，禁止开篇写成「才开始落/稀稀拉拉初起」；须承接已有天候，或写明另一场/次日天气。',
     '0d. **状态硬性**：上章末已完成的收束动作，禁止开篇用「重新/又/再」重做。新冲突须在开篇窗口内交代来者/起势（顺叙或先果后因均可），禁止整段没头没尾半路接戏。',
     '0g. **禁半句对白中起**：禁止开篇以「那句…还没落地 / 又补了一句 / 话音未落」等中段对白起笔；须先有听者场合或来历。',
     '0h. **人名不抢戏**：大纲未点名的邻里默认「墙外女人 / 邻家 / 外头声」；若要起名，用半句交代来历，计入铺垫预算。',
     closedBlock,
+    staleCatalystBlock,
     visitBlock,
     bridgeBlock,
     step1,
@@ -1184,7 +1316,7 @@ export function detectChapterSeamReplay(args: {
   const opening = content.trim().slice(0, Math.min(content.trim().length, 1800))
   if ([...content.trim()].length < 80) return null
 
-  // 0) 章中交付重演（一饼两吃）：不限开篇
+  // 0) 章中交付重演（一饼两吃）：不限开篇（机械）
   const bodyReplay = detectChapterBodyEventReplay({
     content,
     chapterNumber,
@@ -1195,78 +1327,29 @@ export function detectChapterSeamReplay(args: {
 
   if ([...opening].length < 80) return null
 
-  // 1) 上章末契约对照（地点/经过）+ 在场再进门 + 日内时辰倒退
-  const placeHit = detectOpeningAgainstChapterEndSnapshot({
+  // 高置信结构自洽（机械证据；模型审曾对本案软放行）：
+  // - 已离场/在途 → 开篇再演封闭场合出发
+  // - 过程相位倒退（如雨雪已密 → 才开始）
+  // 仍交模型审、不进硬审：地点字面 miss、大纲冷开篇、弱承接+过期、拍点倒序、钟点词序 alone。
+  // 参见 docs/superpowers/specs/2026-08-08-seam-causality-model-audit-design.md
+  const presenceHit = detectChapterSeamPresenceReentry({
     content,
     chapterNumber,
+    prevChapterTail: prevTail || prevChapterTail,
     prevSnapshot,
   })
-  if (placeHit) return placeHit
+  if (presenceHit) return presenceHit
 
-  const reentryHit = detectChapterSeamPresenceReentry({
+  const weatherHit = detectChapterSeamWeatherRewind({
     content,
     chapterNumber,
-    prevChapterTail,
-    prevSnapshot,
+    prevChapterTail: prevTail || prevChapterTail,
   })
-  if (reentryHit) return reentryHit
-
-  const quietJump = detectChapterSeamQuietCloseJump({
-    content,
-    chapterNumber,
-    prevChapterTail,
-    prevSnapshot,
-  })
-  if (quietJump) return quietJump
-
-  const prevForTime = prevTailWithSnapshotTime(prevChapterTail, prevSnapshot)
-  if (prevForTime.trim()) {
-    const timeHit = detectChapterSeamTimeRewind({
-      content,
-      chapterNumber,
-      prevChapterTail: prevForTime,
-    })
-    if (timeHit) {
-      return prevSnapshot
-        ? {
-          ...timeHit,
-          message: `${timeHit.message}（上章末契约：时间=${prevSnapshot.time}；刚发生=${prevSnapshot.last_event}）`,
-        }
-        : timeHit
-    }
-  }
+  if (weatherHit) return weatherHit
 
   if (!prevTail) return null
 
-  // 2) 大纲拍点倒序 / 落实过期拍点
-  const orderHit = detectOutlineBeatOrderRewind({
-    content,
-    chapterNumber,
-    prevChapterTail,
-    chapterOutline,
-  })
-  if (orderHit) return orderHit
-
-  // 3) 过期大纲 + 开篇弱承接（换措辞倒退重开）
-  const weakHit = detectStaleOutlineWeakContinuation({
-    content,
-    chapterNumber,
-    prevChapterTail,
-    chapterOutline,
-  })
-  if (weakHit) return weakHit
-
-  // 4) 开篇未进本章大纲前段（无过期拍点时的冷开篇/时空倒退）
-  const coldHit = detectChapterSeamColdOpen({
-    content,
-    chapterNumber,
-    prevChapterTail,
-    chapterOutline,
-    prevSnapshot,
-  })
-  if (coldHit) return coldHit
-
-  // 5) 上章末冲突高潮被整段换皮重演（如赵大彪对峙再写一遍）
+  // 1) 上章末冲突高潮被整段换皮重演（机械字面重合）
   const climaxHit = detectChapterSeamClimaxReplay({
     content,
     chapterNumber,

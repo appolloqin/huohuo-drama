@@ -30,6 +30,7 @@ import * as dramasRepo from '../../db/repos/dramas/index.js'
 import { parseNovelMetadata } from '../../common/novel/novel-meta.js'
 import { extractOutlineBeatPhrases } from './novel-chapter-seam.js'
 import { filterDraftByChapterOutline } from './novel-draft-outline-filter.js'
+import { stripOutlinePoisonProse } from './novel-outline-poison-strip.js'
 
 /** ??????????????????????? */
 export const OUTLINE_COMPLIANCE_MAX_ROUNDS = 3
@@ -111,16 +112,17 @@ function scoreOutlineCandidate(args: {
     'early_beats_missing',
     'chapter_seam_cold_open',
     'next_chapter_beat_leak',
+    'outline_endpoint_overshoot',
     'outline_boundary_model',
     'head_orphan_span',
   ])
-  // overshoot / event_replay / draft_orphan??????????????????
+  // overshoot / leak 权重提高，促使修写优先砍掉下章结果态
   for (const r of check.reasons) {
     if (r.code === 'chapter_seam_cold_open') score -= 160
+    else if (r.code === 'outline_endpoint_overshoot' || r.code === 'next_chapter_beat_leak') score -= 140
     else if (hard.has(r.code)) score -= 80
     else if (
-      r.code === 'outline_endpoint_overshoot'
-      || r.code === 'chapter_event_replay'
+      r.code === 'chapter_event_replay'
       || r.code === 'draft_orphan_replay'
       || r.code === 'catalyst_agency_fail'
       || r.code === 'chapter_forward_seam_copy'
@@ -339,6 +341,43 @@ export async function maybeFixOutlineCompliance(args: {
     ? await loadPrevChapterEndSnapshot(dramaId, chapterNumber)
     : null
 
+  // 模型审注入：状态卡 6 维 + 账本 15 维
+  let prevStateCardBlock = ''
+  let nextStateCardBlock = ''
+  let prevLedgerBlock = ''
+  try {
+    const {
+      readEpisodeChapterStateCard,
+      readEpisodeContinuityLedger,
+    } = await import('../../common/drama/episode-meta.js')
+    const { formatStateCardSixDimAuditBlock } = await import('../../common/novel/novel-state-card.js')
+    const { formatContinuityLedgerAuditBlock } = await import('../../common/novel/novel-continuity-state.js')
+    if (chapterNumber >= 2) {
+      const prevEp = await episodesRepo.findEpisodeByDramaAndNumber(dramaId, chapterNumber - 1)
+      if (prevEp) {
+        const prevCard = readEpisodeChapterStateCard(prevEp.metadata, chapterNumber - 1)
+        if (prevCard) prevStateCardBlock = formatStateCardSixDimAuditBlock(prevCard, 'prev')
+        const prevLedger = readEpisodeContinuityLedger(prevEp.metadata, chapterNumber - 1)
+        prevLedgerBlock = formatContinuityLedgerAuditBlock(
+          prevLedger,
+          `【一致性账本·15维·上章第${chapterNumber - 1}章末——章初须自洽】`,
+        )
+      }
+    }
+    if (considerNext) {
+      const nextEp = await episodesRepo.findEpisodeByDramaAndNumber(dramaId, chapterNumber + 1)
+      if (nextEp) {
+        const nextCard = readEpisodeChapterStateCard(nextEp.metadata, chapterNumber + 1)
+        if (nextCard) nextStateCardBlock = formatStateCardSixDimAuditBlock(nextCard, 'next')
+      }
+    }
+  } catch (err: unknown) {
+    logTaskWarn('Novel', 'outline-dimension-context-load-failed', {
+      chapterNumber,
+      error: err instanceof Error ? err.message : String(err),
+    })
+  }
+
   const detectLocal = (text: string, briefForDetect?: string) => detectOutlineCompliance({
     content: text,
     chapterOutline,
@@ -354,7 +393,7 @@ export async function maybeFixOutlineCompliance(args: {
   const detect = async (text: string, briefForDetect?: string) => {
     const brief = briefForDetect ?? alignedBrief
     const local = detectLocal(text, brief)
-    onProgress?.('??????????')
+    onProgress?.('维度自洽模型审')
     const modelReasons = await auditOutlineBoundaryWithModel({
       content: text,
       chapterOutline,
@@ -364,6 +403,9 @@ export async function maybeFixOutlineCompliance(args: {
       prevSnapshotBlock: prevSnapshot
         ? (await import('./novel-chapter-end-snapshot.js')).formatChapterEndSnapshotBlock(prevSnapshot)
         : undefined,
+      prevStateCardBlock: prevStateCardBlock || undefined,
+      nextStateCardBlock: nextStateCardBlock || undefined,
+      prevLedgerBlock: prevLedgerBlock || undefined,
       chapterNumber,
       billing,
     })
@@ -389,6 +431,65 @@ export async function maybeFixOutlineCompliance(args: {
   let check = await detect(content)
   if (check.ok) {
     return { content, fixed: false, passed: true, attempts: 0, reasons: [] }
+  }
+
+  /** 正文级删毒：去掉大纲无关句；末行动拍之后一律丢弃，再进入 LLM 修写 */
+  const shouldStripPoison = (reasons: OutlineComplianceReason[]) =>
+    reasons.some(r =>
+      r.code === 'outline_endpoint_overshoot'
+      || r.code === 'outline_boundary_model'
+      || r.code === 'next_chapter_beat_leak'
+      || r.code === 'draft_orphan_replay'
+      || r.code === 'head_orphan_span',
+    )
+
+  const applyPoisonStrip = (text: string): string => {
+    if (!chapterOutline?.trim()) return text
+    const stripped = stripOutlinePoisonProse({ content: text, chapterOutline })
+    if (!stripped.changed) return text
+    // 全毒：交后续按大纲+上下文重写，禁止回退原文
+    if (stripped.keepCount < 1 || !stripped.text.trim()) {
+      logTaskWarn('Novel', 'outline-poison-strip-all', {
+        chapterNumber,
+        from: countNovelChars(text),
+        actionBeat: stripped.actionBeat.slice(0, 40),
+      })
+      return ''
+    }
+    // 删毒后可能很短（再由 LLM 在大纲内写厚）；只要确实砍掉毒段就采用
+    if (stripped.removedChars < 80 && countNovelChars(stripped.text) < 40) return text
+    logTaskWarn('Novel', 'outline-poison-strip', {
+      chapterNumber,
+      from: countNovelChars(text),
+      to: countNovelChars(stripped.text),
+      keep: stripped.keepCount,
+      discard: stripped.discardCount,
+      removedChars: stripped.removedChars,
+      actionBeat: stripped.actionBeat.slice(0, 40),
+    })
+    return stripped.text
+  }
+
+  if (shouldStripPoison(check.reasons)) {
+    const sanitized = applyPoisonStrip(content)
+    if (sanitized !== content) {
+      content = sanitized
+      // 全毒清空：禁止当成「已通过」提前返回；进入按大纲重写
+      if (!content.trim()) {
+        check = {
+          ok: false,
+          reasons: [{
+            code: 'outline_endpoint_overshoot',
+            message: '删毒后无有效正文：原文与本章大纲保留拍无关，须按大纲重写',
+          }],
+        }
+      } else {
+        check = await detect(content)
+        if (check.ok) {
+          return { content, fixed: true, passed: true, attempts: 0, reasons: [] }
+        }
+      }
+    }
   }
 
   /** ????/????????? stub????????????????? */
@@ -521,7 +622,7 @@ export async function maybeFixOutlineCompliance(args: {
     const orphan = lastReasons.find(r => r.code === 'draft_orphan_replay')?.detail
     // ??????????? best ???????????????????
     const rewriteBase = bestStillOriginal ? original : best
-    const next = await rewriteOnceForOutline({
+    let next = await rewriteOnceForOutline({
       content: rewriteBase,
       reasons: lastReasons,
       chapterOutline,
@@ -540,6 +641,9 @@ export async function maybeFixOutlineCompliance(args: {
       logTaskWarn('Novel', 'outline-compliance-fix-unusable', { chapterNumber, round })
       continue
     }
+
+    // 修写后再次删毒，防止模型把下章结果态写回
+    next = applyPoisonStrip(next)
 
     const nextCheck = await detect(next, fixBrief)
     lastReasons = nextCheck.reasons
@@ -590,7 +694,7 @@ export async function maybeFixOutlineCompliance(args: {
   ) {
     onProgress?.('????????')
     const nuclearBase = bestStillOriginal ? original : best
-    const nuclear = await rewriteOnceForOutline({
+    let nuclear = await rewriteOnceForOutline({
       content: nuclearBase,
       reasons: bestReasons.some(r => r.code === 'chapter_seam_cold_open')
         ? bestReasons
@@ -608,6 +712,7 @@ export async function maybeFixOutlineCompliance(args: {
     })
     attempts += 1
     if (nuclear) {
+      nuclear = applyPoisonStrip(nuclear)
       const nuclearCheck = await detect(nuclear, outlineOnlyBrief)
       const nuclearScore = scoreOf(nuclear, outlineOnlyBrief) - reasonPenalty(nuclearCheck.reasons)
       const nuclearN = countNovelChars(nuclear)
@@ -650,7 +755,7 @@ export async function maybeFixOutlineCompliance(args: {
   }
 
   // ????????????????????/?????????
-  let deliver = best
+  let deliver = applyPoisonStrip(best)
   const originalScore = scoreOf(original, fixBrief) - reasonPenalty(check.reasons)
   const originalRank = seamHardRank(check.reasons)
   const bestRank = seamHardRank(bestReasons)
@@ -708,6 +813,29 @@ export async function maybeFixOutlineCompliance(args: {
     })
   }
 
+  // 交付态仍为空：硬拒（勿交给后续一致性审去报 empty_content）
+  if (!deliver.trim()) {
+    const emptyReasons: OutlineComplianceReason[] = lastReasons.length
+      ? lastReasons
+      : [{
+          code: 'outline_endpoint_overshoot',
+          message: '删毒/修写后无有效正文，须按本章大纲重写',
+        }]
+    logTaskWarn('Novel', 'outline-compliance-hard-reject-empty', {
+      chapterNumber,
+      attempts,
+      codes: emptyReasons.map(r => r.code),
+    })
+    return {
+      content: '',
+      fixed: true,
+      passed: false,
+      attempts,
+      reasons: emptyReasons,
+      hardReject: true,
+    }
+  }
+
   const deliverCheck = await detect(deliver, fixBrief)
   lastReasons = deliverCheck.reasons
   const deliverStillSeam = lastReasons.some(
@@ -736,7 +864,7 @@ export async function maybeFixOutlineCompliance(args: {
     deliverOverLength,
   })
 
-  // ????????
+  // 章缝冷开篇未修好 → 硬拒绝
   if (deliverStillSeam) {
     logTaskWarn('Novel', 'outline-compliance-hard-reject', {
       chapterNumber,
@@ -754,31 +882,30 @@ export async function maybeFixOutlineCompliance(args: {
     }
   }
 
-  // catalyst_agency_fail?????????? C ????????? chapter_seam_cold_open
+  // catalyst_agency_fail 等与章缝同类：修不掉则硬拒绝（见下方）
   const deliverStillAgency = lastReasons.some(r => r.code === 'catalyst_agency_fail')
   const deliverStillForward = lastReasons.some(r => r.code === 'chapter_forward_seam_copy')
   const deliverStillOrphan = lastReasons.some(r => r.code === 'draft_orphan_replay')
-  const softOnly = lastReasons.length > 0 && lastReasons.every(r => [
-    'early_beats_missing',
-    'outline_endpoint_overshoot',
-    'outline_boundary_model',
-    'next_chapter_beat_leak',
-    'chapter_event_replay',
-    'draft_orphan_replay',
-    'catalyst_agency_fail',
-    'chapter_forward_seam_copy',
-    'brief_pacing',
-    'brief_pending_overshoot',
-    'named_as_generic_epithet',
-    'named_as_generic',
-    'head_orphan_span',
-    'opening_mid_dialogue',
-    'opening_unexplained_name',
-  ].includes(r.code))
+
+  // 章末越界 / 下章抢戏修不掉 → 硬拒绝（禁止「软通过」放行击杀等下章情节）
+  if (deliverStillOvershoot) {
+    logTaskWarn('Novel', 'outline-compliance-hard-reject-overshoot', {
+      chapterNumber,
+      codes: lastReasons.map(r => r.code),
+      chars: deliverChars,
+    })
+    return {
+      content: '',
+      fixed: false,
+      passed: false,
+      attempts,
+      reasons: lastReasons.length ? lastReasons : check.reasons,
+      hardReject: true,
+    }
+  }
 
   if (
-    deliverStillOvershoot
-    || deliverOverLength
+    deliverOverLength
     || deliverStillEventReplay
     || deliverStillOrphan
     || deliverStillAgency
@@ -795,15 +922,30 @@ export async function maybeFixOutlineCompliance(args: {
       deliverStillOrphan,
       deliverStillAgency,
       deliverStillForward,
-      softOnly,
     })
   }
 
-  // soft-only leftovers: accept + warn (never empty hard-reject)
+  // 仅剩软告警时可接受；越界/抢戏已在上方硬拒绝，不得出现在 softOnly
+  const softOnly = lastReasons.length > 0 && lastReasons.every(r => [
+    'early_beats_missing',
+    'outline_boundary_model',
+    'chapter_event_replay',
+    'draft_orphan_replay',
+    'catalyst_agency_fail',
+    'chapter_forward_seam_copy',
+    'brief_pacing',
+    'brief_pending_overshoot',
+    'named_as_generic_epithet',
+    'named_as_generic',
+    'head_orphan_span',
+    'opening_mid_dialogue',
+    'opening_unexplained_name',
+  ].includes(r.code))
+
   return {
     content: deliver,
     fixed: deliver !== original,
-    passed: softOnly,
+    passed: lastReasons.length === 0 || softOnly,
     attempts,
     reasons: lastReasons,
   }

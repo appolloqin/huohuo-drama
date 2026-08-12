@@ -16,12 +16,29 @@ import {
   type BatchProgressPayload,
   type BatchSummary,
 } from './batch-generation.js'
+import {
+  rebuildAllChapterStateCards,
+  validateAllChapterStateCards,
+  type StateCardRebuildSummary,
+} from '../novel/novel-state-card-service.js'
 import { logTaskError, logTaskStart, logTaskSuccess } from '../../common/task/task-logger.js'
-
 export type BatchJobStatus = 'pending' | 'running' | 'completed' | 'failed' | 'stopped' | 'cancelled'
+
+function stateCardSummaryToBatch(s: StateCardRebuildSummary): BatchSummary {
+  return {
+    generated: s.processed,
+    skipped: s.skipped,
+    failed: s.failed,
+    errors: s.errors.map(e => ({ episode_number: e.chapter, message: e.message })),
+  }
+}
+
+export type BatchJobKind = 'generate' | 'state_card_rebuild' | 'state_card_validate'
 
 export type BatchJobPayload = {
   scope?: BatchScope
+  /** 默认 generate；状态卡全书重建用 state_card_rebuild */
+  kind?: BatchJobKind
 }
 
 export type BatchJobRecord = {
@@ -143,8 +160,9 @@ export async function createAndStartBatchJob(args: {
   userRole: string
   dramaId: number
   scope?: BatchScope
+  kind?: BatchJobKind
 }): Promise<{ job: BatchJobRecord; alreadyRunning?: BatchJobRecord }> {
-  const { userId, userRole, dramaId, scope } = args
+  const { userId, userRole, dramaId, scope, kind = 'generate' } = args
 
   const existing = await findActiveBatchJobForDrama(userId, dramaId)
   if (existing) return { job: existing, alreadyRunning: existing }
@@ -155,9 +173,15 @@ export async function createAndStartBatchJob(args: {
   if (!drama) throw new Error('项目不存在')
 
   const isNovel = isNovelProject(drama)
+  if ((kind === 'state_card_rebuild' || kind === 'state_card_validate') && !isNovel) {
+    throw new Error('仅小说项目支持状态卡批量任务')
+  }
   const ts = now()
   const id = randomUUID()
-  const payload: BatchJobPayload = { scope: scope ?? { mode: 'remaining' } }
+  const payload: BatchJobPayload =
+    kind === 'state_card_rebuild' || kind === 'state_card_validate'
+      ? { kind }
+      : { kind: 'generate', scope: scope ?? { mode: 'remaining' } }
 
   await batchJobsRepo.insertBatchJob({
     id,
@@ -218,9 +242,46 @@ async function executeBatchJob(jobId: string) {
       })
     }
 
+    const payload = parseJson<BatchJobPayload>(row.payload)
     let summary: BatchSummary
-    if (row.projectType === 'novel') {
-      const payload = parseJson<BatchJobPayload>(row.payload)
+
+    if (payload?.kind === 'state_card_rebuild' || payload?.kind === 'state_card_validate') {
+      const billing = {
+        userId,
+        role: userRole,
+        reason: payload.kind === 'state_card_validate' ? '小说状态卡批量校验' : '小说状态卡批量重建',
+        resourceType: 'drama',
+        resourceId: row.dramaId,
+      }
+      const onCardProgress = (p: { current: number; total: number; chapter_number: number }) => {
+        onProgress({
+          index: p.current,
+          total: p.total,
+          episode_id: 0,
+          episode_number: p.chapter_number,
+          phase: 'chapter',
+          status: 'start',
+          message: `状态卡第 ${p.chapter_number} 章（${p.current}/${p.total}）`,
+        })
+      }
+      const cardSummary = payload.kind === 'state_card_validate'
+        ? await validateAllChapterStateCards({
+          dramaId: row.dramaId,
+          repairInvalid: true,
+          shouldStop,
+          billing,
+          onProgress: onCardProgress,
+        })
+        : await rebuildAllChapterStateCards({
+          dramaId: row.dramaId,
+          preferLlm: true,
+          stopOnError: true,
+          shouldStop,
+          billing,
+          onProgress: onCardProgress,
+        })
+      summary = stateCardSummaryToBatch(cardSummary)
+    } else if (row.projectType === 'novel') {
       summary = await batchGenerateNovelChapters({
         dramaId: row.dramaId,
         userId,
@@ -230,7 +291,6 @@ async function executeBatchJob(jobId: string) {
         shouldStop,
       })
     } else {
-      const payload = parseJson<BatchJobPayload>(row.payload)
       summary = await batchGenerateDramaEpisodes({
         dramaId: row.dramaId,
         userId,
@@ -252,7 +312,7 @@ async function executeBatchJob(jobId: string) {
       finishedAt: now(),
       errorMessage: summary.errors[0]?.message ?? null,
     })
-    logTaskSuccess('BatchJob', 'run', { jobId, status, ...summary })
+    logTaskSuccess('BatchJob', 'run', { jobId, status, kind: payload?.kind || 'generate', ...summary })
   } catch (err: any) {
     const message = err?.message || '批量任务失败'
     await updateJob(jobId, {

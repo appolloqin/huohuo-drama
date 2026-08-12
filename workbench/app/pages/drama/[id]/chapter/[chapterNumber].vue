@@ -175,9 +175,33 @@
               ? tx(tm.novel.continuityCheckPassed, { score: continuityCheck.score })
               : tx(tm.novel.continuityCheckFailed, { score: continuityCheck.score }) }}
           </p>
-          <p v-if="continuityCheck.summary" class="continuity-check-summary">
-            {{ tm.novel.continuityCheckSummary }}：{{ continuityCheck.summary }}
+          <p v-if="continuityCheck.reason || continuityCheck.summary" class="continuity-check-summary">
+            {{ tm.novel.continuityCheckSummary }}：{{ continuityCheck.reason || continuityCheck.summary }}
           </p>
+          <ul v-if="continuityFailDimensions.length" class="continuity-issue-list">
+            <li v-for="(dim, idx) in continuityFailDimensions" :key="'dim-' + idx" class="continuity-issue-item">
+              <div class="continuity-issue-head">
+                <span class="continuity-issue-badge model">{{ tm.novel.continuityCheckLayerModel }}</span>
+                <span class="continuity-issue-label">{{ dim.dimension }}</span>
+              </div>
+              <p class="continuity-issue-msg">{{ dim.reason }}<template v-if="dim.excerpt">（摘录「{{ dim.excerpt }}」）</template></p>
+            </li>
+          </ul>
+          <details v-if="continuityCheck.dimensions?.length" class="continuity-dim-details">
+            <summary>{{ tm.novel.continuityCheckDimensions }}（{{ continuityCheck.dimensions.length }}）</summary>
+            <ul class="continuity-dim-list">
+              <li
+                v-for="(dim, idx) in continuityCheck.dimensions"
+                :key="'all-dim-' + idx"
+                class="continuity-dim-item"
+                :class="'status-' + dim.status"
+              >
+                <span class="continuity-dim-status">{{ dim.status }}</span>
+                <strong>{{ dim.dimension }}</strong>
+                <span>{{ dim.reason }}</span>
+              </li>
+            </ul>
+          </details>
           <ul v-if="continuityBlockingItems.length" class="continuity-issue-list">
             <li v-for="(item, idx) in continuityBlockingItems" :key="idx" class="continuity-issue-item">
               <div class="continuity-issue-head">
@@ -190,6 +214,110 @@
               <p class="continuity-issue-msg">{{ item.message }}</p>
             </li>
           </ul>
+        </div>
+        <div class="side-block state-card-block">
+          <div class="field-label-row">
+            <label class="field-label">{{ tm.novel.stateCardTitle }}</label>
+            <button
+              type="button"
+              class="btn btn-sm"
+              :disabled="stateCardBusy"
+              @click="toggleStateCardDetail"
+            >
+              {{ stateCardDetailOpen ? tm.novel.stateCardHide : tm.novel.stateCardView }}
+            </button>
+          </div>
+          <p v-if="stateCardInvalidIssues" class="continuity-check-summary is-warn">
+            {{ tx(tm.novel.stateCardInvalidHint, { issues: stateCardInvalidIssues }) }}
+          </p>
+          <p v-else-if="stateCardStale" class="continuity-check-summary">{{ tm.novel.stateCardStaleHint }}</p>
+          <p v-else-if="stateCardSummaryLine" class="continuity-check-summary">{{ stateCardSummaryLine }}</p>
+          <dl v-if="stateCardDetailOpen" class="state-card-detail">
+            <template v-if="stateCardDetail">
+              <div class="state-card-row">
+                <dt>{{ tm.novel.stateCardFieldTimeline }}</dt>
+                <dd>{{ stateCardDetail.timeline }}</dd>
+              </div>
+              <div class="state-card-row">
+                <dt>{{ tm.novel.stateCardFieldPlace }}</dt>
+                <dd>{{ stateCardDetail.place }}</dd>
+              </div>
+              <div class="state-card-row">
+                <dt>{{ tm.novel.stateCardFieldScene }}</dt>
+                <dd>{{ stateCardDetail.scene }}</dd>
+              </div>
+              <div class="state-card-row">
+                <dt>{{ tm.novel.stateCardFieldCast }}</dt>
+                <dd>{{ stateCardDetail.cast }}</dd>
+              </div>
+              <div class="state-card-row">
+                <dt>{{ tm.novel.stateCardFieldLastEvent }}</dt>
+                <dd>{{ stateCardDetail.progress?.last_event }}</dd>
+              </div>
+              <div v-if="stateCardDetail.progress?.open_threads" class="state-card-row">
+                <dt>{{ tm.novel.stateCardFieldOpen }}</dt>
+                <dd>{{ stateCardDetail.progress.open_threads }}</dd>
+              </div>
+              <div v-if="stateCardDetail.progress?.closed_beats" class="state-card-row">
+                <dt>{{ tm.novel.stateCardFieldClosed }}</dt>
+                <dd>{{ stateCardDetail.progress.closed_beats }}</dd>
+              </div>
+              <div class="state-card-row">
+                <dt>{{ tm.novel.stateCardFieldProps }}</dt>
+                <dd>{{ stateCardDetail.props }}</dd>
+              </div>
+              <div v-if="stateCardDetail.summary_line" class="state-card-row">
+                <dt>{{ tm.novel.stateCardFieldSummary }}</dt>
+                <dd>{{ stateCardDetail.summary_line }}</dd>
+              </div>
+              <div class="state-card-row">
+                <dt>{{ tm.novel.stateCardFieldStatus }}</dt>
+                <dd>
+                  {{ stateCardDetail.validation_status || 'unchecked' }}
+                  <span v-if="stateCardCatalystLabel"> · {{ stateCardCatalystLabel }}</span>
+                </dd>
+              </div>
+              <div v-if="stateCardDetail.updated_at" class="state-card-row">
+                <dt>{{ tm.novel.stateCardFieldUpdated }}</dt>
+                <dd>{{ formatStateCardTime(stateCardDetail.updated_at) }}</dd>
+              </div>
+            </template>
+            <p v-else class="continuity-check-summary">{{ tm.novel.stateCardEmpty }}</p>
+          </dl>
+          <div class="action-row">
+            <button
+              class="btn"
+              type="button"
+              :disabled="chapterBusy || stateCardBusy || !canGenerate"
+              @click="rebuildCurrentStateCard"
+            >
+              {{ stateCardBusy ? tm.novel.stateCardRebuilding : tm.novel.stateCardRebuildChapter }}
+            </button>
+            <button
+              class="btn"
+              type="button"
+              :disabled="chapterBusy || stateCardBusy || !canGenerate"
+              @click="validateCurrentStateCard"
+            >
+              {{ tm.novel.stateCardValidateChapter }}
+            </button>
+            <button
+              class="btn"
+              type="button"
+              :disabled="chapterBusy || stateCardBusy || !canGenerate"
+              @click="rebuildAllStateCards"
+            >
+              {{ tm.novel.stateCardRebuildAll }}
+            </button>
+            <button
+              class="btn"
+              type="button"
+              :disabled="chapterBusy || stateCardBusy || !canGenerate"
+              @click="validateAllStateCards"
+            >
+              {{ tm.novel.stateCardValidateAll }}
+            </button>
+          </div>
         </div>
       </aside>
 
@@ -388,7 +516,161 @@ const aiDetectSheetOpen = ref(false)
 const savedAiDetection = ref(null)
 const aiDetectionResult = ref(null)
 const continuityCheck = ref(null)
+const stateCardBusy = ref(false)
+const stateCardStale = ref(false)
+const stateCardSummaryLine = ref('')
+const stateCardInvalidIssues = ref('')
+const stateCardDetailOpen = ref(false)
+const stateCardDetail = ref(null)
 const charCount = computed(() => countNovelChars(chapterBody.value))
+const stateCardCatalystLabel = computed(() => {
+  const done = stateCardDetail.value?.progress?.catalyst_done
+  if (done === true) return tm.value.novel.stateCardCatalystDone
+  if (done === false) return tm.value.novel.stateCardCatalystPending
+  if (done === 'unknown') return tm.value.novel.stateCardCatalystUnknown
+  return ''
+})
+
+function formatStateCardTime(iso) {
+  if (!iso) return ''
+  try {
+    return new Date(iso).toLocaleString()
+  } catch {
+    return iso
+  }
+}
+
+async function loadStateCardDetail() {
+  const ch = activeChapter.value
+  const chapterId = ch?.id ?? ch?.episode_id
+  if (!chapterId) {
+    stateCardDetail.value = null
+    return
+  }
+  try {
+    const res = await novelAPI.getChapterStateCard(Number(chapterId))
+    stateCardDetail.value = res.card || null
+    if (res.stale != null) stateCardStale.value = !!res.stale
+    if (res.card?.summary_line) stateCardSummaryLine.value = res.card.summary_line
+    stateCardInvalidIssues.value = res.card?.validation_status === 'invalid'
+      ? (res.card.validation_issues || []).slice(0, 2).join('；')
+      : ''
+  } catch {
+    stateCardDetail.value = null
+  }
+}
+
+async function toggleStateCardDetail() {
+  stateCardDetailOpen.value = !stateCardDetailOpen.value
+  if (stateCardDetailOpen.value) await loadStateCardDetail()
+}
+
+async function refreshStateCardHint() {
+  try {
+    const data = await novelAPI.listStateCards(dramaId)
+    const n = chapterNum.value
+    const row = (data.chapters || []).find(c => c.chapter_number === n)
+    stateCardStale.value = !row || row.stale || !row.has_card
+    stateCardSummaryLine.value = row?.summary_line || ''
+    stateCardInvalidIssues.value = row?.validation_status === 'invalid'
+      ? (row.validation_issues || []).slice(0, 2).join('；')
+      : ''
+    if (stateCardDetailOpen.value) await loadStateCardDetail()
+  } catch {
+    /* ignore */
+  }
+}
+
+async function rebuildCurrentStateCard() {
+  const ch = activeChapter.value
+  const chapterId = ch?.id ?? ch?.episode_id
+  if (!chapterId) {
+    toast.error(tm.value.novel.stateCardMissingChapter)
+    return
+  }
+  stateCardBusy.value = true
+  try {
+    const res = await novelAPI.rebuildChapterStateCard(Number(chapterId), {
+      text: chapterBody.value,
+      force: true,
+    })
+    toast.success(tx(tm.value.novel.stateCardRebuildOk, { source: res.source || 'ok' }))
+    await refreshStateCardHint()
+  } catch (err) {
+    toast.error(err?.message || tm.value.novel.stateCardRebuilding)
+  } finally {
+    stateCardBusy.value = false
+  }
+}
+
+async function rebuildAllStateCards() {
+  stateCardBusy.value = true
+  try {
+    const res = await novelAPI.rebuildAllStateCards(dramaId)
+    if (res.mode === 'batch_job') {
+      toast.success(tm.value.novel.stateCardRebuildAllJobOk)
+    } else {
+      toast.success(tx(tm.value.novel.stateCardRebuildAllSyncOk, {
+        ok: res.processed ?? 0,
+        skip: res.skipped ?? 0,
+        fail: res.failed ?? 0,
+      }))
+    }
+    await refreshStateCardHint()
+  } catch (err) {
+    toast.error(err?.message || tm.value.novel.stateCardRebuilding)
+  } finally {
+    stateCardBusy.value = false
+  }
+}
+
+async function validateCurrentStateCard() {
+  const ch = activeChapter.value
+  const chapterId = ch?.id ?? ch?.episode_id
+  if (!chapterId) {
+    toast.error(tm.value.novel.stateCardMissingChapter)
+    return
+  }
+  stateCardBusy.value = true
+  try {
+    const res = await novelAPI.validateChapterStateCard(Number(chapterId), {
+      text: chapterBody.value,
+      repair: true,
+    })
+    const cardMeta = res.card && typeof res.card === 'object'
+      ? res.card
+      : null
+    const status = cardMeta?.validation_status || res.validation?.status || 'ok'
+    if (status === 'ok') toast.success(tm.value.novel.stateCardValidateOk)
+    else toast.success(tx(tm.value.novel.stateCardValidateFixed, { status }))
+    await refreshStateCardHint()
+  } catch (err) {
+    toast.error(err?.message || tm.value.novel.stateCardRebuilding)
+  } finally {
+    stateCardBusy.value = false
+  }
+}
+
+async function validateAllStateCards() {
+  stateCardBusy.value = true
+  try {
+    const res = await novelAPI.validateAllStateCards(dramaId)
+    if (res.mode === 'batch_job') {
+      toast.success(tm.value.novel.stateCardValidateAllJobOk)
+    } else {
+      toast.success(tx(tm.value.novel.stateCardValidateAllOk, {
+        n: res.checked ?? 0,
+        bad: res.invalid ?? 0,
+        fix: res.repaired ?? 0,
+      }))
+    }
+    await refreshStateCardHint()
+  } catch (err) {
+    toast.error(err?.message || tm.value.novel.stateCardRebuilding)
+  } finally {
+    stateCardBusy.value = false
+  }
+}
 
 // ── AI 检测 / 连贯性展示 ─────────────────────────────────────
 const continuityBlockingItems = computed(() => {
@@ -396,6 +678,12 @@ const continuityBlockingItems = computed(() => {
   if (!check) return []
   if (check.blocking_items?.length) return check.blocking_items
   return []
+})
+
+const continuityFailDimensions = computed(() => {
+  const dims = continuityCheck.value?.dimensions
+  if (!Array.isArray(dims)) return []
+  return dims.filter(d => d && d.status === 'fail')
 })
 
 const aiVerdictClass = computed(() => {
@@ -497,6 +785,7 @@ async function reloadChapterWorkbench() {
     generatePrompt.value = savedBrief || chapterOutline.value.trim()
     savedAiDetection.value = brief.ai_detection || null
     continuityCheck.value = brief.continuity_check || null
+    await refreshStateCardHint()
   } catch {
     chapterOutline.value = epLite.chapter_outline || ep.description || ''
     outlineSource.value = chapterOutline.value.trim() ? 'episode' : 'empty'
@@ -1734,6 +2023,45 @@ html[data-theme="dark"] .ai-detect-loading-overlay {
 }
 .field-label { font-size: 12px; font-weight: 600; color: var(--text-1); }
 
+.state-card-block .action-row {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.state-card-block .continuity-check-summary.is-warn {
+  color: var(--warn, #c97a2e);
+}
+.state-card-detail {
+  margin: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 8px 10px;
+  border-radius: 8px;
+  background: var(--bg-0);
+  border: 1px solid var(--border);
+  max-height: 280px;
+  overflow: auto;
+}
+.state-card-row {
+  display: grid;
+  grid-template-columns: 64px 1fr;
+  gap: 8px;
+  align-items: start;
+}
+.state-card-row dt {
+  margin: 0;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--text-3);
+}
+.state-card-row dd {
+  margin: 0;
+  font-size: 12px;
+  line-height: 1.45;
+  color: var(--text-1);
+  word-break: break-word;
+}
 .continuity-check-block {
   border: 1px solid var(--border);
   border-radius: var(--radius, 8px);
@@ -1749,6 +2077,46 @@ html[data-theme="dark"] .ai-detect-loading-overlay {
   font-size: 13px;
   font-weight: 600;
   color: var(--text-0);
+}
+.continuity-dim-details {
+  margin: 0.4rem 0 0.6rem;
+  font-size: 0.78rem;
+  color: var(--text-muted, #6b7280);
+}
+.continuity-dim-details summary {
+  cursor: pointer;
+  user-select: none;
+}
+.continuity-dim-list {
+  list-style: none;
+  margin: 0.35rem 0 0;
+  padding: 0;
+  max-height: 14rem;
+  overflow: auto;
+}
+.continuity-dim-item {
+  display: grid;
+  grid-template-columns: 2.2rem 1fr;
+  gap: 0.15rem 0.4rem;
+  padding: 0.25rem 0;
+  border-bottom: 1px solid color-mix(in srgb, var(--border, #e5e7eb) 70%, transparent);
+}
+.continuity-dim-item strong {
+  grid-column: 2;
+  font-size: 0.78rem;
+}
+.continuity-dim-item span:last-child {
+  grid-column: 2;
+  opacity: 0.9;
+}
+.continuity-dim-status {
+  font-size: 0.68rem;
+  text-transform: uppercase;
+  opacity: 0.75;
+}
+.continuity-dim-item.status-fail .continuity-dim-status,
+.continuity-dim-item.status-fail strong {
+  color: var(--danger, #b42318);
 }
 .continuity-check-summary {
   margin: 6px 0 0;

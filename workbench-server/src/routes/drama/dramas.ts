@@ -10,7 +10,7 @@ import { batchGenerateDramaEpisodes } from '../../services/batch/batch-generatio
 import type { EpisodeListFilter } from '../../services/drama/episode-service.js'
 import * as episodeService from '../../services/drama/episode-service.js'
 import * as dramaCatalog from '../../services/drama/drama-catalog-service.js'
-import { generateDramaSynopsis } from '../../services/drama/drama-synopsis.js'
+import { generateDramaSynopsis, generateDramaTitle } from '../../services/drama/drama-synopsis.js'
 import { logTaskError, logTaskStart, logTaskSuccess } from '../../common/task/task-logger.js'
 import type { TextBillingContext } from '../../services/ai/ai.js'
 
@@ -89,6 +89,36 @@ projectCatalogRouter.post('/generate-synopsis', async (c) => {
   } catch (err: any) {
     logTaskError('Drama', 'generate-synopsis', { error: err.message })
     return badRequest(c, err.message || '生成简介失败')
+  }
+})
+
+projectCatalogRouter.post('/generate-title', async (c) => {
+  const authUser = getAuthUser(c)
+  try {
+    await assertUserCanGenerate(authUser.id, authUser.role)
+  } catch (err: any) {
+    return badRequest(c, err.message)
+  }
+
+  const body = await c.req.json().catch(() => ({}))
+  const keywords = typeof body.keywords === 'string' ? body.keywords.trim() : ''
+  if (!keywords) return badRequest(c, '请先填写关键词')
+  if (keywords.length > 500) return badRequest(c, '关键词过长（最多 500 字）')
+
+  const style = typeof body.style === 'string' ? body.style.trim() : undefined
+  const totalEpisodes = Number(body.total_episodes) || undefined
+
+  logTaskStart('Drama', 'generate-title', { keywordLen: keywords.length })
+  try {
+    const title = await generateDramaTitle(
+      { keywords, style, totalEpisodes },
+      dramaTextBilling(authUser, '短剧项目名生成'),
+    )
+    logTaskSuccess('Drama', 'generate-title', { len: title.length })
+    return success(c, { title })
+  } catch (err: any) {
+    logTaskError('Drama', 'generate-title', { error: err.message })
+    return badRequest(c, err.message || '生成项目名称失败')
   }
 })
 

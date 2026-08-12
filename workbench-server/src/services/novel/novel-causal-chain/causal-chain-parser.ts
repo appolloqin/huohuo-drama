@@ -1,4 +1,8 @@
 /** 解析章末【变更记录】与 causal_chain.md */
+import {
+  normalizeChangeRecordArtifacts,
+  splitProseAndChangeRecord as splitProseAndChangeRecordRaw,
+} from '../../../common/novel/novel-change-record.js'
 
 export type CausalChangeEntry = {
   dimension: string
@@ -13,17 +17,16 @@ export type CausalChangeEntry = {
 
 const CHANGE_RECORD_RE = /^【变更记录】/m
 
+/** 先回收伪「变更记录」散文，再分离结构化元数据 */
 export function splitProseAndChangeRecord(fullText: string): {
   prose: string
   changeBlock: string | null
 } {
-  const trimmed = fullText.trim()
-  const idx = trimmed.search(CHANGE_RECORD_RE)
-  if (idx < 0) return { prose: trimmed, changeBlock: null }
-  return {
-    prose: trimmed.slice(0, idx).trim(),
-    changeBlock: trimmed.slice(idx).trim(),
+  const normalized = normalizeChangeRecordArtifacts(fullText)
+  if (normalized.reclaimedFakeBlocks > 0 || normalized.changeBlock) {
+    return { prose: normalized.prose, changeBlock: normalized.changeBlock }
   }
+  return splitProseAndChangeRecordRaw(fullText)
 }
 
 export function parseChangeRecord(block: string): CausalChangeEntry[] {
@@ -56,6 +59,16 @@ export function parseChangeRecord(block: string): CausalChangeEntry[] {
       current = {
         dimension: top[1]!.trim(),
         change: top[2]!.trim(),
+        raw: t,
+      }
+      continue
+    }
+    // 兼容旧模板「- （无状态变化…）」无冒号写法
+    if (/^[-*]\s*.*无状态变化/.test(t)) {
+      flush()
+      current = {
+        dimension: '状态',
+        change: '无状态变化（因果起点延续）',
         raw: t,
       }
       continue

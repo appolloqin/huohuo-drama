@@ -210,7 +210,11 @@ export async function listServiceConfigs(serviceType?: string) {
   const rows = serviceType
     ? await aiServiceConfigsRepo.listServiceConfigsByType(serviceType)
     : await aiServiceConfigsRepo.listAllServiceConfigs()
-  return rows.map(toServiceConfigApiShape)
+  // 与运行时选用一致：优先级降序，同优先级按 id 升序
+  const sorted = [...rows].sort(
+    (a, b) => (Number(b.priority) || 0) - (Number(a.priority) || 0) || (Number(a.id) || 0) - (Number(b.id) || 0),
+  )
+  return sorted.map(toServiceConfigApiShape)
 }
 
 export async function createServiceConfig(body: Record<string, unknown>) {

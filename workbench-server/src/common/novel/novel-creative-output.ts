@@ -1,13 +1,25 @@
 /**
  * 小说创意类 AI 输出（梗概 / 全书大纲 / 本章说明 / 正文）统一校验，防止思考链写入表单或数据库。
  */
-import { looksLikeModelThinkingLeak } from '../../services/ai/ai.js'
+import { looksLikeModelThinkingLeak, sanitizeModelCreativeOutput } from '../../services/ai/ai.js'
 import { countNovelChars } from './novel-char-limit.js'
 import { getMaxParsedChapterNumber, validateOutlineChapterCoverage } from './novel-outline.js'
 
 export type NovelCreativeOutputKind = 'premise' | 'outline' | 'outline_skeleton' | 'writing_brief' | 'chapter_prose'
 
 export const NO_THINKING_OUTPUT_RULE = '**严禁**输出思考过程、英文任务分析、redacted_thinking / thinking 等 XML 标签；只输出可直接使用的简体中文正文。'
+
+/** 规范化模型输出的项目名/书名：去前缀/书名号/引号，只取首行 */
+export function normalizeGeneratedNovelTitle(raw: string): string {
+  let t = (sanitizeModelCreativeOutput(raw) || raw).trim()
+  t = t.replace(/\r\n/g, '\n').split('\n').map(s => s.trim()).find(Boolean) || ''
+  t = t.replace(/^(?:书名|作品名|标题|项目名|名称)\s*[：:]\s*/i, '')
+  t = t.replace(/^["'「『《【\[]+|["'」』》】\]]+$/g, '').trim()
+  t = t.replace(/[《》]/g, '').trim()
+  const chars = [...t]
+  if (chars.length > 40) t = chars.slice(0, 40).join('')
+  return t.trim()
+}
 
 const MIN_CHARS: Record<NovelCreativeOutputKind, number> = {
   premise: 80,

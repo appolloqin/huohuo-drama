@@ -64,7 +64,7 @@ if (rStale.reasons.some(r => r.code === 'early_beats_missing')) {
   throw new Error('ch2+ stale early beats must not fail C1')
 }
 
-// 冷开篇：上章已在外收束，本章大纲是新任务，开篇却从家里醒来（弱承接+前段拍点缺失）
+// 章缝叙事不再走规则硬审（交给模型）；离家开篇不得仅因规则产出 chapter_seam_cold_open
 const huntPrev = pad('雪地脚印还在。他收起刀，记下明日再来设套，沿原路折回营地边缘。', 400)
 const huntOutline = '精准击杀 / 设好简易陷阱成功猎获两只肥野兔 / 娴熟剥皮处理 / 归途遇赵大虎挑衅冷眼无视'
 const coldBody = pad('天没亮，秦卫国醒了。炕那头苏婉还蜷着。他摸出猎刀，开门迎着寒风往红松林走去。一路上想着家里的事。', 900)
@@ -74,15 +74,15 @@ const rCold = detectOutlineCompliance({
   prevChapterTail: huntPrev,
   chapterNumber: 5,
 })
-console.log('cold open codes:', rCold.reasons.map(x => x.code))
-if (!rCold.reasons.some(r => r.code === 'chapter_seam_cold_open')) {
-  throw new Error('expected chapter_seam_cold_open')
+console.log('cold open codes (rule path):', rCold.reasons.map(x => x.code))
+if (rCold.reasons.some(r => r.code === 'chapter_seam_cold_open')) {
+  throw new Error('rule path must not emit chapter_seam_cold_open (model-only)')
 }
 const nuclear = formatNuclearColdDraftBlock({ existingText: coldBody, chapterOutline: huntOutline })
 if (!nuclear.includes('核修模式') || !nuclear.includes('早于上章末')) {
   throw new Error('nuclear cold draft block incomplete')
 }
-console.log('nuclear cold block ok')
+console.log('nuclear cold block ok; rule seam skipped ok')
 
 const orphanCore = '木板终于塌了火光涌进来为首的人冷笑着逼近当众升级他站起来大声表态要公开关系人群哗然这一段与大纲前半无关完全是旧稿越界高潮铺陈'
 const orphanDraft = pad(orphanCore, 300) + pad('主角醒来发现身处陌生房间。', 200)
@@ -297,5 +297,51 @@ if (!/以大纲为准/.test(hardPriority)) {
 if (/化解|翻盘|坐实|捉奸|那姑娘|姑娘愣/.test(complianceSrc)) {
   throw new Error('compliance module must not contain scene-specific epithet tables')
 }
+
+// 空正文不得误判大纲通过（删毒全清后的回归）
+const rEmpty = detectOutlineCompliance({
+  content: '',
+  chapterOutline: outline,
+  chapterNumber: 4,
+})
+if (rEmpty.ok) throw new Error('empty content must not pass outline compliance')
+if (!rEmpty.reasons.some(r => /为空|删毒/.test(r.message))) {
+  throw new Error('empty content must explain 删毒/为空')
+}
+console.log('empty content not ok')
+
+// 章末悬念未决：正文揭晓完成态（换皮「扎进套口」）须越界；下章起因亦须泄漏
+const forestOutline = [
+  '【局面变化】发现野兔踪迹',
+  '【人物选择】冷静判断，设下陷阱',
+  '【章末问题】陷阱能否奏效？',
+].join('\n')
+const nextKillOutline = [
+  '【本章起因】陷阱成功捕获野兔',
+  '【欲望】安全带猎物回家',
+  '【人物选择】不与小人计较',
+].join('\n')
+// 结构：下章起因载荷「野兔」+ 持有（提着/手里），无场面专词表
+const killOvershoot = pad(
+  [
+    '他冷静判断后设下陷阱，屏住呼吸等着。',
+    '片刻后他提着那只还在蹬腿的兔子往回走，手里沉甸甸的，苏婉还在家里等着。',
+  ].join(''),
+  900,
+)
+const rKill = detectOutlineCompliance({
+  content: killOvershoot,
+  chapterOutline: forestOutline,
+  nextChapterOutline: nextKillOutline,
+  chapterNumber: 4,
+})
+if (rKill.ok) throw new Error('kill overshoot must fail')
+if (!rKill.reasons.some(r => r.code === 'outline_endpoint_overshoot' && /章末悬念|下章起因|能否奏效/.test(r.message))) {
+  throw new Error(`must flag suspense/next-cause resolve, got: ${rKill.reasons.map(x => x.message).join(' | ')}`)
+}
+if (!rKill.reasons.some(r => r.code === 'next_chapter_beat_leak' || /下章起因/.test(r.message))) {
+  throw new Error(`must flag next-chapter cause leak, got: ${rKill.reasons.map(x => x.code + ':' + x.message).join(' | ')}`)
+}
+console.log('suspense resolve overshoot ok')
 
 console.log('PASS')

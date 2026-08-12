@@ -177,13 +177,27 @@
         <form @submit.prevent="submitCreateForm" class="modal-form">
           <label class="field">
             <span class="field-label">{{ tm.index.projectName }} <span class="required">{{ tm.index.required }}</span></span>
-            <input
-              v-model="createFormDraft.title"
-              class="input"
-              :placeholder="draftKind === 'novel' ? tm.index.novelTitlePlaceholder : tm.index.projectTitlePlaceholder"
-              required
-              autofocus
-            />
+            <div class="premise-keywords-row">
+              <input
+                v-model="createFormDraft.title"
+                class="input"
+                :placeholder="draftKind === 'novel' ? tm.index.novelTitlePlaceholder : tm.index.projectTitlePlaceholder"
+                required
+                autofocus
+              />
+              <button
+                type="button"
+                class="btn btn-primary premise-gen-btn"
+                :title="draftKind === 'novel' ? tm.index.generateTitleHint : tm.index.generateDramaTitleHint"
+                :disabled="titleGenBusy || premiseGenBusy || !canGenerate || !createFormDraft.title.trim()"
+                @click="draftKind === 'novel' ? synthesizeNovelTitle() : synthesizeDramaTitle()"
+              >
+                {{ titleGenBusy
+                  ? tm.index.generatingTitle
+                  : (draftKind === 'novel' ? tm.index.generateTitle : tm.index.generateDramaTitle) }}
+              </button>
+            </div>
+            <span class="field-hint">{{ draftKind === 'novel' ? tm.index.generateTitleHint : tm.index.generateDramaTitleHint }}</span>
           </label>
           <template v-if="draftKind === 'drama'">
             <div class="field-row">
@@ -396,6 +410,7 @@ const createFormDraft = ref({
 })
 const premiseKeywordLine = ref('')
 const premiseGenBusy = ref(false)
+const titleGenBusy = ref(false)
 const dramaStyleRows = ref(DRAMA_STYLE_CATALOG)
 
 // ── 删除项目确认 ──────────────────────────────────────────────
@@ -517,6 +532,50 @@ function onNovelGenreChange(value) {
   } else {
     premiseKeywordLine.value = ''
     createFormDraft.value.premise = ''
+  }
+}
+
+async function synthesizeNovelTitle() {
+  if (!guardGenerate()) return
+  const keywords = createFormDraft.value.title.trim()
+  if (!keywords) {
+    toast.error(tm.value.index.generateTitleNeedKeywords)
+    return
+  }
+  try {
+    titleGenBusy.value = true
+    const { title } = await novelAPI.generateTitle({
+      keywords,
+      genre: createFormDraft.value.novel_genre?.trim() || undefined,
+      total_chapters: createFormDraft.value.total_chapters || undefined,
+    })
+    if (title?.trim()) createFormDraft.value.title = title.trim()
+  } catch (e) {
+    toast.error(e.message)
+  } finally {
+    titleGenBusy.value = false
+  }
+}
+
+async function synthesizeDramaTitle() {
+  if (!guardGenerate()) return
+  const keywords = createFormDraft.value.title.trim()
+  if (!keywords) {
+    toast.error(tm.value.index.generateTitleNeedKeywords)
+    return
+  }
+  try {
+    titleGenBusy.value = true
+    const { title } = await dramaAPI.generateTitle({
+      keywords,
+      style: createFormDraft.value.style?.trim() || undefined,
+      total_episodes: createFormDraft.value.total_episodes || undefined,
+    })
+    if (title?.trim()) createFormDraft.value.title = title.trim()
+  } catch (e) {
+    toast.error(e.message)
+  } finally {
+    titleGenBusy.value = false
   }
 }
 

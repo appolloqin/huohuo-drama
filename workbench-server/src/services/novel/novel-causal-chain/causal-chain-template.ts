@@ -37,6 +37,8 @@ export const CAUSAL_CHANGE_RECORD_HEADER = '【变更记录】'
 export const CAUSAL_CHAPTER_END_FORMAT = `
 章末须另附【变更记录】块（紧接正文之后、单独成段；**不是故事正文**，是系统元数据，落库时会拆出存储）。
 
+**严禁**：在故事段落中间插入「【变更记录】」小标题后继续写小说正文；【变更记录】下只能是短条目（含「因果:」），禁止散文。
+
 格式示例：
 ${CAUSAL_CHANGE_RECORD_HEADER}
 - 场景: 甲 → 乙
@@ -53,6 +55,6 @@ ${CAUSAL_CHANGE_RECORD_HEADER}
   因果: …
 
 若无任何状态变化，写一行：${CAUSAL_CHANGE_RECORD_HEADER}
-- （无状态变化，因果起点延续）
+- 状态: 无状态变化（因果起点延续）
   因果: 本章未发生场景/时间/人物状态/伤势/物品变更
 `.trim()

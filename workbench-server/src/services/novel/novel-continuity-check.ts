@@ -1,7 +1,7 @@
 /**
  * 小说章节一致性审校 — 三层：硬审 / 规则审 / 模型审
  */
-import { chatCompletionTextAudit, type TextBillingContext } from '../ai/ai.js'
+import { chatCompletionTextAudit, extractAuditJsonFromText, type TextBillingContext } from '../ai/ai.js'
 import { hashNovelContent } from '../ai/ai-text-detection.js'
 import { logTaskWarn } from '../../common/task/task-logger.js'
 import {
@@ -43,15 +43,25 @@ import {
   type ContinuityAuditBreakdown,
   type ContinuityAuditItem,
   type ContinuityCheckResult,
+  type ContinuityDimensionVerdict,
   type ContinuityRewriteLogEntry,
   type NovelContinuityFields,
 } from '../../common/novel/novel-continuity-state.js'
+import {
+  DIMENSION_AUDIT_OUTPUT_CONTRACT,
+  conflictsFromDimensionFails,
+  dimensionPassClaimInvalid,
+  parseDimensionAuditReport,
+} from './novel-dimension-verdict.js'
 
 export type { ContinuityCheckResult } from '../../common/novel/novel-continuity-state.js'
 export type { ContinuityBlockingItem } from '../../common/novel/novel-continuity-rules.js'
 export { formatContinuityBlockingItem, continuityRuleLabel, continuityLayerLabel } from '../../common/novel/novel-continuity-rules.js'
 
 function classifyModelConflictRule(message: string): string {
+  if (/【[^】]+】/.test(message) && /逻辑不自洽|不自洽|倒退|重演|吃书/.test(message)) {
+    return 'dimension_inconsistency'
+  }
   if (/吃书|场景|逻辑|剧情|须立即|下章|顺绳|溪边|踪迹|锁定事实|黑松林|断崖|绳索|发现.*踪迹|行动线|地点/.test(message)) {
     return 'model_semantic_plot'
   }
@@ -67,18 +77,26 @@ function trunc(s: string, max: number) {
   return `${t.slice(0, max)}…`
 }
 
-const CHECK_SYSTEM_STATE = `你是网文 continuity 审校编辑（模型审）。只抓**必须改**的硬伤，勿过度审查。
+const CHECK_SYSTEM_STATE = `你是网文 continuity 审校编辑（模型审）。只抓**必须改**的硬伤；文风/节奏勿拦，但**逻辑不自洽必须拦**。
 
-**硬审/规则审**已由程序完成；你负责语义类硬伤，重点：
-- 吃书：与【前序已写章节】/【因果起点】在**人名、关键事件、施动者**上矛盾
+**硬审/规则审**已由程序完成；你负责语义类硬伤。须对照：
+- **状态卡 6 维**（若提供）：时间线、地点、场景、人物、刚发生、道具/衣着
+- **一致性账本 15 维**（若提供）：环境场景、修为境界、资源道具、神态衣着、人设口吻、身体伤势、时间节奏、人际势力、伏笔设定、动作逻辑、认知记忆、功法能力、情绪递进、一致性提醒、本章变化
+**主标准：逻辑自洽**（因果/时空/人物状态说得通；题材无关）。6/15 维是检查轴，不是「只比有字的维、字面不冲就过」。
+维有记录不得无交代推翻；未记录不凭空捏造该维硬伤，但仍须结合正文与其它事实推断。
+手法（正叙/倒叙/补叙/先因后果/先果后因）允许，但**不免除**自洽审查。「允许手法」≠「可无交代推翻上章已成立时空/地点/在场/进度/过程相位」。
+
+重点：
+- 吃书：与【前序已写章节】/【因果起点】/状态卡/账本在**人名、关键事件、施动者、可推出状态**上逻辑矛盾
 - **无铺垫发明重大状态**：前序/大纲/账本未写却突然出现怀孕、腹中孩子等（含「肚子里那块肉」类）；须报 conflict
 - 跨章回忆/闪回：坠崖、推下、仇敌等关键情节的人物与上章不一致
 - **因果缺失**：正文状态变化但【变更记录】无对应因果链（硬审已列的勿重复）
 - 关键剧情矛盾：正文与**已成文**冲突（大纲/概要与之矛盾时不算硬伤，以已成文为准）
 - 章内复杂自洽：旁白/对话/心理在情节事实上矛盾
-- **章缝回放**：上章结尾已写完的关键对白/公开行动/场面高潮，在本章开篇被再次完整描写（换措辞也算）——须报 conflict（程序硬审也会拦）
-- **章缝后退写**：开篇时间点早于上章末已发生事实——含按过期大纲重演已完成拍点、或大纲较后拍点已在上章完成而开篇仍写更早拍点——须报 conflict
-- **章缝冷开篇**：开篇时空早于上章末已发生事实，或开篇未进入本章大纲前段——须报 conflict
+- **章内进度回卷**：同一章内某推进过程已写到完成态，后文无闪回/补叙框又以当前进行时把同一完成态过程完整换皮再写一遍——须报 conflict，且 **动作逻辑**（可兼刚发生/本章变化）dimensions 标 fail；只问进度是否说得通，不限题材；通过总因不得用「无明显冲突」空话
+- **章缝逻辑不自洽**：开篇时空/地点/在场/进度/过程相位与上章已成立事实冲突，且无补叙框/回忆框/跨日归来/新过程等交代使链条闭合——须报 conflict（无框的「再演一遍」不算补叙；即使文笔像倒叙）
+- **过程/环境相位倒退**（题材无关）：上章已进入更晚/更重阶段，开篇无交代写回「才开始/初起」——须报 conflict（属时间线/环境场景/时间节奏自洽；**不是**「钟点词序」豁免范围）
+- 不要仅因晨/午/夜等**钟点词字面顺序** alone 报 conflict；有交代且能闭合的倒叙/先果后因不要拦；也不要以「有记录维字面不矛盾」为唯一通过条件；不要用「允许倒叙」或「钟点词序勿单独拦」跳过过程相位自洽审查；合法一句承接或有框回忆不算章内再演
 
 **境界语义补审**（硬审已做的层数/圆满/跨章倒退**勿重复**；你补硬审抓不到的语义层）：
 - 对照【应对齐的状态】realm 与正文**主角**战力/能力/描写是否明显脱节（须附摘录）
@@ -99,16 +117,20 @@ const CHECK_SYSTEM_STATE = `你是网文 continuity 审校编辑（模型审）�
 2. 附可核对正文摘录，格式：摘录「……」——须为待审校正文中连续 8 字以上的原文
 无摘录的条目不要输出。
 
+${DIMENSION_AUDIT_OUTPUT_CONTRACT}
+
 只输出 JSON，不要 markdown：
 {
   "passed": true/false,
   "score": 0-100,
-  "conflicts": ["硬伤描述 + 摘录「……」", ...],
-  "summary": "一句话结论"
+  "reason": "总因（通过或不通过都必须写清）",
+  "summary": "与 reason 同义或更短",
+  "dimensions": [{"dimension":"维名","status":"ok|fail|na","reason":"一句","excerpt":"fail时必填"}],
+  "conflicts": ["可由 fail 维生成；硬伤描述 + 摘录「……」", ...]
 }
 
 评分：90+ 无硬伤；80-89 有小瑕疵但可发布；<75 须修正。
-passed：无硬伤且 score>=75 时为 true；有小瑕疵时 conflicts 应为空数组。`
+passed：无 fail 维、21 维齐全、有 reason、且 score>=75 时为 true；**禁止** passed=true 却不交 dimensions/reason。`
 
 const CHECK_SYSTEM_CAUSAL = `你是网文 continuity 审校编辑（因果链模式）。只抓必须改的硬伤。
 
@@ -120,8 +142,8 @@ const CHECK_SYSTEM_CAUSAL = `你是网文 continuity 审校编辑（因果链模
 - **禁止**把「禁止突破至凝气」类提醒套用到仍在淬体境内的连破
 - 仅当正文**实际写入**与【变更记录】矛盾的 major 境名（如记录写淬体、正文无因果却写凝气一层）才报
 
-须拦：吃书（人名/事件/地点与【因果起点】【前序正文】矛盾）；正文状态变化但【变更记录】无因果；章内事实矛盾；**章缝回放**（上章末已完成的关键对白/场面高潮在本章开篇再完整演一遍）；**章缝后退写**（开篇早于上章末进度：过期大纲拍点重演，或较后拍点已完成却写更早拍点）；**章缝冷开篇**（开篇时空早于上章末已发生事实，或开篇未进入本章大纲前段）。
-勿拦：合法突破/连破（有因果）；与旧15维账本/一致性提醒不一致。
+须拦：吃书（人名/事件/地点与【因果起点】【前序正文】矛盾）；正文状态变化但【变更记录】无因果；章内事实矛盾；**章内进度回卷**（已完成态过程无框换皮再演→动作逻辑等维 fail）；**章缝回放**（上章末已完成的关键对白/场面高潮在本章开篇再完整演一遍）；**章缝逻辑不自洽**（开篇时空/地点/在场/进度/过程相位与上章已成立事实冲突且无补叙框/回忆框/跨日归来/新过程等交代；无框「再演一遍」不算补叙；手法允许不免除自洽）；**过程相位倒退**（上章已更晚/更重，开篇无交代写回才开始/初起）；**章缝后退写**（开篇早于上章末进度：过期大纲拍点重演，或较后拍点已完成却写更早拍点）；**章缝冷开篇**（开篇时空早于上章末已发生事实，或开篇未进入本章大纲前段）。
+勿拦：合法突破/连破（有因果）；与旧15维账本/一致性提醒不一致；有交代且链条闭合的倒叙/补叙；仅钟点词字面顺序 alone；合法一句承接或有框回忆；同主题加深/余波延展（非把已完成过程再演一遍）。
 
 **勿拦（创作层面，不是 continuity 硬伤）**：
 - 本章大纲/写作说明的**篇幅比例、详略、节奏**（如「40% 聚焦夜潜过程」「前半章写 XX」）——审校**不管**结构配比
@@ -130,15 +152,19 @@ const CHECK_SYSTEM_CAUSAL = `你是网文 continuity 审校编辑（因果链模
 
 每条 conflict 须附正文摘录「……」（8字+）。
 
+${DIMENSION_AUDIT_OUTPUT_CONTRACT}
+
 只输出 JSON，不要 markdown；**score 必填**（0–100 整数）：
 {
   "passed": true/false,
   "score": 0-100,
-  "conflicts": ["硬伤 + 摘录「……」", ...],
-  "summary": "一句话结论"
+  "reason": "总因（通过或不通过都必须写清）",
+  "summary": "与 reason 同义或更短",
+  "dimensions": [{"dimension":"维名","status":"ok|fail|na","reason":"一句","excerpt":"fail时必填"}],
+  "conflicts": ["可由 fail 维生成；硬伤 + 摘录「……」", ...]
 }
 
-passed：无硬伤且 score≥78 时为 true；有小瑕疵时 conflicts 应为空数组。`
+passed：无 fail 维、21 维齐全、有 reason、且 score≥78 时为 true；**禁止** passed=true 却不交 dimensions/reason。`
 
 function buildCheckSystem(causalMode?: boolean, minScore = 78): string {
   if (causalMode) {
@@ -147,29 +173,63 @@ function buildCheckSystem(causalMode?: boolean, minScore = 78): string {
   return CHECK_SYSTEM_STATE.replace('score>=75', `score>=${minScore}`)
 }
 
+/** 供 verify：默认分阈值下的模型审 system 提示 */
+export function getContinuityCheckSystemPromptForTest(causalMode = false): string {
+  return buildCheckSystem(causalMode, 78)
+}
+
 function parseCheckResponse(text: string): {
   passed?: boolean
   score?: number
   conflicts?: string[]
   summary?: string
+  reason?: string
+  dimensions?: unknown
 } | null {
   const trimmed = text.trim()
-  const fenced = trimmed.match(/```(?:json)?\s*([\s\S]*?)```/i)
-  const candidate = (fenced?.[1] ?? trimmed).trim()
-  try {
-    return JSON.parse(candidate)
-  } catch {
-    const start = candidate.indexOf('{')
-    const end = candidate.lastIndexOf('}')
-    if (start >= 0 && end > start) {
+  if (!trimmed) return null
+
+  const tryParse = (raw: string) => {
+    try {
+      return JSON.parse(raw) as {
+        passed?: boolean
+        score?: number
+        conflicts?: string[]
+        summary?: string
+        reason?: string
+        dimensions?: unknown
+      }
+    } catch {
       try {
-        return JSON.parse(candidate.slice(start, end + 1))
+        // 模型偶发尾逗号
+        return JSON.parse(raw.replace(/,\s*([}\]])/g, '$1')) as {
+          passed?: boolean
+          score?: number
+          conflicts?: string[]
+          summary?: string
+          reason?: string
+          dimensions?: unknown
+        }
       } catch {
         return null
       }
     }
-    return null
   }
+
+  const auditBlob = extractAuditJsonFromText(trimmed)
+  if (auditBlob) {
+    const parsed = tryParse(auditBlob)
+    if (parsed) return parsed
+  }
+
+  const fenced = trimmed.match(/```(?:json)?\s*([\s\S]*?)```/i)
+  const candidate = (fenced?.[1] ?? trimmed).trim()
+  const direct = tryParse(candidate)
+  if (direct) return direct
+  const start = candidate.indexOf('{')
+  const end = candidate.lastIndexOf('}')
+  if (start >= 0 && end > start) return tryParse(candidate.slice(start, end + 1))
+  return null
 }
 
 function toAuditItems(conflicts: AuditConflict[]): ContinuityAuditItem[] {
@@ -426,14 +486,27 @@ function mergeCheckResult(args: {
   checkedAt: string
   minScore: number
   causalMode?: boolean
+  /** 模型调用失败原文（空 content / 网关错误等），与「有正文但 JSON 解析失败」区分 */
+  llmError?: string
+  /** 有原始正文但 parseCheckResponse 失败 */
+  rawUnparsed?: string
 }): ContinuityCheckResult {
-  const { parsed, local, content, contentHash, checkedAt, minScore, causalMode } = args
+  const { parsed, local, content, contentHash, checkedAt, minScore, causalMode, llmError, rawUnparsed } = args
   const hardItems = toAuditItems(local.hard)
   const ruleItems = toAuditItems(local.rule)
   const hardMessages = hardItems.map(i => i.message)
   const hardFailed = hardItems.length > 0
 
-  const rawModel = (parsed?.conflicts || []).filter(c => typeof c === 'string' && c.trim()) as string[]
+  const dimReport = parsed ? parseDimensionAuditReport(parsed, content) : null
+  const dimConflicts = dimReport ? conflictsFromDimensionFails(dimReport) : []
+  const claimBad = parsed
+    ? dimensionPassClaimInvalid(parsed.passed === true, dimReport)
+    : null
+
+  const rawModel = [
+    ...(parsed?.conflicts || []).filter(c => typeof c === 'string' && c.trim()) as string[],
+    ...dimConflicts,
+  ]
   const { accepted: modelMessages, rejected: modelRejected } = causalMode
     ? filterCausalModelMessages(rawModel, content)
     : filterModelConflicts(rawModel, content)
@@ -441,6 +514,15 @@ function mergeCheckResult(args: {
     rule: classifyModelConflictRule(m),
     message: m,
   }))
+  // 维度 fail 若摘录过滤掉了，仍并入（带维名）
+  for (const msg of dimConflicts) {
+    if (!modelItems.some(m => m.message === msg)) {
+      modelItems.push({ rule: 'dimension_inconsistency', message: msg })
+    }
+  }
+  if (claimBad) {
+    modelItems.push({ rule: 'dimension_inconsistency', message: claimBad })
+  }
 
   const blockingItems = buildBlockingItems(local.hard, modelItems)
   const blockingConflicts = syncCheckConflicts(blockingItems)
@@ -450,64 +532,98 @@ function mergeCheckResult(args: {
     model: modelItems,
     ...(modelRejected.length ? { model_rejected: modelRejected } : {}),
   }
+  const dimensions: ContinuityDimensionVerdict[] | undefined = dimReport?.dimensions.length
+    ? dimReport.dimensions
+    : undefined
+  const reason = (typeof parsed?.reason === 'string' && parsed.reason.trim())
+    || dimReport?.overallReason
+    || undefined
 
   if (!parsed) {
+    const emptyContent = /未返回正文|reasoning_content|只返回思考/i.test(llmError || '')
+    const failMsg = emptyContent
+      ? `审校模型未返回可用正文（多为 deepseek 等把结论留在思考链、content 为空）。${llmError ? `详情：${llmError.slice(0, 180)}` : '请更换审校模型或提高 maxTokens 后重试。'}`
+      : rawUnparsed?.trim()
+        ? '审校模型有返回，但无法解析为约定 JSON（缺 score/passed/dimensions 等）。请重试或更换审校模型。'
+        : llmError
+          ? `审校模型调用失败：${llmError.slice(0, 200)}`
+          : '模型审校结果不可用，无法判定一致性'
     if (hardFailed) {
       return {
         passed: false,
         score: Math.min(60, 50 + hardMessages.length * 5),
         conflicts: blockingConflicts,
         blocking_items: blockingItems,
-        summary: '硬审未通过，且模型审校结果解析失败',
+        summary: `硬审未通过，且${failMsg}`,
         checked_at: checkedAt,
         content_hash: contentHash,
         audit,
+        model_parse_failed: true,
       }
     }
+    const parseItem: ContinuityBlockingItem = {
+      layer: 'model',
+      rule: 'model_audit_parse_failed',
+      label: continuityRuleLabel('model_audit_parse_failed'),
+      message: failMsg,
+    }
     return {
-      passed: true,
-      score: 80,
-      conflicts: [],
-      blocking_items: [],
-      summary: '模型审校解析失败，无硬审冲突，已跳过硬性拦截',
+      passed: false,
+      score: 0,
+      conflicts: [formatContinuityBlockingItem(parseItem)],
+      blocking_items: [parseItem],
+      summary: failMsg,
       checked_at: checkedAt,
       content_hash: contentHash,
       audit,
+      model_parse_failed: true,
     }
   }
 
   const { score: resolvedScore, scoreInferred } = resolveParsedCheckScore(parsed, minScore)
+  const dimBlocked = !!claimBad || (dimReport != null && dimReport.failCount > 0)
   const modelRejectedOnly = !hardFailed
+    && !dimBlocked
     && modelItems.length === 0
     && modelRejected.length > 0
     && rawModel.length > 0
-  let effectiveScore = hardFailed ? Math.min(resolvedScore, 65) : resolvedScore
+  let effectiveScore = hardFailed || dimBlocked
+    ? Math.min(resolvedScore, 65)
+    : resolvedScore
   if (modelRejectedOnly && effectiveScore < minScore) {
     effectiveScore = minScore
   }
   const passed = !hardFailed
+    && !dimBlocked
     && blockingItems.length === 0
     && effectiveScore >= minScore
     && (modelRejectedOnly || parsed.passed !== false)
 
   let summary: string
   if (passed) {
-    summary = parsed.summary?.trim() && !isGenericCheckSummary(parsed.summary)
-      ? parsed.summary.trim()
-      : modelRejectedOnly
-        ? `无结构化硬伤；${modelRejected.length} 条模型疑点缺正文摘录，已作参考不拦截`
-        : '无明显冲突'
+    summary = (reason && !isGenericCheckSummary(reason))
+      ? reason
+      : parsed.summary?.trim() && !isGenericCheckSummary(parsed.summary)
+        ? parsed.summary.trim()
+        : modelRejectedOnly
+          ? `无结构化硬伤；${modelRejected.length} 条模型疑点缺正文摘录，已作参考不拦截`
+          : '21 维逻辑自洽，无明显冲突'
   } else if (hardFailed) {
     const hardHint = hardItems.slice(0, 2).map(i => i.message).join('；')
     summary = hardHint
+      || reason
       || parsed.summary?.trim()
       || (causalMode ? '因果链硬审未通过' : '硬审发现境界/伤势冲突')
+  } else if (dimBlocked && reason) {
+    summary = reason
+  } else if (dimBlocked && dimConflicts[0]) {
+    summary = dimConflicts.slice(0, 2).join('；')
   } else {
     summary = buildCheckFailureSummary({
       score: effectiveScore,
       minScore,
       parsedPassed: parsed.passed,
-      parsedSummary: parsed.summary,
+      parsedSummary: reason || parsed.summary,
       ruleItems,
       hardItems,
       modelRejected,
@@ -524,6 +640,8 @@ function mergeCheckResult(args: {
     checked_at: checkedAt,
     content_hash: contentHash,
     audit,
+    ...(dimensions ? { dimensions } : {}),
+    ...(reason ? { reason } : {}),
   }
 }
 
@@ -571,6 +689,42 @@ export async function checkNovelChapterContinuity(args: {
   const prevSnapshot = chapterNumber >= 2
     ? await loadPrevChapterEndSnapshot(dramaId, chapterNumber)
     : null
+
+  let stateCardSixBlock = ''
+  let ledgerFifteenBlock = ''
+  try {
+    const episodesRepo = await import('../../db/repos/episodes/index.js')
+    const {
+      readEpisodeChapterStateCard,
+      readEpisodeContinuityLedger,
+    } = await import('../../common/drama/episode-meta.js')
+    const { formatStateCardSixDimAuditBlock } = await import('../../common/novel/novel-state-card.js')
+    const { formatContinuityLedgerAuditBlock } = await import('../../common/novel/novel-continuity-state.js')
+    if (chapterNumber >= 2) {
+      const prevEp = await episodesRepo.findEpisodeByDramaAndNumber(dramaId, chapterNumber - 1)
+      if (prevEp) {
+        const prevCard = readEpisodeChapterStateCard(prevEp.metadata, chapterNumber - 1)
+        if (prevCard) stateCardSixBlock = formatStateCardSixDimAuditBlock(prevCard, 'prev')
+        const prevLedger = readEpisodeContinuityLedger(prevEp.metadata, chapterNumber - 1)
+        ledgerFifteenBlock = formatContinuityLedgerAuditBlock(
+          prevLedger ?? fields,
+          `【一致性账本·15维·上章第${chapterNumber - 1}章末 / 章初应对齐】`,
+        )
+      }
+    }
+    if (!ledgerFifteenBlock && fields) {
+      ledgerFifteenBlock = formatContinuityLedgerAuditBlock(
+        fields,
+        '【一致性账本·15维·章初须自洽】',
+      )
+    }
+  } catch (err: unknown) {
+    logTaskWarn('Novel', 'continuity-dimension-context-load-failed', {
+      chapterNumber,
+      error: err instanceof Error ? err.message : String(err),
+    })
+  }
+
   const causalEnabled = isCausalChainEnabled(meta)
   const canonBlock = await buildSerialWrittenContextBlock(dramaId, chapterNumber, {
     skipLedger: causalEnabled,
@@ -656,7 +810,9 @@ export async function checkNovelChapterContinuity(args: {
     causalEnabled ? '' : canonLock,
     canonBlock ? `${canonBlock}` : '',
     causalOriginBlock,
-    stateBlock ? `【应对齐的状态（章初须一致）】\n${stateBlock}` : '',
+    stateCardSixBlock || '',
+    ledgerFifteenBlock || '',
+    stateBlock && !ledgerFifteenBlock ? `【应对齐的状态（章初须一致）】\n${stateBlock}` : '',
     prevTailBlock,
     hardBlock,
     ruleBlock,
@@ -674,17 +830,30 @@ export async function checkNovelChapterContinuity(args: {
   ].filter(Boolean).join('\n\n')
 
   let parsed: ReturnType<typeof parseCheckResponse> = null
+  let llmError: string | undefined
+  let rawUnparsed: string | undefined
   try {
+    // deepseek-v4 等：reasoning+JSON 共用输出配额；8192 仍偏紧，给到 16384（勿误当成 128k 上下文）
     const raw = await chatCompletionTextAudit(
       [{ role: 'system', content: buildCheckSystem(causalEnabled, minScore) }, { role: 'user', content: user }],
-      { maxTokens: 1024, temperature: 0.2, billing },
+      { maxTokens: 16384, temperature: 0.2, billing },
     )
     parsed = parseCheckResponse(raw)
+    if (!parsed && raw?.trim()) {
+      rawUnparsed = raw.slice(0, 400)
+      logTaskWarn('Novel', 'continuity-check-json-unparsed', {
+        chapterNumber,
+        chars: raw.length,
+        head: raw.replace(/\s+/g, ' ').slice(0, 160),
+        hasAuditKeys: /"(?:score|passed|dimensions)"\s*:/.test(raw),
+      })
+    }
   } catch (err: unknown) {
     // LLM 忙/失败时不得整单 abort：硬审（含章缝）已本地完成，按无模型审结果合并
+    llmError = err instanceof Error ? err.message : String(err)
     logTaskWarn('Novel', 'continuity-check-llm-failed', {
       chapterNumber,
-      error: err instanceof Error ? err.message : String(err),
+      error: llmError,
       localHard: local.hard.length,
     })
     parsed = null
@@ -698,6 +867,8 @@ export async function checkNovelChapterContinuity(args: {
     checkedAt,
     minScore,
     causalMode: causalEnabled,
+    llmError,
+    rawUnparsed,
   })
 }
 

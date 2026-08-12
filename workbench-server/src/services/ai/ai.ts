@@ -7,6 +7,12 @@ import { countNovelChars } from '../../common/novel/novel-char-limit.js'
 import { joinProviderUrl } from './adapters/url.js'
 import { chargeTextUsage, parseConfigSettings, resolveThinkingEnabled, resolveTokenUsage } from '../credits/credits.js'
 import { applyMiniMaxTextRequestParams, isMiniMaxTextConfig } from './minimax-text.js'
+import {
+  applyKimiFixedSamplingOmit,
+  applyKimiK3ThinkingGuard,
+  isKimiFixedSamplingModel,
+  isKimiK3FamilyModel,
+} from './kimi-text.js'
 import { fetchWithRetry, isTransientNetworkError } from '../../common/http/fetch-retry.js'
 import { resolveUserServiceConfig } from './user-ai-config-resolve.js'
 import { getUserTextAuditModelSettings, resolveTextAuditAiConfig } from './text-audit-model.js'
@@ -142,6 +148,8 @@ function supportsLogprobsHeuristic(model: string): boolean {
   const m = model.toLowerCase()
   // qwen3.5/3.7/3.8 常不支持 OpenAI compat completions/logprobs
   if (/qwen3\.(5|7|8)|qwen3-[578]|qwen-max|vl|omni|tts/i.test(m)) return false
+  // kimi-k3 / k2.5+ 官方不支持自定义 logprobs
+  if (/kimi-k3|kimi-k2\.[567]/.test(m)) return false
   if (/qwen-plus|qwen-turbo|qwen3-(?!5|7|8)/i.test(m)) return true
   return !/3\.[578]|thinking/i.test(m)
 }
@@ -211,6 +219,12 @@ export type ChatCompletionOptions = {
    * 空正文重试时改为 false，使输出进入 content（含 think 标签时再剥离）。
    */
   minimaxReasoningSplit?: boolean
+  /**
+   * content 空时从 reasoning 抢救的策略：
+   * - auto：先 JSON 再叙事（写作）
+   * - json：只接受可解析审校/结构化 JSON（审校调用）
+   */
+  salvageMode?: 'auto' | 'json'
 }
 
 async function maybeChargeText(cfg: AIConfig, messages: ChatMessage[], output: string, usage: any, billing?: TextBillingContext) {
@@ -490,8 +504,87 @@ function extractCjkNarrativeFromMixed(text: string): string {
   return keep.join('\n').replace(/\n{3,}/g, '\n\n').trim()
 }
 
+/** 从文本中按括号平衡抽出候选 JSON 对象（避免「第一个 { 到最后一个 }」截错） */
+export function extractBalancedJsonObjectSlices(text: string, max = 12): string[] {
+  if (!text?.trim()) return []
+  const out: string[] = []
+  const s = text
+  for (let i = 0; i < s.length && out.length < max; i++) {
+    if (s[i] !== '{') continue
+    let depth = 0
+    let inStr = false
+    let esc = false
+    for (let j = i; j < s.length; j++) {
+      const ch = s[j]!
+      if (inStr) {
+        if (esc) esc = false
+        else if (ch === '\\') esc = true
+        else if (ch === '"') inStr = false
+        continue
+      }
+      if (ch === '"') {
+        inStr = true
+        continue
+      }
+      if (ch === '{') depth += 1
+      else if (ch === '}') {
+        depth -= 1
+        if (depth === 0) {
+          out.push(s.slice(i, j + 1))
+          i = j
+          break
+        }
+      }
+    }
+  }
+  return out
+}
+
+const AUDIT_JSON_KEY_RE = /"(?:score|passed|dimensions|conflicts|functions_hit|summary|reason)"\s*:/
+
+/**
+ * 抽出审校约定 JSON（含 score/passed/dimensions 等）。
+ * 优先：可 JSON.parse 且带关键键；次选：带键的最大平衡对象（交给下游再修）。
+ */
+export function extractAuditJsonFromText(text: string): string {
+  if (!text?.trim()) return ''
+  const fenced = text.trim().match(/```(?:json)?\s*([\s\S]*?)```/i)
+  const body = (fenced?.[1] ?? text).trim()
+  const slices = extractBalancedJsonObjectSlices(body)
+  let bestLoose = ''
+  for (const slice of slices) {
+    if (!AUDIT_JSON_KEY_RE.test(slice)) continue
+    try {
+      const obj = JSON.parse(slice) as Record<string, unknown>
+      if (obj && typeof obj === 'object' && ('score' in obj || 'passed' in obj || 'dimensions' in obj)) {
+        return slice
+      }
+    } catch {
+      if (slice.length > bestLoose.length) bestLoose = slice
+    }
+  }
+  if (bestLoose) return bestLoose
+  // 回退：旧逻辑（可能截错，仅当整体像审校 JSON）
+  const start = body.indexOf('{')
+  const end = body.lastIndexOf('}')
+  if (start >= 0 && end > start) {
+    const slice = body.slice(start, end + 1)
+    if (AUDIT_JSON_KEY_RE.test(slice)) return slice
+  }
+  return ''
+}
+
 /** 从混杂 reasoning 中抽出可解析 / 像审校结果的 JSON */
 export function extractJsonBlobFromText(text: string): string {
+  const audit = extractAuditJsonFromText(text)
+  if (audit) {
+    try {
+      JSON.parse(audit)
+      return audit
+    } catch {
+      if (AUDIT_JSON_KEY_RE.test(audit) && audit.length >= 40) return audit
+    }
+  }
   if (!text?.trim()) return ''
   const start = text.indexOf('{')
   const end = text.lastIndexOf('}')
@@ -501,7 +594,6 @@ export function extractJsonBlobFromText(text: string): string {
     JSON.parse(slice)
     return slice
   } catch {
-    // 审校 JSON 偶发尾逗号等：仍可交给下游 parseChapterCraft
     if (/"score"\s*:|"functions_hit"\s*:|"passed"\s*:|"conflicts"\s*:/.test(slice) && slice.length >= 40) {
       return slice
     }
@@ -509,7 +601,10 @@ export function extractJsonBlobFromText(text: string): string {
   }
 }
 
-export function salvageProseFromReasoningMessage(message: unknown): string {
+export function salvageProseFromReasoningMessage(
+  message: unknown,
+  mode: 'auto' | 'json' = 'auto',
+): string {
   if (!message || typeof message !== 'object') return ''
   const msg = message as Record<string, unknown>
   const candidates: string[] = []
@@ -528,8 +623,9 @@ export function salvageProseFromReasoningMessage(message: unknown): string {
   }
   for (const raw of candidates) {
     // 优先：reasoning 末尾夹带的 JSON（关思考后 deepseek-v4 仍常把审校结果塞进 reasoning）
-    const jsonBlob = extractJsonBlobFromText(raw)
+    const jsonBlob = mode === 'json' ? extractAuditJsonFromText(raw) : extractJsonBlobFromText(raw)
     if (jsonBlob) return jsonBlob
+    if (mode === 'json') continue
 
     const cleaned = sanitizeModelCreativeOutput(raw)
     if (cleaned && cleaned.length >= 80) {
@@ -692,13 +788,16 @@ function buildChatCompletionRequestBody(
   delete extra.reasoning_split
   delete extra.reasoning_effort
   delete extra.thinking_budget
+  const omitSampling = isKimiFixedSamplingModel(cfg.model)
   const body: Record<string, unknown> = {
     model: cfg.model,
     messages,
-    temperature: options.temperature ?? 0.75,
+    ...(omitSampling ? {} : { temperature: options.temperature ?? 0.75 }),
     ...extra,
     max_tokens: maxTokens,
   }
+  // extraBody 可能又塞回 temperature；固定采样型号必须再剥一次
+  applyKimiFixedSamplingOmit(body, cfg)
   applyMiniMaxTextRequestParams(body, cfg, thinkingEnabled, {
     // 关思考时默认 false：部分网关仍产出 reasoning 且 content 空；开思考才默认拆分
     reasoningSplit: options.minimaxReasoningSplit != null
@@ -706,9 +805,11 @@ function buildChatCompletionRequestBody(
       : thinkingEnabled,
   })
   // MiniMax 已在 applyMiniMax 写 thinking；DeepSeek/Ali/网关推理模型须在此补回，否则删 extra 后等于未关思考
-  if (!thinkingEnabled && !isMiniMaxTextConfig(cfg)) {
+  // kimi-k3 始终开思考，不可写 disabled
+  if (!thinkingEnabled && !isMiniMaxTextConfig(cfg) && !isKimiK3FamilyModel(cfg.model)) {
     applyNonMiniMaxThinkingDisable(body, cfg)
   }
+  applyKimiK3ThinkingGuard(body, cfg)
   return body
 }
 
@@ -794,14 +895,22 @@ async function chatCompletionTextOnce(
     throw new Error(typeof msg === 'string' ? msg : JSON.stringify(msg))
   }
   let text = sanitizeModelCreativeOutput(extractChatCompletionText(data))
-  if (!text) {
-    const salvaged = salvageProseFromReasoningMessage(data?.choices?.[0]?.message)
+  const salvageMode = options.salvageMode === 'json' ? 'json' : 'auto'
+  if (!text || (salvageMode === 'json' && !extractAuditJsonFromText(text))) {
+    // 审校：content 若只是思考散文，仍须从 reasoning / content 抽 JSON
+    const fromContent = salvageMode === 'json' ? extractAuditJsonFromText(extractChatCompletionText(data) || text) : ''
+    const salvaged = fromContent
+      || salvageProseFromReasoningMessage(data?.choices?.[0]?.message, salvageMode)
     if (salvaged) {
       logTaskWarn('AI', 'chat-completion-salvaged-reasoning', {
         model: cfg.model,
         chars: salvaged.length,
+        salvageMode,
+        from: fromContent ? 'content' : 'reasoning',
       })
       text = salvaged
+    } else if (salvageMode === 'json') {
+      text = ''
     }
   }
   if (!text) {
@@ -846,12 +955,14 @@ async function chatCompletionWithConfig(
         const prev = resolveRequestMaxTokens(cfg, attemptOptions)
         // DeepSeek V4：空正文时直接抬到 ≥8192，并追加纠偏；避免 2048→3584 仍被 reasoning 占满
         const bumped = deepseekV4
-          ? Math.min(16384, Math.max(8192, prev * 2, prev + 4096))
+          ? Math.min(32768, Math.max(16384, prev * 2, prev + 4096))
           : Math.min(16384, Math.max(prev + 1536, Math.round(prev * 1.35)))
+        // 关思考仍只吐 reasoning 时：后续轮次改为开思考，让最终 JSON/正文进 content
+        const openThinking = deepseekV4 && attempt >= 1
         attemptOptions = {
           ...attemptOptions,
           maxTokens: bumped,
-          enableThinking: false,
+          enableThinking: openThinking ? true : false,
           minimaxReasoningSplit: false,
         }
         if ((isMiniMaxTextConfig(cfg) || deepseekV4) && attempt === 1) {
@@ -860,7 +971,9 @@ async function chatCompletionWithConfig(
             {
               role: 'user',
               content: deepseekV4
-                ? '【系统纠偏】上一次只输出了思考（reasoning），content 为空。请关闭思考，直接输出最终可用的简体中文正文或 JSON，不要思考过程、不要英文分析、不要 XML 标签。'
+                ? (openThinking
+                  ? '【系统纠偏】上一次 content 为空、仅有 reasoning。请保留简短思考，但必须在 content 中输出最终可用的简体中文正文或完整 JSON（含 score/passed/dimensions），禁止只写思考。'
+                  : '【系统纠偏】上一次只输出了思考（reasoning），content 为空。请关闭思考，直接输出最终可用的简体中文正文或 JSON，不要思考过程、不要英文分析、不要 XML 标签。')
                 : '【系统纠偏】上一次只输出了思考未输出正文。请直接输出最终可用的简体中文正文，不要思考过程、不要英文、不要 XML 标签。',
             },
           ]
@@ -870,6 +983,7 @@ async function chatCompletionWithConfig(
           model: cfg.model,
           serviceType: cfg.serviceType || 'text',
           maxTokens: bumped,
+          enableThinking: openThinking,
           reasoningSplit: false,
           error: lastErr.message,
         })
@@ -902,7 +1016,8 @@ export async function chatCompletionTextAudit(
     userId: options.billing.userId,
     role: options.billing.role,
   } : undefined)
-  return chatCompletionWithConfig(messages, options, cfg)
+  // 审校只要约定 JSON：禁止把 reasoning 叙事散文当「成功正文」交给下游
+  return chatCompletionWithConfig(messages, { ...options, salvageMode: 'json' }, cfg)
 }
 
 /** OpenAI 兼容 /completions：echo + logprobs，用于困惑度检测 */

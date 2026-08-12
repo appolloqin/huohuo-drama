@@ -1,6 +1,12 @@
 /** 一致性修正无法继续 — 批量撰写须整批终止 */
 
-export type ContinuityAbortReason = 'max_attempts' | 'same_issue_loop' | 'stagnant_rewrite' | 'craft_fail' | 'compliance_veto'
+export type ContinuityAbortReason =
+  | 'max_attempts'
+  | 'same_issue_loop'
+  | 'stagnant_rewrite'
+  | 'craft_fail'
+  | 'compliance_veto'
+  | 'audit_parse_failed'
 
 export class ContinuityRewriteAbortError extends Error {
   readonly chapterNumber: number
@@ -27,6 +33,12 @@ export class ContinuityRewriteAbortError extends Error {
         conflictText ? `须修正：${conflictText}` : '',
         args.summary ? `审校结论：${args.summary}` : '',
       ].filter(Boolean).join(' ')
+      : args.reason === 'audit_parse_failed'
+        ? [
+          `已停止：第 ${args.chapterNumber} 章一致性审校模型返回无法解析，无法判定通过与否。`,
+          args.summary ? `审校结论：${args.summary}` : '',
+          '请重试审校或更换文本/审校模型；改写正文不能修复审校解析失败。',
+        ].filter(Boolean).join(' ')
       : args.reason === 'compliance_veto'
         ? [
           `已停止：第 ${args.chapterNumber} 章触发合规一票否决。`,

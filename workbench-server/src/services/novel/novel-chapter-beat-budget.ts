@@ -2,7 +2,10 @@
  * 大纲拍点字数预算：把用户目标拆到拍点上，边界内写厚，末拍后 0 字。
  * 题材无关（相位名仅作提示标签；戏剧标签大纲优先用标签名，避免把「起因」误标成「铺垫」）。
  */
-import { extractOutlineBeatItems } from './novel-chapter-seam.js'
+import {
+  extractOutlineBeatItems,
+  filterStaleCatalystBeatItems,
+} from './novel-chapter-seam.js'
 
 const PHASE_LABELS_5 = ['铺垫', '起因', '发展', '高潮', '收束'] as const
 
@@ -83,9 +86,14 @@ export function resolveChapterBeatBudgets(args: {
   chapterOutline?: string
   userTarget: number
   endpointPending?: boolean
+  /** 上章末正文：已落地的【本章起因】不再占拍点预算/生成 */
+  prevChapterTail?: string
 }): ChapterBeatBudget {
   const userTarget = Math.min(20000, Math.max(500, Math.round(Number(args.userTarget)) || 3000))
-  const beatItems = substantiveBeatItems(extractOutlineBeatItems(args.chapterOutline || ''))
+  const beatItems = filterStaleCatalystBeatItems(
+    substantiveBeatItems(extractOutlineBeatItems(args.chapterOutline || '')),
+    args.prevChapterTail,
+  )
   const n = beatItems.length
   if (n === 0) {
     return {

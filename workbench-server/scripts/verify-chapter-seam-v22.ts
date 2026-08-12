@@ -45,10 +45,10 @@ const hit = detectChapterSeamReplay({
   prevChapterTail: prevTail,
   chapterOutline: outline,
 })
-console.log('detect hit:', hit?.message)
+console.log('detect hit (hard path):', hit?.message ?? null)
 
 const block = buildOutlineStaleBlock({ chapterOutline: outline, prevTail, chapterNumber: 2 })
-console.log('outline block ok:', block.includes('大纲过期'))
+console.log('outline block ok:', /禁止再写|过期|已在/.test(block))
 
 const goodOpen = ('村民还在吵。柳如梅扯住他袖口，低声道：「你疯了？」林远反手握住她的手，压住嗓子：「听我说完。」众人围得更紧，赵德柱脸色铁青。').repeat(3)
 const goodHit = detectChapterSeamReplay({
@@ -60,7 +60,7 @@ const goodHit = detectChapterSeamReplay({
 console.log('good opening hit:', goodHit?.rule ?? null)
 console.log('good isWeak:', isWeakSeamContinuation(prevTail, goodOpen))
 
-// Lexical order rewind: opening literally does early beat while later beat done
+// Lexical order rewind: opening literally does early beat while later beat done（utility）
 const lexicalOpen = ('门被撞开。林远站在门边，还没来得及说话。灰尘扑面而来，外面人影晃动。').repeat(8)
 const lexicalHit = detectOutlineBeatOrderRewind({
   content: lexicalOpen,
@@ -71,10 +71,13 @@ const lexicalHit = detectOutlineBeatOrderRewind({
 console.log('lexical order:', lexicalHit?.message ?? null)
 
 if (!stale.length) throw new Error('expected stale beats')
-if (!hit) throw new Error('expected detect hit (weak or order)')
-if (!weak && !order && !lexicalHit) throw new Error('expected weak or order path')
+// 弱承接/拍点倒序：utility 仍可检出；一致性硬审 detectChapterSeamReplay 不再硬拦
+if (!weak && !order && !lexicalHit) throw new Error('expected weak or order utility path')
+if (hit && /弱承接|拍点倒序|大纲过期/.test(hit.message)) {
+  throw new Error('hard path must not emit weak/order narrative seam')
+}
 if (goodHit) throw new Error('good opening should not hit')
-if (!lexicalHit) throw new Error('expected lexical order rewind')
+if (!lexicalHit) throw new Error('expected lexical order rewind utility')
 
 // 冷开篇：上章已在林中收束，本章大纲是设陷阱/猎获，开篇却从家里醒来出门（无过期拍点字面重叠）
 const huntPrev = (`雪地里脚印还在。秦卫国收起刀，估摸着明日再来设套。林子深处风声紧，他沿着原路折回营地边缘，心里记下了那片灌木。`).repeat(3)
@@ -94,8 +97,11 @@ const coldReplay = detectChapterSeamReplay({
 })
 console.log('cold open:', coldHit?.message?.slice(0, 60) ?? null)
 console.log('cold replay:', coldReplay?.rule ?? null)
-if (!coldHit) throw new Error('expected chapter seam cold open')
-if (!coldReplay) throw new Error('expected detectChapterSeamReplay to catch cold open')
+if (!coldHit) throw new Error('expected chapter seam cold open (utility)')
+// 叙事冷开篇交模型审：一致性硬审 detectChapterSeamReplay 不再回传
+if (coldReplay && /冷开篇/.test(coldReplay.message)) {
+  throw new Error('detectChapterSeamReplay must not hard-emit narrative cold open')
+}
 
 // 假强承接：开篇与上章同为雪林用词，但大纲前段 0 命中 → 仍须冷开篇
 const snowPrev = (`雪地脚印还在红松林风紧。秦卫国收起刀，沿原路折回营地边缘，记下明日再来设套。`).repeat(6)
@@ -152,6 +158,34 @@ const nextDayOk = detectChapterSeamColdOpen({
 })
 if (nextDayOk && /时辰倒退/.test(nextDayOk.message || '')) {
   throw new Error('next-day dawn after noon should not be time rewind')
+}
+
+// 上章已意译完成「进林」→ 本章起因须判过期，不得再逼开篇重写「踏入」
+const forestOutline = [
+  '【本章起因】秦卫国踏入白雪皑皑的林场深处',
+  '【局面变化】发现野兔踪迹',
+  '【人物选择】冷静判断，设下陷阱',
+  '【章末问题】陷阱能否奏效？',
+].join('\n')
+// 前缀夹一段早先「秦卫国」对话，末段才进林——过期须看末窗而非全文首个姓名
+const forestPrev = (
+  '秦卫国在屋里把话说完，苏婉点了点头。'.repeat(20)
+  + '雪越下越密，打在脸上生疼。秦卫国眯起眼，辨认着前方那片黑黢黢的林子。他脚步踩实了雪，一步步往林子深处走，踏进那片白茫茫的林场。'
+)
+const forestStale = findStaleOutlineBeats(forestOutline, forestPrev)
+console.log('forest catalyst stale:', forestStale)
+if (!forestStale.some(s => /踏入|林场深处/.test(s))) {
+  throw new Error('paraphrased enter-forest in prev must stale 本章起因')
+}
+const forestContinue = detectChapterSeamColdOpen({
+  content: ('秦卫国在雪地上放慢脚步，凭老底子扫过兽道，很快发现野兔踪迹，冷静设下陷阱。').repeat(6),
+  chapterNumber: 4,
+  prevChapterTail: forestPrev,
+  chapterOutline: forestOutline,
+})
+console.log('forest continue cold:', forestContinue?.message?.slice(0, 60) ?? null)
+if (forestContinue && /未命中本章起因|踏入白雪皑皑/.test(forestContinue.message || '')) {
+  throw new Error('after stale catalyst, continue-in-forest must not demand 踏入 again')
 }
 
 console.log('PASS')

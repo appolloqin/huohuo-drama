@@ -6,8 +6,8 @@
 import {
   detectChapterSeamColdOpen,
   extractOutlineBeatPhrases,
-  phraseAppearsIn,
 } from './novel-chapter-seam.js'
+import { outlineBeatCoveredIn } from './novel-outline-beat-cover.js'
 import { logTaskWarn } from '../../common/task/task-logger.js'
 
 export type DraftOutlineFilterResult = {
@@ -57,7 +57,7 @@ function extractNameCandidates(text: string, max = 6): string[] {
 }
 
 function chunkCoversAnyBeat(chunk: string, beats: string[]): boolean {
-  return beats.some(b => phraseAppearsIn(chunk, b))
+  return beats.some(b => outlineBeatCoveredIn(chunk, b))
 }
 
 /**

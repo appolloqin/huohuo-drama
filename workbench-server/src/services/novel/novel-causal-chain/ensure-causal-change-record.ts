@@ -4,6 +4,7 @@
 import { chatCompletionTextAudit, type TextBillingContext } from '../../ai/ai.js'
 import { logTaskWarn } from '../../../common/task/task-logger.js'
 import { CAUSAL_CHANGE_RECORD_HEADER, CAUSAL_CHAPTER_END_FORMAT } from './causal-chain-template.js'
+import { normalizeChangeRecordArtifacts } from '../../../common/novel/novel-change-record.js'
 import {
   parseChangeRecord,
   splitProseAndChangeRecord,
@@ -49,9 +50,10 @@ export function buildFallbackChangeRecord(prose: string, chapterNumber: number):
       '  因果: 人物心理或处境变化随正文事件推进，与上章因果起点衔接',
     ].join('\n')
   }
+  // 须为「维度: 变化」+ 独立「因果:」行，否则 parseChangeRecord 抽不出条目、硬审仍报 missing_record
   return [
     CAUSAL_CHANGE_RECORD_HEADER,
-    '- （无状态变化，因果起点延续）',
+    '- 状态: 无状态变化（因果起点延续）',
     '  因果: 本章未发生需单独列明的场景/时间/人物状态/资源/伤势变更',
   ].join('\n')
 }
@@ -94,10 +96,21 @@ export async function ensureCausalChangeRecordAppended(args: {
 }): Promise<{ content: string; fixed: boolean }> {
   const trimmed = args.content.trim()
   if (!trimmed) return { content: trimmed, fixed: false }
-  if (hasValidChangeRecord(trimmed)) return { content: trimmed, fixed: false }
 
-  const { prose } = splitProseAndChangeRecord(trimmed)
-  const body = prose || trimmed
+  // 先回收模型把【变更记录】当小标题写下的散文，再判断是否已有合法结构化块
+  const normalized = normalizeChangeRecordArtifacts(trimmed)
+  const base = normalized.changeBlock
+    ? `${normalized.prose}\n\n${normalized.changeBlock}`.trim()
+    : normalized.prose
+  if (hasValidChangeRecord(base)) {
+    return {
+      content: base,
+      fixed: normalized.reclaimedFakeBlocks > 0 || base !== trimmed,
+    }
+  }
+
+  const { prose } = splitProseAndChangeRecord(base)
+  const body = prose || base
 
   try {
     let block = await generateChangeRecordBlock({

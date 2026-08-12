@@ -7,7 +7,7 @@ import {
   WEBNOVEL_NARRATIVE_TECHNIQUE_GUIDE,
   WEBNOVEL_STAT_FINGERPRINT_GUIDE,
 } from '../../agents/webnovel-prose-style.js'
-import { countNovelChars } from '../../common/novel/novel-char-limit.js'
+import { countNovelChars, assertNovelChapterLengthBand } from '../../common/novel/novel-char-limit.js'
 import {
   isBeatSequentialGenerateEnabled,
   parseNovelMetadata,
@@ -95,6 +95,26 @@ function priorTail(frozen: string): string {
   return chars.slice(-PRIOR_TAIL_CHARS).join('')
 }
 
+/**
+ * 已写正文进度锚点（题材无关）：后拍勿把已写到完成态的过程无交代再完整演一遍。
+ */
+function buildFrozenProgressNoReplayBlock(frozenProse: string): string {
+  const t = frozenProse.trim()
+  if (!t) return ''
+  const chars = [...t]
+  const anchor = chars.length <= 320 ? t : chars.slice(-320).join('')
+  return [
+    '【已写进度 — 勿回卷】',
+    '已写正文中写到完成态的过程：可一句承接，禁止无闪回框又以当前进行时完整换皮再写一遍。只推进本拍尚未完成的新冲突。',
+    `…${anchor.replace(/\s+/g, ' ').trim()}`,
+  ].join('\n')
+}
+
+/** 供 verify */
+export function buildFrozenProgressNoReplayBlockForTest(frozenProse: string): string {
+  return buildFrozenProgressNoReplayBlock(frozenProse)
+}
+
 function joinBlocks(blocks: string[]): string {
   return blocks.filter(Boolean).join('\n\n')
 }
@@ -180,15 +200,23 @@ async function generateOneBeat(args: {
       : '【末拍】写完本拍即整章收束；写到本章大纲硬止点即停；禁止再开新场面/新人物登门/新完成态；不考虑下章。')
     : `【禁止】提前写第 ${item.index + 1} 拍及之后情节；禁止发明大纲未列后续。`
 
+  const frozenNoReplay = !isFirst && frozenProse.trim()
+    ? buildFrozenProgressNoReplayBlock(frozenProse)
+    : ''
+
   const beatUser = joinBlocks([
     args.sharedUserPrefix,
     openingRule,
     prior && !(args.chapterNumber >= 2 && isFirst)
       ? `【已写正文（已冻结，禁止重写/删改/回放）】\n…${prior}`
       : '',
+    frozenNoReplay,
     `【本拍任务 — 第 ${item.index}/${beatTotal} 拍 · ${item.phase}】\n${item.beat}`,
     item.tag === '本章起因' || item.phase === '起因'
       ? '【本拍】写清该起因由【本章人物】完成；禁止续写上章末悬念正文。'
+      : '',
+    !isFirst
+      ? '【本拍】只推进尚未完成的新冲突；已完成态过程勿无交代完整再演（一句承接即可）。'
       : '',
     `【本拍篇幅】须写约 ${item.minChars}～${item.maxChars} 字（目标 ${item.targetChars}）；写完本拍即停。`,
     lastBeatRule,
@@ -359,6 +387,7 @@ export async function generateNovelChapterByBeats(
     chapterOutline,
     userTarget,
     endpointPending: outlineAlign.endpointPending,
+    prevChapterTail: prevTail,
   })
   const items = beatBudgets.items
   if (!shouldUseBeatSequentialGenerate({
@@ -407,6 +436,7 @@ export async function generateNovelChapterByBeats(
     '【情节优先序】本章大纲（含【本章起因】）> 上章已发生事实 > 写作说明。写作说明不得另起出门/进山等与大纲或上章事实冲突的起势。',
     '',
     '当前任务：**按拍点分段写作**——每次只写用户指定的「本拍」；已写正文已冻结。',
+    '章内进度：后拍勿把已写到完成态的过程无交代再完整演一遍（可一句承接；同主题加深/余波可以）。',
     '结构与章末止点服从【本章大纲边界】；禁止为凑字越过末拍。',
     `整章目标合计约 ${userTarget} 字（${minLen}～${maxLen}）；各拍自有预算，勿把字数挪到未写拍点。`,
   ].filter(Boolean).join('\n')
@@ -728,6 +758,12 @@ export async function generateNovelChapterByBeats(
     chapterNumber,
     beats: items.length,
     chars: countNovelChars(polished),
+  })
+  assertNovelChapterLengthBand({
+    text: polished,
+    minLen,
+    maxLen,
+    chapterNumber,
   })
   return polished
 }

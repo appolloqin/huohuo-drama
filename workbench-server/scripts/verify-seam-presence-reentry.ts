@@ -63,6 +63,19 @@ mustMiss(
   '秦卫国披上大衣，跟苏婉说了声「我出去一趟」，推门走了。门外雪很大，人影没入夜色。',
 )
 
+// C: 已在途 → 禁止开篇从封闭场合重演出发（题材无关）
+{
+  const forestPrev = '秦卫国没再回头，一步步往林子深处走。他眯起眼，辨认着前方那片黑黢黢的林子。'
+  const replayLeave = detectChapterSeamPresenceReentry({
+    content: '晨雾未散。茅屋的门在身后合上。苏婉站在门槛里。他说门闩插死，晌午前回。',
+    chapterNumber: 4,
+    prevChapterTail: forestPrev,
+  })
+  if (!replayLeave || !/离场吃书/.test(replayLeave.message)) {
+    throw new Error('已在途后重演出发应命中离场吃书')
+  }
+}
+
 const cold = detectChapterSeamColdOpen({
   content: '雪光映进窗棂。秦卫国推门进来，提着猎物。他把狍子搁下，开始处理，苏婉在灶边烧水。',
   chapterNumber: 8,

@@ -7,6 +7,10 @@ import {
   type NovelContinuityLedger,
 } from '../novel/novel-continuity-state.js'
 import type { ContinuityCheckResult, ContinuityRewriteLogEntry } from '../novel/novel-continuity-state.js'
+import {
+  normalizeChapterStateCard,
+  type ChapterStateCard,
+} from '../novel/novel-state-card.js'
 import { parseJsonColumnObject, type JsonColumnInput } from '../db/parse-json-column.js'
 
 export type { ContinuityCheckResult }
@@ -65,6 +69,8 @@ export type EpisodeMetadata = {
   continuity_ledger?: NovelContinuityLedger
   /** 章末缝合契约（时间/地点/人物/刚发生），供下章开篇对齐 */
   chapter_end_snapshot?: ChapterEndSnapshot
+  /** 章节状态卡（六维投影，邻章注入/审核） */
+  chapter_state_card?: ChapterStateCard
   continuity_check?: ContinuityCheckResult
   continuity_rewrite_log?: ContinuityRewriteLogEntry[]
   /** 因果链【变更记录】元数据（与 episodes.content 正文分离） */
@@ -119,6 +125,30 @@ function parseContinuityCheck(raw: unknown): ContinuityCheckResult | undefined {
       : []
   )
 
+  const dimensions = Array.isArray(src.dimensions)
+    ? src.dimensions
+      .filter((x): x is {
+        dimension: string
+        status: 'ok' | 'fail' | 'na'
+        reason: string
+        excerpt?: string
+      } =>
+        x != null && typeof x === 'object'
+        && typeof (x as { dimension?: unknown }).dimension === 'string'
+        && ((x as { status?: unknown }).status === 'ok'
+          || (x as { status?: unknown }).status === 'fail'
+          || (x as { status?: unknown }).status === 'na')
+        && typeof (x as { reason?: unknown }).reason === 'string')
+      .map(x => ({
+        dimension: x.dimension,
+        status: x.status,
+        reason: x.reason,
+        ...(typeof x.excerpt === 'string' && x.excerpt.trim()
+          ? { excerpt: x.excerpt.trim() }
+          : {}),
+      }))
+    : undefined
+
   return {
     passed: src.passed === true,
     score: Math.min(100, Math.max(0, score)),
@@ -132,6 +162,10 @@ function parseContinuityCheck(raw: unknown): ContinuityCheckResult | undefined {
     audit: audit && (audit.hard.length || audit.rule.length || audit.model.length || audit.model_rejected?.length)
       ? audit
       : undefined,
+    ...(dimensions?.length ? { dimensions } : {}),
+    ...(typeof src.reason === 'string' && src.reason.trim()
+      ? { reason: src.reason.trim() }
+      : {}),
   }
 }
 
@@ -226,11 +260,19 @@ export function parseEpisodeMetadata(raw: JsonColumnInput): EpisodeMetadata {
   const chapterNum = Number.isFinite(Number(obj.chapter_number)) ? Number(obj.chapter_number) : 0
   const continuity_ledger = normalizeContinuityLedger(obj.continuity_ledger, chapterNum) ?? undefined
   const chapter_end_snapshot = normalizeChapterEndSnapshot(obj.chapter_end_snapshot, chapterNum) ?? undefined
+  const chapter_state_card = normalizeChapterStateCard(obj.chapter_state_card, chapterNum) ?? undefined
   const continuity_check = parseContinuityCheck(obj.continuity_check)
   const causal_change_record = typeof obj.causal_change_record === 'string' && obj.causal_change_record.trim()
     ? obj.causal_change_record.trim()
     : undefined
-  return { ai_detection, continuity_ledger, chapter_end_snapshot, continuity_check, causal_change_record }
+  return {
+    ai_detection,
+    continuity_ledger,
+    chapter_end_snapshot,
+    chapter_state_card,
+    continuity_check,
+    causal_change_record,
+  }
 }
 
 export function mergeEpisodeMetadata(
@@ -250,6 +292,10 @@ export function mergeEpisodeMetadata(
   if ('chapter_end_snapshot' in patch) {
     if (patch.chapter_end_snapshot) next.chapter_end_snapshot = patch.chapter_end_snapshot
     else delete next.chapter_end_snapshot
+  }
+  if ('chapter_state_card' in patch) {
+    if (patch.chapter_state_card) next.chapter_state_card = patch.chapter_state_card
+    else delete next.chapter_state_card
   }
   if ('continuity_check' in patch) {
     if (patch.continuity_check) next.continuity_check = patch.continuity_check
@@ -346,4 +392,12 @@ export function readEpisodeChapterEndSnapshotMeta(
 ): ChapterEndSnapshot | null {
   const obj = readEpisodeMetadataObject(raw)
   return normalizeChapterEndSnapshot(obj.chapter_end_snapshot, chapterNumber)
+}
+
+export function readEpisodeChapterStateCard(
+  raw: string | null | undefined,
+  chapterNumber: number,
+): ChapterStateCard | null {
+  const obj = readEpisodeMetadataObject(raw)
+  return normalizeChapterStateCard(obj.chapter_state_card, chapterNumber)
 }

@@ -170,6 +170,13 @@ export type ContinuityBlockingItem = {
   message: string
 }
 
+export type ContinuityDimensionVerdict = {
+  dimension: string
+  status: 'ok' | 'fail' | 'na'
+  reason: string
+  excerpt?: string
+}
+
 export type ContinuityCheckResult = {
   passed: boolean
   score: number
@@ -178,6 +185,10 @@ export type ContinuityCheckResult = {
   summary: string
   checked_at?: string
   content_hash?: string
+  /** 模型审 21 维逻辑自洽明细 */
+  dimensions?: ContinuityDimensionVerdict[]
+  /** 模型审总因 */
+  reason?: string
 }
 
 export type AiDetectHubResult = NovelAiDetection & {
@@ -533,6 +544,8 @@ export const dramaAPI = {
   styles: () => api.get('/dramas/styles'),
   generateSynopsis: (body: { keywords: string; title?: string; style?: string; total_episodes?: number }) =>
     api.post<{ synopsis: string }>('/dramas/generate-synopsis', body),
+  generateTitle: (body: { keywords: string; style?: string; total_episodes?: number }) =>
+    api.post<{ title: string }>('/dramas/generate-title', body),
   create: (data: any) => api.post('/dramas', data),
   update: (id: number, data: any) => api.put(`/dramas/${id}`, data),
   del: (id: number) => api.del(`/dramas/${id}`),
@@ -548,6 +561,8 @@ export const dramaAPI = {
 export const novelAPI = {
   generatePremise: (body: { keywords: string; title?: string; genre?: string; total_chapters?: number }) =>
     api.post<{ premise: string }>('/novel/generate-premise', body),
+  generateTitle: (body: { keywords: string; genre?: string; total_chapters?: number }) =>
+    api.post<{ title: string }>('/novel/generate-title', body),
   getMeta: (dramaId: number) => api.get<{
     outline: string
     premise: string
@@ -584,6 +599,78 @@ export const novelAPI = {
     }>(`/novel/chapters/${chapterId}/brief`),
   detectChapterAi: (chapterId: number, body?: { text?: string }) =>
     api.post<NovelAiDetection>(`/novel/chapters/${chapterId}/detect-ai`, body ?? {}),
+  getChapterStateCard: (chapterId: number) =>
+    api.get<{
+      card: {
+        chapter_number: number
+        timeline: string
+        place: string
+        scene: string
+        cast: string
+        props: string
+        summary_line?: string
+        validation_status?: string
+        validation_issues?: string[]
+        validated_at?: string
+        updated_at?: string
+        progress: {
+          catalyst_done: boolean | 'unknown'
+          last_event: string
+          open_threads?: string
+          closed_beats?: string
+        }
+      } | null
+      stale: boolean
+      has_card: boolean
+      chapter_number: number
+    }>(`/novel/chapters/${chapterId}/state-card`),
+  rebuildChapterStateCard: (chapterId: number, body?: { text?: string; force?: boolean; project_only?: boolean }) =>
+    api.post<{
+      card: unknown
+      source: string
+      validation?: { ok: boolean; status: string; issues: Array<{ code: string; message: string }> } | null
+      repaired?: boolean
+    }>(`/novel/chapters/${chapterId}/state-card/rebuild`, body ?? {}),
+  validateChapterStateCard: (chapterId: number, body?: { text?: string; repair?: boolean }) =>
+    api.post<{
+      card: unknown
+      validation?: { ok: boolean; status: string; issues: Array<{ code: string; message: string }> } | null
+      repaired?: boolean
+    }>(`/novel/chapters/${chapterId}/state-card/validate`, body ?? {}),
+  listStateCards: (dramaId: number) =>
+    api.get<{
+      chapters: Array<{
+        chapter_number: number
+        stale: boolean
+        updated_at?: string
+        summary_line?: string
+        has_card: boolean
+        validation_status?: string
+        validation_issues?: string[]
+      }>
+      sync_rebuild_max: number
+    }>(`/novel/dramas/${dramaId}/state-cards`),
+  rebuildAllStateCards: (dramaId: number) =>
+    api.post<{
+      mode: 'sync' | 'batch_job'
+      chapter_count?: number
+      processed?: number
+      skipped?: number
+      failed?: number
+      invalid?: number
+      repaired?: number
+      job?: { id: string }
+      sync_rebuild_max?: number
+    }>(`/novel/dramas/${dramaId}/state-cards/rebuild`, {}),
+  validateAllStateCards: (dramaId: number) =>
+    api.post<{
+      mode: 'sync' | 'batch_job'
+      chapter_count?: number
+      checked?: number
+      invalid?: number
+      repaired?: number
+      job?: { id: string }
+    }>(`/novel/dramas/${dramaId}/state-cards/validate`, {}),
   listImportSources: (params?: { keyword?: string; page?: number; page_size?: number }) => {
     const q = new URLSearchParams()
     if (params?.keyword) q.set('keyword', params.keyword)

@@ -1,0 +1,12 @@
+import 'dotenv/config'
+await import('../src/db/bootstrap.js')
+const { findEpisodeByDramaAndNumber } = await import('../src/db/repos/episodes/index.js')
+const { resolveNovelEpisodeStoryProse } = await import('../src/services/novel/novel-chapter-prose.js')
+const { loadPrevChapterContentTail } = await import('../src/services/novel/novel-continuity.js')
+const { detectChapterSeamReplay } = await import('../src/services/novel/novel-chapter-seam.js')
+const ep = await findEpisodeByDramaAndNumber(27, 4)
+if (!ep) throw new Error('no ep')
+const content = resolveNovelEpisodeStoryProse(ep)
+const prev = await loadPrevChapterContentTail(27, 4, 2000)
+const hit = detectChapterSeamReplay({ content, chapterNumber: 4, prevChapterTail: prev || '' })
+console.log(hit?.message || 'NULL')

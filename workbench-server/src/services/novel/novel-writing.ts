@@ -11,6 +11,7 @@ import {
 import {
   assertValidNovelCreativeOutput,
   NO_THINKING_OUTPUT_RULE,
+  normalizeGeneratedNovelTitle,
 } from '../../common/novel/novel-creative-output.js'
 import {
   WEBNOVEL_CHAPTER_PROSE_GUIDE,
@@ -31,7 +32,7 @@ import {
   assertOutlineChapterFields,
 } from './novel-outline-drama-fields.js'
 import { ensureOutlineBookDramaFields } from './novel-outline-drama-ensure.js'
-import { countNovelChars, enforceAssembledLengthFloor } from '../../common/novel/novel-char-limit.js'
+import { countNovelChars, enforceAssembledLengthFloor, assertNovelChapterLengthBand } from '../../common/novel/novel-char-limit.js'
 import { buildNovelWriteContext } from './novel-continuity.js'
 import { NOVEL_MEMORY_CHAPTER_END_FORMAT, buildAnchorEchoPromptBlock, ensureAnchor, ensureNovelMemory, resolveVolumeForChapter } from './novel-memory/index.js'
 import { CAUSAL_CHAPTER_END_FORMAT, isCausalChainEnabled } from './novel-causal-chain/index.js'
@@ -155,6 +156,72 @@ export async function generateNovelPremise(args: {
     { ...options, billing },
   )
   return assertValidNovelCreativeOutput(premise, 'premise')
+}
+
+export { normalizeGeneratedNovelTitle }
+
+const NOVEL_TITLE_GEN_RULES = `你是资深网文编辑，擅长起能上架番茄/起点/晋江的商业网文书名。
+本次任务：根据用户给出的草稿名或关键词，生成【一个】一看就知道是网文小说的中文书名。
+
+## 书名必须传达（至少两点）
+1. 题材/标签：如重生、穿书、系统、玄幻、都市、言情、战神、神医等
+2. 主角身份或处境反差：废柴、赘婿、嫡女、外卖员、重生归来等
+3. 爽点/情绪钩子：逆袭、打脸、宠、觉醒、开局、藏不住了等（有动词更好）
+
+## 推荐公式（择一落地，勿堆砌）
+- 题材/标签 + 身份 + 爽点动作（例：高武：开局觉醒满级悟性）
+- 身份反差 + 命运翻转（例：穿成恶毒嫡女后，我把全家带赢了）
+- 金手指 + 冲突对象 + 爽感承诺（例：时停起手，邪神也得给我跪下）
+- 情绪/关系钩子（例：闪婚后傅总马甲藏不住了）
+- 精炼立意短名（偏长篇付费风，4～8字，例：大奉打更人）—仅当题材偏严肃长篇时选用
+
+## 字数与风格
+- 默认偏免费/强钩子风：8～16个汉字，口语、信息密度高，前半段就要有钩子
+- 若题材偏「玄幻长篇/仙侠史诗」可出 4～9 字精炼名，但仍须有网文感（忌纯文艺抽象）
+- 可含冒号、逗号、数字；不要书名号《》、引号、英文、表情
+
+## 严禁（一看就不像网文）
+- 文艺空洞：云与梦、时光、岁月、彼岸、无题、随笔
+- 只有抽象词或成语堆砌，看不出故事卖点
+- 设定堆砌成说明书：无敌功法系统大全
+- 影视剧片名腔、散文诗、歌词名
+- 输出多个候选、解释、前后缀
+
+硬性：只输出书名本身一行。
+${NO_THINKING_OUTPUT_RULE}`
+
+/**
+ * 根据关键词生成网文书名（复用 novel_premise 模型配置，短提示只出书名）。
+ */
+export async function generateNovelTitle(args: {
+  keywords: string
+  genre?: string
+  totalChapters?: number
+}, billing?: TextBillingContext): Promise<string> {
+  const { keywords, genre, totalChapters } = args
+  const system = [
+    await buildNovelAgentSystem('novel_premise'),
+    '',
+    NOVEL_TITLE_GEN_RULES,
+  ].join('\n')
+  const options = await novelAgentCompletionOptions('novel_premise', { maxTokens: 128, temperature: 0.82 })
+
+  const user = [
+    genre ? `【题材】${genre}` : '',
+    totalChapters ? `【计划章数】约 ${totalChapters} 章` : '',
+    `【草稿名/关键词】\n${keywords}`,
+    '请把上述内容改写成一个可上架的网文书名（只输出一行）：',
+  ].filter(Boolean).join('\n\n')
+
+  const raw = await chatCompletionText(
+    [{ role: 'system', content: system }, { role: 'user', content: user }],
+    { ...options, billing },
+  )
+  const title = normalizeGeneratedNovelTitle(raw)
+  if ([...title].length < 2) {
+    throw new Error('书名生成结果过短，请重试或改写关键词')
+  }
+  return title
 }
 
 export async function generateNovelWritingBrief(args: {
@@ -829,6 +896,7 @@ export async function buildGenerateNovelChapterMessages(args: {
     chapterOutline,
     userTarget: target,
     endpointPending: boundarySuspend,
+    prevChapterTail: prevTail,
   })
   const beatLengthNote = beatBudgets.promptBlock || beatTarget.promptBlock
   const lengthBoundNote = outlineAlign.boundaryBlock
@@ -853,6 +921,18 @@ export async function buildGenerateNovelChapterMessages(args: {
   // 先裁定旧稿结构，再组 system/user（结构作废时须覆盖「以前序为准」以免冷开篇）
   // prevTail / prevSnap 已在 outlineAlign 前加载
   // 仅「用户重写」默认带下文；一次生成 / 数字作家 / craft 可显式关闭
+  const { loadChapterStateCard } = await import('./novel-state-card-service.js')
+  const { formatNeighborStateCardsBlock } = await import('../../common/novel/novel-state-card.js')
+  const prevStateCard = chapterNumber >= 2
+    ? await loadChapterStateCard(dramaId, chapterNumber - 1)
+    : null
+  const nextStateCard = withNext
+    ? await loadChapterStateCard(dramaId, chapterNumber + 1)
+    : null
+  const neighborStateCardBlock = formatNeighborStateCardsBlock({
+    prevCard: prevStateCard,
+    nextCard: nextStateCard,
+  })
   const nextChapterOutline = withNext && dramaId > 0
     ? await loadChapterOutlineText(dramaId, chapterNumber + 1)
     : ''
@@ -909,7 +989,7 @@ export async function buildGenerateNovelChapterMessages(args: {
         '必须结合【上章结尾/前序已写】与【本章大纲边界】：衔接从已发生事实之后展开；修正吃书、章缝回放、空洞套话。',
         '**保留情节 ≠ 保留回放/旧结构**：草稿开篇若在重演上章高潮必须删掉；结构与章末止点以【本章大纲边界】为准，勿按旧稿展开大纲未列后续；**写到章末硬止点即停**。',
         forceSeamOpening
-          ? '**结构作废重写硬性**：旧开篇骨架无效；「本章大纲与前序冲突以前序为准」对开篇结构暂停。承接上章末事实后进入本章拍点（手法可顺叙或先果后因）；禁止完成态重做与同日时辰倒退。'
+          ? '**结构作废重写硬性**：旧开篇骨架无效；「本章大纲与前序冲突以前序为准」对开篇结构暂停。承接上章末事实后进入本章拍点（手法可顺叙或先果后因）；禁止完成态重做、同日时辰倒退与天候倒退（雨雪已落地勿写成才开始下）。'
           : '',
         boundarySuspend
           ? '**篇幅**：尽量写到目标字数，且只加厚本章大纲已列拍点；禁止用大纲未列情节凑字；仅当超上限才压缩。'
@@ -1034,7 +1114,7 @@ export async function buildGenerateNovelChapterMessages(args: {
         ? '**旧稿已判定超出大纲边界**：禁止照抄旧稿越界结构/篇幅比例；越界段仅作反例。'
         : '',
       forceSeamOpening
-        ? '**开篇轻锚接缝**：承接【上章结尾】后进入大纲拍点（手法可顺叙或先果后因）；有价值旧句可写厚；禁止完成态重做与同日时辰倒退。'
+        ? '**开篇轻锚接缝**：承接【上章结尾】后进入大纲拍点（手法可顺叙或先果后因）；有价值旧句可写厚；禁止完成态重做、同日时辰倒退与天候倒退。'
         : '',
       `章末钩子须对齐本章大纲（即将/还没则勿提前完成）；**篇幅贴近目标 ${effectiveTarget} 字（${minLen}～${maxLen}）**；口语化；已给出钱数/物件勿改写或加码；只输出简体中文正文。`,
     ].filter(Boolean).join('')
@@ -1047,7 +1127,7 @@ export async function buildGenerateNovelChapterMessages(args: {
           ? '**旧稿已判定超出大纲边界**：禁止照抄旧稿越界结构/篇幅比例；越界段仅作反例。'
           : '',
         forceSeamOpening
-          ? '**开篇轻锚接缝**：承接【上章结尾】后进入大纲拍点（手法可顺叙或先果后因）；有价值旧句可写厚；禁止完成态重做与同日时辰倒退。'
+          ? '**开篇轻锚接缝**：承接【上章结尾】后进入大纲拍点（手法可顺叙或先果后因）；有价值旧句可写厚；禁止完成态重做、同日时辰倒退与天候倒退。'
           : '',
         `**篇幅贴近目标 ${effectiveTarget} 字（${minLen}～${maxLen}）**；口语化；只输出简体中文正文。`,
       ].filter(Boolean).join('')
@@ -1056,7 +1136,7 @@ export async function buildGenerateNovelChapterMessages(args: {
         '结构与章末止点以【本章大纲边界】为准；**写到章末硬止点即停**；禁止用大纲未列情节凑字。',
         CAST_CONTINUITY_RULE,
         forceSeamOpening
-          ? '**开篇轻锚接缝**：承接【上章结尾】后进入大纲拍点（手法可顺叙或先果后因）；禁止吃书、完成态重做与同日时辰倒退。'
+          ? '**开篇轻锚接缝**：承接【上章结尾】后进入大纲拍点（手法可顺叙或先果后因）；禁止吃书、完成态重做、同日时辰倒退与天候倒退。'
           : '',
         `**篇幅贴近目标 ${effectiveTarget} 字（${minLen}～${maxLen}）**；口语化；只输出简体中文正文。`,
       ].filter(Boolean).join('')
@@ -1067,6 +1147,7 @@ export async function buildGenerateNovelChapterMessages(args: {
     ctx.premiseBlock,
     ctx.structuredBlock,
     ctx.continuity,
+    neighborStateCardBlock,
     seamBlock,
     forcedSeamBlock,
     outlineStaleBlock,
@@ -1158,10 +1239,14 @@ export async function generateNovelChapterFull(
       chapterNumber: args.chapterNumber,
     })
     const userTarget = Math.min(20000, Math.max(500, args.targetLength ?? 3000))
+    const prevTailForBudget = args.chapterNumber >= 2
+      ? await loadPrevChapterContentTail(args.dramaId, args.chapterNumber, 1600)
+      : ''
     const beatBudgets = resolveChapterBeatBudgets({
       chapterOutline: args.chapterOutline,
       userTarget,
       endpointPending: outlineAlign.endpointPending,
+      prevChapterTail: prevTailForBudget,
     })
     if (shouldUseBeatSequentialGenerate({
       beatCount: beatBudgets.beatCount,
@@ -1220,6 +1305,12 @@ export async function generateNovelChapterFull(
       floor: floored.floor,
     })
   }
+  assertNovelChapterLengthBand({
+    text: floored.text,
+    minLen,
+    maxLen,
+    chapterNumber: args.chapterNumber,
+  })
   return purgeLexicalSeam(floored.text)
 }
 

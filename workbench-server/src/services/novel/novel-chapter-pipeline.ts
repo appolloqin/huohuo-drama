@@ -26,16 +26,14 @@ import type { NovelContinuityLedger } from '../../common/novel/novel-continuity-
 import type { ContinuityCheckResult, ContinuityRewriteLogEntry } from '../../common/novel/novel-continuity-state.js'
 import { continuityRuleLabel } from '../../common/novel/novel-continuity-rules.js'
 import { logTaskError, logTaskWarn } from '../../common/task/task-logger.js'
-import { enforceAssembledLengthFloor, countNovelChars } from '../../common/novel/novel-char-limit.js'
+import { enforceAssembledLengthFloor, countNovelChars, assertNovelChapterLengthBand } from '../../common/novel/novel-char-limit.js'
 
 /** ??/?????????????????????????? UI */
 function buildHardRejectContinuityCheck(
   reasons: Array<{ code: string; message: string }>,
 ): ContinuityCheckResult {
   const softCodes = new Set([
-    'outline_endpoint_overshoot',
     'outline_boundary_model',
-    'next_chapter_beat_leak',
     'chapter_event_replay',
     'draft_orphan_replay',
     'catalyst_agency_fail',
@@ -47,6 +45,8 @@ function buildHardRejectContinuityCheck(
     'named_as_generic',
     'opening_mid_dialogue',
     'opening_unexplained_name',
+    'early_beats_missing',
+    'weather_process_soft',
   ])
   const hardReasons = reasons.filter(r => !softCodes.has(r.code || ''))
   const use = hardReasons.length ? hardReasons : reasons
@@ -163,9 +163,14 @@ async function runOutlineComplianceGate(args: {
         passed: detected.ok,
         attempts: 0,
         reasons,
-        hardReject: reasons.some(r => r.code === 'chapter_seam_cold_open'),
+        // 规则路径不再产出章缝硬码；LLM 失败时仅机械越界可硬拒
+        hardReject: reasons.some(r =>
+          r.code === 'outline_endpoint_overshoot'
+          || r.code === 'next_chapter_beat_leak'
+          || r.code === 'outline_boundary_model',
+        ),
       },
-      stillCold: reasons.some(r => r.code === 'chapter_seam_cold_open'),
+      stillCold: false,
     }
   }
 }
@@ -519,8 +524,27 @@ export async function postProcessNovelChapterContent(args: {
     }
   }
 
-  // Craft/?AI ????????????????????????? UI ????
+  // Craft/去AI 之后再审；若删毒等已清空正文，勿跑一致性审以免误报 empty_content
   if (!skipCheck) {
+    if (!content.trim()) {
+      const emptyReasons = outlineCompliance?.reasons?.length
+        ? outlineCompliance.reasons
+        : [{
+            code: 'outline_endpoint_overshoot',
+            message: '删毒/修正后无有效正文，未落库；请按本章大纲重写',
+          }]
+      check = buildHardRejectContinuityCheck(emptyReasons)
+      await saveContinuityCheck(episodeId, check)
+      return {
+        content: '',
+        check,
+        ledger: null,
+        craft,
+        outline_compliance: outlineCompliance,
+        ai_detection: aiDetection,
+        hard_reject: true,
+      }
+    }
     const afterHooks = await runStreamContinuityCheck('hooks')
     check = afterHooks
     await saveContinuityCheck(episodeId, check)
@@ -572,7 +596,9 @@ export async function postProcessNovelChapterContent(args: {
 
   content = normalizeNovelTemporalNumerals(preserveNovelLineLayout('', content))
   {
-    const minLen = Math.round(Math.min(20000, Math.max(500, Number(generateArgs?.targetLength) || 3000)) * 0.88)
+    const target = Math.min(20000, Math.max(500, Number(generateArgs?.targetLength) || 3000))
+    const minLen = Math.round(target * 0.88)
+    const maxLen = Math.round(target * 1.12)
     const floored = enforceAssembledLengthFloor({
       assembled: assembledBaseline,
       candidate: content,
@@ -587,6 +613,7 @@ export async function postProcessNovelChapterContent(args: {
       })
       content = floored.text
     }
+    assertNovelChapterLengthBand({ text: content, minLen, maxLen, chapterNumber })
   }
 
   // 一致性未通过：不交付正文（避免覆盖/落库毒稿；审校结果仍返回给 UI）
@@ -745,6 +772,10 @@ export async function runNovelChapterPipeline(args: {
     let checkResult = await runCheck()
 
     while (strictContinuity && !checkResult.passed) {
+      // 模型审 JSON 解析失败：改写正文无效，直接中止避免空转 regen
+      if (checkResult.model_parse_failed) {
+        abortContinuity('audit_parse_failed', checkResult)
+      }
       if (rewriteMax != null && rewriteAttempts >= rewriteMax) {
         abortContinuity('max_attempts', checkResult, { rewriteMax })
       }
@@ -893,9 +924,11 @@ export async function runNovelChapterPipeline(args: {
         chapterNumber,
         codes: gate.report.reasons.map(r => r.code),
       })
+      const rejectCheck = buildHardRejectContinuityCheck(gate.report.reasons)
+      await saveContinuityCheck(episodeId, rejectCheck)
       return {
         content: '',
-        check,
+        check: rejectCheck,
         ledger: null,
         rewritten,
         rewrite_attempts: rewriteAttempts,
@@ -1130,7 +1163,9 @@ export async function runNovelChapterPipeline(args: {
   }
 
   if (content.trim()) {
-    const minLen = Math.round(Math.min(20000, Math.max(500, Number(generateArgs?.targetLength) || 3000)) * 0.88)
+    const target = Math.min(20000, Math.max(500, Number(generateArgs?.targetLength) || 3000))
+    const minLen = Math.round(target * 0.88)
+    const maxLen = Math.round(target * 1.12)
     const floored = enforceAssembledLengthFloor({
       assembled: assembledBaseline,
       candidate: content,
@@ -1145,6 +1180,7 @@ export async function runNovelChapterPipeline(args: {
       })
       content = floored.text
     }
+    assertNovelChapterLengthBand({ text: content, minLen, maxLen, chapterNumber })
   }
 
   // 一致性未通过：不交付正文，避免覆盖原文 / 数字作家落库毒稿

@@ -483,8 +483,67 @@ const OPENING_ARRIVAL_RE = new RegExp([
 /** 开篇：声称外出过夜/一宿（需上章先有离场） */
 const OPENING_ABSENCE_CLAIM_RE = /进山一宿|在外过[夜宿]|外头过[夜宿]|出去了一[夜宿整]|山里过[夜宿]|一夜没回|在外过了一[夜宿]/
 
-/** 上章末尖端：已离场/出门（合法归来的前提） */
-const PREV_DEPARTURE_TIP_RE = /推门出去|推门走了|出了门|出门去|走了出去|离开了这|出去一趟|进山去|上山去|出门了|走了\S{0,6}门/
+/** 场合类别：封闭内 / 出入口 / 已在途外（题材无关，不绑林场茅屋等专名） */
+export type PlaceCategory = 'enclosed' | 'threshold' | 'away' | 'unknown'
+
+/**
+ * 从短文本判场合类别。优先出入口，再封闭内，再途外。
+ * 用位类词（门/屋/路/外）而非具体地名。
+ */
+export function classifyPlaceCategory(text?: string | null): PlaceCategory {
+  const t = (text || '').replace(/\s+/g, '')
+  if (!t) return 'unknown'
+  if (/门槛|门口|门外|门边|门框|城门|营门|舱门|店门|楼道口|房门|屋门|家门/.test(t)) return 'threshold'
+  if (/屋里|屋内|室内|房里|厅里|殿内|舱内|帐内|店内|炕上|灶旁|房内/.test(t)) return 'enclosed'
+  if (/外头|室外|路上|道上|途中|城外|营外|野外|阵前|雪地|坡上|深处|巷|街/.test(t)) return 'away'
+  // 开放地貌二字（林/山/河等）仅作途外弱信号，须与位移或「外/上/里」同位才强化——此处出现即途外
+  if (/(?:林|山|河|海|野|漠|原|坡)(?:子|里|上|中|外|下|头)?/.test(t)) return 'away'
+  const key = normalizePlaceKey(t)
+  if (key === '室内') return 'enclosed'
+  if (key === '室外') return 'away'
+  return 'unknown'
+}
+
+/** 外向位移（离开封闭场合）；不绑进山/打猎 */
+const OUTBOUND_MOTION_RE =
+  /离开|出去|走了|迈出|动身|启程|没入|深入|往前|一步步往|不再回头|头也不回|走远|远去|走向|走进|走入|往.{0,12}(?:走|去)|辨认着前方|人影没入/
+
+/** 开篇前段是否落在封闭内/出入口（只看头段，避免后文入林掩盖倒退） */
+function openingEarlyHomeLocus(opening: string): boolean {
+  const head = opening.replace(/\s+/g, '').slice(0, 420)
+  if ([...head].length < 10) return false
+  const cat = classifyPlaceCategory(head)
+  if (cat === 'enclosed' || cat === 'threshold') return true
+  return /门槛|门口|门框|门边|房门|屋门|家门|屋里|屋内|室内|房里|厅里|帐内|舱内|炕上|回屋|转身回屋/.test(head)
+}
+
+/** 开篇「从封闭/出入口再出发」：场合在内或门口 + 外向离场/封门/取物再上路 */
+function openingStagesExitRitual(opening: string): boolean {
+  const h = opening.replace(/\s+/g, '').slice(0, 1200)
+  if ([...h].length < 12) return false
+  const locus =
+    openingEarlyHomeLocus(opening)
+    || classifyPlaceCategory(h) === 'enclosed'
+    || classifyPlaceCategory(h) === 'threshold'
+    || /门槛|门口|门框|门边|房门|屋门|家门|屋里|屋内|室内|房里|厅里|帐内|舱内|炕上/.test(h)
+  const sealOrLeave =
+    /门.{0,8}(?:合|关|带上|锁|插)|(?:合|关|带上|锁|插).{0,6}门|推门|推开.{0,8}门|出了门|迈步出门|出门去|出门了|离开|出去|动身|启程|迈出|走了出去|去一趟/.test(h)
+  // 无「出门」字样：门口/回屋取物后「往林/山走」「进山」等同重演出发
+  const gearThenOutbound =
+    /(?:回屋|屋里|捡了|揣怀|塞进|披上|带上).{0,40}(?:往|向).{0,10}(?:林|山|坡|外).{0,6}(?:走|去)|进山|进林|去山里|去林子|沿着屋后/.test(h)
+  return locus && (sealOrLeave || gearThenOutbound)
+}
+
+function tipLooksDeparted(tip: string): boolean {
+  const t = tip.replace(/\s+/g, '')
+  if (!t) return false
+  const cat = classifyPlaceCategory(t)
+  if (cat === 'away' && OUTBOUND_MOTION_RE.test(t)) return true
+  // 明确外向离开，且尾尖不像仍困在封闭内
+  if (OUTBOUND_MOTION_RE.test(t) && cat !== 'enclosed') return true
+  if (/不再回头|头也不回|走了出去|离开了这|出去一趟|迈出|动身|启程/.test(t)) return true
+  return false
+}
 
 /** 上章末：稳定共处/对坐/同场收束 */
 const PREV_COPRESENCE_RE = /坐在.{0,10}对面|对面坐着|坐在她对面|坐在他对面|坐在.{0,6}跟前|屋里只有|在屋里|同屋|并肩坐|并排坐|守在旁边|坐在灶|坐在炕/
@@ -496,13 +555,13 @@ function castLooksMulti(cast?: string): boolean {
 
 function placeLooksEnclosed(place?: string): boolean {
   if (!place?.trim() || place === '未明示') return false
-  return /屋|炕|灶|房|屋内|室内|屋里/.test(place)
+  return classifyPlaceCategory(place) === 'enclosed' || /屋|炕|灶|房|屋内|室内|屋里/.test(place)
 }
 
-/** 上章末最后一段是否已写离场（优先看尾部，避免章中离场又返回后的误判） */
+/** 上章末最后一段是否已写离场/在途（优先看尾部，避免章中离场又返回后的误判） */
 export function prevEndsWithDeparture(prevChapterTail?: string): boolean {
   const tip = (prevChapterTail || '').trim().slice(-320)
-  return !!tip && PREV_DEPARTURE_TIP_RE.test(tip)
+  return tipLooksDeparted(tip)
 }
 
 /**
@@ -532,7 +591,7 @@ export function prevImpliesStableCopresence(
   // 契约：封闭场所 + 多人在场 + 刚发生不像离场
   const last = prevSnapshot?.last_event || ''
   if (placeLooksEnclosed(prevSnapshot?.place) && castLooksMulti(prevSnapshot?.cast)) {
-    if (!PREV_DEPARTURE_TIP_RE.test(last)) return true
+    if (!tipLooksDeparted(last) && !tipLooksDeparted((prevChapterTail || '').slice(-200))) return true
   }
   return false
 }
@@ -546,7 +605,7 @@ function snapHint(prevSnapshot?: ChapterEndSnapshot | null): string {
 }
 
 /**
- * 在场状态吃书（通用）：共处后再抵达 / 共处后声称外宿 / 离场后幽灵在场。
+ * 在场状态吃书（通用）：共处后再抵达 / 共处后声称外宿 / 已在途又重演「从封闭场合出发」。
  */
 export function detectChapterSeamPresenceReentry(args: {
   content: string
@@ -558,13 +617,37 @@ export function detectChapterSeamPresenceReentry(args: {
   if (chapterNumber < 2) return null
   if (!prevChapterTail?.trim() && !prevSnapshot) return null
 
-  const opening = content.trim().slice(0, Math.min(content.trim().length, 900))
+  const opening = content.trim().slice(0, Math.min(content.trim().length, 1100))
   // 开篇抵达句可能很短；过严会漏「推门进来」类硬伤
   if ([...opening].length < 16) return null
 
   const hint = snapHint(prevSnapshot)
+  const tip = (prevChapterTail || '').trim().slice(-320)
+  const prevPlaceCat = (() => {
+    for (const t of [prevSnapshot?.place, tip, prevSnapshot?.last_event]) {
+      const c = classifyPlaceCategory(t)
+      if (c !== 'unknown') return c
+    }
+    return 'unknown' as PlaceCategory
+  })()
   const copresent = prevImpliesStableCopresence(prevChapterTail, prevSnapshot)
-  const departed = prevEndsWithDeparture(prevChapterTail)
+  const departed = prevEndsWithDeparture(prevChapterTail) || prevPlaceCat === 'away'
+  // 已在途却开篇落回门内/门口：须有跨日/归来明示才放行（避免「门口看天再出发」漏检）
+  const homeRewindExempt =
+    /次日|翌日|第二天|隔日|一夜过|过了一夜|一觉醒|赶回[了家]?|回到[了家]?|返回[了家]?|昨[晚夜].{0,6}回/.test(
+      opening.replace(/\s+/g, '').slice(0, 500),
+    )
+
+  // C) 上章末已在途/离场 → 开篇又搭「封闭内/出入口 + 外向出发」骨架（高置信才硬拦；仅落门口不硬拦以免误杀跨日回家）
+  if (departed && openingStagesExitRitual(opening) && !homeRewindExempt) {
+    return {
+      layer: 'hard',
+      rule: 'chapter_seam_replay',
+      message:
+        `章缝离场吃书：上章末主角已离场/在途${hint ? `（${hint}）` : ''}，`
+        + '本章开篇又从封闭场合/出入口重演出发。请从上章末已在途状态之后承接；禁止倒退重写出门戏。',
+    }
+  }
 
   // A) 已共处 → 开篇又抵达/进门/归来
   if (copresent && OPENING_ARRIVAL_RE.test(opening)) {
