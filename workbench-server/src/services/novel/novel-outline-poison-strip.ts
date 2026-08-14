@@ -8,6 +8,7 @@
 import {
   extractOutlineBeatItems,
   extractOutlineBoundaryLastBeat,
+  isAbstractStanceBeat,
   isSuspenseHookBeat,
   type OutlineBeatItem,
 } from './novel-chapter-seam.js'
@@ -18,6 +19,10 @@ import {
 } from './novel-outline-beat-cover.js'
 
 const KEEP_DRAMA_TAGS = new Set(['本章起因', '阻碍', '局面变化', '人物选择'])
+
+/** 删毒砍掉大半长稿时作废（交大纲修写，禁止留下 60 字碎片却标通过） */
+const CATASTROPHIC_STRIP_RATIO = 0.65
+const CATASTROPHIC_MIN_SRC = 800
 
 export type OutlinePoisonStripResult = {
   text: string
@@ -57,11 +62,26 @@ function firstCoverOffset(content: string, item: KeepBeat): number {
   const chars = charsOf(content)
   if (chars.length < 20) return beatCovered(content, item) ? chars.length : -1
   const step = Math.max(16, Math.floor(chars.length / 100))
+  let found = -1
   for (let end = Math.min(80, chars.length); end <= chars.length; end += step) {
-    if (beatCovered(joinChars(chars, 0, end), item)) return end
+    if (beatCovered(joinChars(chars, 0, end), item)) {
+      found = end
+      break
+    }
   }
-  if (beatCovered(content, item)) return chars.length
-  return -1
+  if (found < 0) {
+    if (beatCovered(content, item)) return chars.length
+    return -1
+  }
+  // 粗步进会越过真·首盖点并吞进下一句毒尾；二分收回到最小仍覆盖的前缀
+  let lo = Math.max(0, found - step)
+  let hi = found
+  while (lo < hi) {
+    const mid = Math.floor((lo + hi) / 2)
+    if (beatCovered(joinChars(chars, 0, mid), item)) hi = mid
+    else lo = mid + 1
+  }
+  return hi
 }
 
 function snapStartToSentence(chars: string[], offset: number): number {
@@ -76,6 +96,8 @@ function snapStartToSentence(chars: string[], offset: number): number {
 
 function snapEndToSentence(chars: string[], offset: number): number {
   if (offset >= chars.length) return chars.length
+  // 已落在句读之后：禁止再向前吞下一句（否则会把末拍后的越界毒尾一并留下）
+  if (offset > 0 && /[。！？\n]/.test(chars[offset - 1]!)) return offset
   const max = Math.min(chars.length, offset + 80)
   for (let i = offset; i < max; i++) {
     if (/[。！？]/.test(chars[i]!)) return i + 1
@@ -105,9 +127,17 @@ export function resolvePoisonStripKeepBeats(chapterOutline: string): {
     keepItems = beats.map((beat, index) => ({ beat, index }))
   }
 
-  const actionBeat = boundary.actionBeat || boundary.lastBeat || ''
-  if (actionBeat && !keepItems.some(b => b.beat === actionBeat)) {
-    keepItems = [...keepItems, { beat: actionBeat, tag: '人物选择', index: keepItems.length }]
+  // 末拍硬止：用边界行动拍，但抽象态度句不作截断锚
+  let actionBeat = boundary.actionBeat || boundary.lastBeat || ''
+  if (actionBeat && isAbstractStanceBeat(actionBeat)) {
+    const fallback = keepItems
+      .filter(b => b.tag === '局面变化' || (b.tag === '本章起因') || (b.tag !== '人物选择' && !isAbstractStanceBeat(b.beat)))
+      .map(b => b.beat)
+      .pop()
+    actionBeat = fallback || ''
+  }
+  if (actionBeat && !keepItems.some(b => b.beat === actionBeat) && !isAbstractStanceBeat(actionBeat)) {
+    keepItems = [...keepItems, { beat: actionBeat, tag: '局面变化', index: keepItems.length }]
   }
 
   keepItems = keepItems
@@ -122,7 +152,9 @@ export function resolvePoisonStripKeepBeats(chapterOutline: string): {
 }
 
 /**
- * 按大纲删毒：保留「首个保留拍～末行动拍（或最晚保留拍）」跨度内正文。
+ * 按大纲删毒：
+ * - 末行动拍已覆盖时：保留章首～末拍（只砍越界毒尾），抽象态度拍不参与起点锚定
+ * - 无任何保留拍可对齐时：保留原文（禁止清空成长稿→0 字，避免修写级联）
  */
 export function stripOutlinePoisonProse(args: {
   content: string
@@ -157,53 +189,97 @@ export function stripOutlinePoisonProse(args: {
 
   const chars = charsOf(content)
   const total = chars.length
+  const useActionEnd = !!(actionBeat && !isAbstractStanceBeat(actionBeat))
+  const actionItem = useActionEnd
+    ? (keepItems.find(b => b.beat === actionBeat) || { beat: actionBeat, tag: '局面变化', index: 99 })
+    : null
+  let actionOff = actionItem ? firstCoverOffset(content, actionItem as KeepBeat) : -1
+
   const covers = keepItems
     .map(item => ({ item, off: firstCoverOffset(content, item) }))
     .filter(x => x.off >= 0)
 
-  if (!covers.length) {
-    // 整章无保留拍可对齐 → 视为全毒，交修写从大纲重写（不回退原文）
+  // 仅末拍可对齐时，仍按末拍砍尾（不要因其它 keep 未命中而清空）
+  if (!covers.length && actionOff < 0 && actionItem) {
+    actionOff = firstCoverOffset(content, actionItem as KeepBeat)
+  }
+  if (!covers.length && actionOff < 0) {
+    // 整章对不齐：保留原文，交后续大纲修写（禁止 strip-all → chars=0）
     return {
-      text: '',
-      changed: true,
-      keepCount: 0,
-      discardCount: 1,
-      removedChars: total,
+      text: content,
+      changed: false,
+      keepCount: content.split(/[。！？\n]+/).filter(s => charLen(s.trim()) >= 6).length,
+      discardCount: 0,
+      removedChars: 0,
       keepBeats,
       actionBeat,
     }
   }
 
-  const startRaw = Math.min(...covers.map(c => c.off))
-  // 覆盖偏移是「前缀首次够格」的 end；跨度起点取该端点往前一小段句界
-  let start = snapStartToSentence(chars, Math.max(0, startRaw - 40))
+  // 起点：有末拍时默认章首前缀保留；仅当明确头毒（非抽象拍很晚才出现）才裁前缀
+  const substantiveStarts = covers.filter(
+    c => !isAbstractStanceBeat(c.item.beat) && c.item.tag !== '人物选择',
+  )
+  const startAnchorOff = substantiveStarts.length
+    ? Math.min(...substantiveStarts.map(c => c.off))
+    : (covers.length ? Math.min(...covers.map(c => c.off)) : 0)
 
-  const actionItem = actionBeat
-    ? keepItems.find(b => b.beat === actionBeat) || { beat: actionBeat, tag: '人物选择', index: 99 }
-    : null
-  const actionOff = actionItem ? firstCoverOffset(content, actionItem as KeepBeat) : -1
+  let start = 0
+  if (actionOff >= 0) {
+    // 末拍硬止：只砍毒尾。头毒仅在「非抽象拍」明显偏后且仍早于末拍时裁掉
+    if (startAnchorOff > 120 && startAnchorOff < actionOff * 0.55) {
+      start = snapStartToSentence(chars, Math.max(0, startAnchorOff - 40))
+    }
+  } else {
+    start = snapStartToSentence(chars, Math.max(0, startAnchorOff - 40))
+  }
+
   const endRaw = actionOff >= 0
     ? actionOff
     : Math.max(...covers.map(c => c.off))
   let end = snapEndToSentence(chars, endRaw)
-
-  // 末拍已覆盖时，禁止把末拍之后的长毒尾留着
   if (actionOff >= 0) {
     end = Math.min(end, snapEndToSentence(chars, actionOff))
   }
 
   if (end <= start) {
-    start = Math.max(0, endRaw - 80)
-    end = Math.min(total, endRaw + 20)
+    // 末拍可对齐时回退为「章首～末拍」，避免抽象短窗把跨度挤没
+    if (actionOff >= 0) {
+      start = 0
+      end = Math.min(total, snapEndToSentence(chars, actionOff))
+    } else {
+      start = Math.max(0, endRaw - 80)
+      end = Math.min(total, endRaw + 20)
+    }
   }
 
   const text = joinChars(chars, start, end).trim()
   const removedChars = Math.max(0, total - charLen(text))
+  const prefixTrimOk = actionOff >= 0 && start <= Math.max(40, Math.floor(Math.max(actionOff, 1) * 0.15))
+  const clearTailCut = actionOff >= 0 && (total - end) > 80
+
+  // 长稿被砍掉大半：仅在「误砍成碎片/错窗」时回退。
+  // 末拍前缀截尾（明确越界毒尾）即使删≥65%也保留——否则会把 65% 越界稿原样交硬拒。
+  if (
+    total >= CATASTROPHIC_MIN_SRC
+    && removedChars / total >= CATASTROPHIC_STRIP_RATIO
+    && !(prefixTrimOk && clearTailCut)
+  ) {
+    return {
+      text: content,
+      changed: false,
+      keepCount: content.split(/[。！？\n]+/).filter(s => charLen(s.trim()) >= 6).length,
+      discardCount: 0,
+      removedChars: 0,
+      keepBeats,
+      actionBeat,
+    }
+  }
+
   const headPoison = start > 40
   const tailPoison = total - end > 80
   const changed = (headPoison || tailPoison || removedChars >= 80) && charLen(text) > 0
 
-  // keepCount：跨度内句数近似
   const keepCount = text.split(/[。！？\n]+/).filter(s => charLen(s.trim()) >= 6).length
   const discardCount = Math.max(0, content.split(/[。！？\n]+/).filter(s => charLen(s.trim()) >= 6).length - keepCount)
 

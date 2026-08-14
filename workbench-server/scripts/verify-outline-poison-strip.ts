@@ -130,4 +130,75 @@ if (!/林场|野兔|陷阱/.test(r5.text)) {
 }
 console.log('slash-outline strip ok')
 
+// 抽象【人物选择】不得当硬止点把长稿砍成碎片（ch12/13 日志回归）
+const stanceOutline = [
+  '第13章：黑市初探',
+  '【本章时间】次日',
+  '【本章地点】县城黑市',
+  '【本章人物】秦卫国、黑市中间人老鬼',
+  '【本章起因】秦卫国带狍子皮进城寻找黑市入口',
+  '【欲望】打通销售渠道，换取生活物资',
+  '【阻碍】黑市风险高，不知门路',
+  '【局面变化】试探后联系上中间人老鬼',
+  '【人物选择】谨慎接触，多看少说',
+  '【冲突层】外部',
+  '【章末问题】第一笔交易能谈成吗？',
+].join('\n')
+
+const stanceBody =
+  pad(
+    '天擦黑刘建国离开。秦卫国把门闩插死，跟苏婉说明天一早去县城。天亮他卷好狍子皮出门，钻进林子，绕开稽查，摸进县城黑市。他在摊位间多看少说，先问规矩。',
+    2000,
+  )
+  + '他终于试探后联系上中间人老鬼，约定改日再谈。'
+  + pad('随后他把全部家当卖光，当场娶了县长女儿。', 400)
+
+const rStance = stripOutlinePoisonProse({
+  content: stanceBody,
+  chapterOutline: stanceOutline,
+})
+if ([...rStance.text].length < 800) {
+  throw new Error(`abstract 人物选择 must not gut long draft: len=${[...rStance.text].length} action=${rStance.actionBeat}`)
+}
+if (/县长女儿|卖光/.test(rStance.text)) {
+  throw new Error('overshoot after 局面变化 must be stripped even when 人物选择 is abstract')
+}
+if (/谨慎接触/.test(rStance.actionBeat) && !/联系上|老鬼|试探/.test(rStance.actionBeat)) {
+  throw new Error(`actionBeat should not be abstract stance: ${rStance.actionBeat}`)
+}
+console.log('abstract-stance strip ok', {
+  len: [...rStance.text].length,
+  action: rStance.actionBeat,
+  changed: rStance.changed,
+})
+
+// 末拍约在 65%：须砍掉约 1k 越界尾，且不得 strip-all 清空
+const pad65 = (s: string, n: number) => {
+  let out = s
+  while ([...out].length < n) out += s
+  return [...out].slice(0, n).join('')
+}
+const body65 =
+  '天亮秦卫国卷好狍子皮出门进城。黑市风险高，他多看少说，先在摊位间转。'
+  + pad65('他在巷子里打听门路，小心试探，不敢露富。', 1800)
+  + '终于试探后联系上中间人老鬼。老鬼让他改日带货再谈。'
+  + pad65('他当场把第一笔交易做成，又娶了县长女儿，全家迁进城里开铺。', 1024)
+const r65 = stripOutlinePoisonProse({ content: body65, chapterOutline: stanceOutline })
+if (!r65.text.trim()) throw new Error('65%-endpoint strip must not blank chapter')
+if (/县长女儿|开铺/.test(r65.text)) throw new Error('65%-endpoint overshoot tail must be removed')
+if ([...r65.text].length < 1000) throw new Error(`65%-endpoint kept too short: ${[...r65.text].length}`)
+if (!r65.changed) throw new Error('65%-endpoint strip should change')
+console.log('65pct-endpoint strip ok', { len: [...r65.text].length, removed: r65.removedChars })
+
+// 无保留拍对齐：不得清空
+const rNone = stripOutlinePoisonProse({
+  content: pad65('他在屋里睡觉做梦，完全没有进城。', 1200),
+  chapterOutline: stanceOutline,
+})
+if (!rNone.text.trim() || rNone.text.length < 100) {
+  throw new Error('unaligned draft must keep original, not blank')
+}
+if (rNone.changed) throw new Error('unaligned draft should not strip-all')
+console.log('unaligned-keep-original ok')
+
 console.log('PASS')

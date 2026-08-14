@@ -5,6 +5,10 @@ import * as aiConfigsRepo from '../../db/repos/ai-service-configs/index.js'
 import { logTaskProgress, logTaskWarn } from '../../common/task/task-logger.js'
 import { countNovelChars } from '../../common/novel/novel-char-limit.js'
 import { joinProviderUrl } from './adapters/url.js'
+import {
+  modelFamily,
+  sameFamilyDetect,
+} from '../../common/novel/novel-model-family.js'
 import { chargeTextUsage, parseConfigSettings, resolveThinkingEnabled, resolveTokenUsage } from '../credits/credits.js'
 import { applyMiniMaxTextRequestParams, isMiniMaxTextConfig } from './minimax-text.js'
 import {
@@ -14,6 +18,11 @@ import {
   isKimiK3FamilyModel,
 } from './kimi-text.js'
 import { fetchWithRetry, isTransientNetworkError } from '../../common/http/fetch-retry.js'
+import {
+  formatTextApiError,
+  isTextProviderSensitiveError,
+  TEXT_SENSITIVE_RETRY_STEER,
+} from '../../common/ai/text-api-errors.js'
 import { resolveUserServiceConfig } from './user-ai-config-resolve.js'
 import { getUserTextAuditModelSettings, resolveTextAuditAiConfig } from './text-audit-model.js'
 
@@ -124,6 +133,21 @@ export async function getTextConfigWithModels(): Promise<{
     .sort((a, b) => (b.priority || 0) - (a.priority || 0))
   const active = rows[0]
   if (!active) throw new Error('No active text AI config')
+  return rowToTextConfigBundle(active)
+}
+
+function rowToTextConfigBundle(active: {
+  id: number
+  provider: string | null
+  baseUrl: string
+  apiKey: string
+  model: string | null
+  settings: string | Record<string, unknown> | null
+}): {
+  cfg: AIConfig
+  models: string[]
+  settings: Record<string, unknown>
+} {
   const models = active.model ? JSON.parse(active.model) : []
   const modelList = Array.isArray(models)
     ? models.filter((m): m is string => typeof m === 'string' && m.trim().length > 0)
@@ -143,25 +167,142 @@ export async function getTextConfigWithModels(): Promise<{
   }
 }
 
+/** 某文本服务行是否可能承载指定困惑度型号（按厂商/根地址启发式） */
+export function textConfigCanHostPerplexityModel(args: {
+  provider: string
+  baseUrl: string
+  models?: string[]
+  targetModel: string
+}): boolean {
+  const target = (args.targetModel || '').trim()
+  if (!target) return false
+  if ((args.models || []).some((m) => m.trim() === target)) return true
+  const family = modelFamily(target)
+  const p = (args.provider || '').toLowerCase()
+  const u = (args.baseUrl || '').toLowerCase()
+  if (family === 'qwen') return p === 'ali' || /dashscope|aliyun/.test(u)
+  if (family === 'deepseek') return p === 'deepseek' || /deepseek/.test(u)
+  if (family === 'openai') return p === 'openai' || /openai\.com|azure/.test(u)
+  if (family === 'anthropic') return p === 'anthropic' || /anthropic/.test(u)
+  if (family === 'zhipu') return p === 'zhipu' || /bigmodel|zhipu/.test(u)
+  return false
+}
+
+/**
+ * 困惑度专用：写作配置可指定异系「困惑度检测模型」，须改走能承载该型号的文本服务
+ *（例如 DeepSeek 写作 + qwen-plus 检测 → 使用阿里云 dashscope 配置的 key/根地址）。
+ */
+export async function getPerplexityConfigWithModels(): Promise<{
+  cfg: AIConfig
+  models: string[]
+  settings: Record<string, unknown>
+  writingProvider: string
+  perplexityModel: string
+}> {
+  const rows = (await aiConfigsRepo.listServiceConfigsByType('text'))
+    .filter(r => r.isActive)
+    .sort((a, b) => (b.priority || 0) - (a.priority || 0))
+  const writingRow = rows[0]
+  if (!writingRow) throw new Error('No active text AI config')
+
+  const writingBundle = rowToTextConfigBundle(writingRow)
+  const pplModel = typeof writingBundle.settings.perplexityModel === 'string'
+    ? writingBundle.settings.perplexityModel.trim()
+    : ''
+
+  if (!pplModel) {
+    return {
+      ...writingBundle,
+      writingProvider: writingBundle.cfg.provider,
+      perplexityModel: '',
+    }
+  }
+
+  const hostArgs = (r: typeof writingRow) => {
+    const models = r.model ? JSON.parse(r.model) : []
+    const modelList = Array.isArray(models)
+      ? models.filter((m): m is string => typeof m === 'string' && m.trim().length > 0)
+      : []
+    return {
+      provider: r.provider || '',
+      baseUrl: r.baseUrl || '',
+      models: modelList,
+      targetModel: pplModel,
+    }
+  }
+
+  let hostRow = writingRow
+  if (!textConfigCanHostPerplexityModel(hostArgs(writingRow))) {
+    const better = rows.find((r) => textConfigCanHostPerplexityModel(hostArgs(r)))
+    if (!better) {
+      throw new Error(
+        `困惑度模型「${pplModel}」无法通过当前文本服务（${writingRow.provider} / ${writingRow.baseUrl}）调用。请启用可承载该型号的文本配置（如阿里云 DashScope），或把困惑度模型改成当前服务商支持的型号。`,
+      )
+    }
+    hostRow = better
+    logTaskWarn('AI', 'perplexity-host-reroute', {
+      writingProvider: writingRow.provider,
+      writingBaseUrl: writingRow.baseUrl,
+      hostProvider: better.provider,
+      hostBaseUrl: better.baseUrl,
+      perplexityModel: pplModel,
+    })
+  }
+
+  const hostBundle = rowToTextConfigBundle(hostRow)
+  // 候选仍以「写作配置里填写的困惑度模型」为准
+  return {
+    cfg: hostBundle.cfg,
+    models: hostBundle.models,
+    settings: {
+      ...hostBundle.settings,
+      perplexityModel: pplModel,
+    },
+    writingProvider: writingBundle.cfg.provider,
+    perplexityModel: pplModel,
+  }
+}
+
 /** 启发式：哪些型号更可能支持 logprobs（仅作排序参考，不再注入未配置的型号） */
 function supportsLogprobsHeuristic(model: string): boolean {
   const m = model.toLowerCase()
   // qwen3.5/3.7/3.8 常不支持 OpenAI compat completions/logprobs
   if (/qwen3\.(5|7|8)|qwen3-[578]|qwen-max|vl|omni|tts/i.test(m)) return false
+  // DeepSeek V3/V4 flash 等常不返回 chat logprobs
+  if (/deepseek.*flash|deepseek-v[34]|deepseek-reasoner/i.test(m)) return false
   // kimi-k3 / k2.5+ 官方不支持自定义 logprobs
   if (/kimi-k3|kimi-k2\.[567]/.test(m)) return false
   if (/qwen-plus|qwen-turbo|qwen3-(?!5|7|8)/i.test(m)) return true
   return !/3\.[578]|thinking/i.test(m)
 }
 
-function isPerplexityModelHardFail(err: unknown): boolean {
+/**
+ * DashScope OpenAI 兼容模式常不认带日期快照 ID（报 Unsupported model … compatibility mode）。
+ * 展开为稳定别名：qwen-plus-2025-04-28 → qwen-plus。
+ */
+export function expandPerplexityModelAliases(model: string): string[] {
+  const m = (model || '').trim()
+  if (!m) return []
+  const out: string[] = [m]
+  const snap = m.match(/^(qwen-plus|qwen-turbo|qwen-flash|qwen-max)(?:-\d{4}-\d{2}-\d{2}|-latest)$/i)
+  if (snap?.[1] && snap[1].toLowerCase() !== m.toLowerCase()) {
+    out.push(snap[1])
+  }
+  return out
+}
+
+/** /completions 失败后是否应直接换下一候选（跳过 chat）。兼容模式「型号不支持」应改试 chat。 */
+export function shouldSkipChatAfterCompletionsFail(err: unknown): boolean {
   const msg = err instanceof Error ? err.message : String(err || '')
-  return /unsupported model|does not support|logprobs|not support.*compat/i.test(msg)
+  if (/unsupported model[^]*compatibility mode/i.test(msg)) return false
+  if (/unsupported model/i.test(msg) && /compatibility mode/i.test(msg)) return false
+  return /does not support.*logprobs|logprobs.*not support|not support.*logprobs/i.test(msg)
 }
 
 /**
  * 困惑度检测候选模型：只使用设置中的「困惑度检测模型」+ 文本服务已配置的模型列表。
  * 不再硬编码 qwen-plus / qwen-turbo 等回退型号。
+ * 若已明确填写困惑度模型，不再追加异系写作主模型（避免 DeepSeek 无 logprobs 盖掉真实错误）。
  */
 export function buildPerplexityModelCandidates(
   cfg: AIConfig,
@@ -178,7 +319,13 @@ export function buildPerplexityModelCandidates(
   }
 
   const fromSettings = typeof settings.perplexityModel === 'string' ? settings.perplexityModel : ''
-  if (fromSettings.trim()) push(fromSettings.trim())
+  if (fromSettings.trim()) {
+    for (const alias of expandPerplexityModelAliases(fromSettings.trim())) push(alias)
+    for (const m of models) {
+      if (supportsLogprobsHeuristic(m) && sameFamilyDetect(fromSettings, m)) push(m)
+    }
+    return ordered
+  }
 
   // 配置列表中更可能支持 logprobs 的优先
   for (const m of models) {
@@ -212,6 +359,8 @@ export type ChatCompletionOptions = {
   billing?: TextBillingContext
   /** 困惑度检测可指定模型（如 qwen-plus 快照，qwen3.5-plus 不支持 logprobs） */
   model?: string
+  /** 覆盖默认写作文本配置（困惑度异系宿主） */
+  config?: AIConfig
   /** 显式开启思考；MiniMax 默认强制关闭（避免 reasoning 有、content 空） */
   enableThinking?: boolean
   /**
@@ -892,7 +1041,7 @@ async function chatCompletionTextOnce(
   }
   if (!res.ok) {
     const msg = data?.error?.message || data?.message || raw.slice(0, 300) || `AI 请求失败 (${res.status})`
-    throw new Error(typeof msg === 'string' ? msg : JSON.stringify(msg))
+    throw new Error(formatTextApiError(typeof msg === 'string' ? msg : JSON.stringify(msg)))
   }
   let text = sanitizeModelCreativeOutput(extractChatCompletionText(data))
   const salvageMode = options.salvageMode === 'json' ? 'json' : 'auto'
@@ -947,25 +1096,34 @@ async function chatCompletionWithConfig(
       return text
     } catch (err: any) {
       lastErr = err instanceof Error ? err : new Error(String(err?.message || err))
+      const sensitive = isTextProviderSensitiveError(lastErr)
       const retriable = lastErr.message.includes('未返回正文')
         || lastErr.message.includes('思考链')
         || lastErr.message.includes('英文分析')
         || isTransientNetworkError(lastErr)
+        || sensitive
       if (retriable && attempt < maxAttempts) {
         const prev = resolveRequestMaxTokens(cfg, attemptOptions)
         // DeepSeek V4：空正文时直接抬到 ≥8192，并追加纠偏；避免 2048→3584 仍被 reasoning 占满
-        const bumped = deepseekV4
-          ? Math.min(32768, Math.max(16384, prev * 2, prev + 4096))
-          : Math.min(16384, Math.max(prev + 1536, Math.round(prev * 1.35)))
+        const bumped = sensitive
+          ? prev
+          : deepseekV4
+            ? Math.min(32768, Math.max(16384, prev * 2, prev + 4096))
+            : Math.min(16384, Math.max(prev + 1536, Math.round(prev * 1.35)))
         // 关思考仍只吐 reasoning 时：后续轮次改为开思考，让最终 JSON/正文进 content
-        const openThinking = deepseekV4 && attempt >= 1
+        const openThinking = !sensitive && deepseekV4 && attempt >= 1
         attemptOptions = {
           ...attemptOptions,
           maxTokens: bumped,
           enableThinking: openThinking ? true : false,
           minimaxReasoningSplit: false,
         }
-        if ((isMiniMaxTextConfig(cfg) || deepseekV4) && attempt === 1) {
+        if (sensitive) {
+          attemptMessages = [
+            ...messages,
+            { role: 'user', content: TEXT_SENSITIVE_RETRY_STEER },
+          ]
+        } else if ((isMiniMaxTextConfig(cfg) || deepseekV4) && attempt === 1) {
           attemptMessages = [
             ...messages,
             {
@@ -985,12 +1143,13 @@ async function chatCompletionWithConfig(
           maxTokens: bumped,
           enableThinking: openThinking,
           reasoningSplit: false,
+          sensitive,
           error: lastErr.message,
         })
         await sleep(800 * attempt)
         continue
       }
-      throw lastErr
+      throw new Error(formatTextApiError(lastErr.message))
     }
   }
   throw lastErr || new Error('模型未返回正文，请稍后重试')
@@ -1025,7 +1184,7 @@ export async function completionPromptLogprobs(
   prompt: string,
   options: ChatCompletionOptions = {},
 ): Promise<{ perplexity: number; tokenCount: number; meanLogprob: number }> {
-  const cfg = await getTextConfig(options.billing ? {
+  const cfg = options.config || await getTextConfig(options.billing ? {
     userId: options.billing.userId,
     role: options.billing.role,
   } : undefined)
@@ -1179,7 +1338,7 @@ export async function chatContinuationLogprobs(
   text: string,
   options: ChatCompletionOptions = {},
 ): Promise<{ perplexity: number; tokenCount: number; meanLogprob: number }> {
-  const cfg = await getTextConfig(options.billing ? {
+  const cfg = options.config || await getTextConfig(options.billing ? {
     userId: options.billing.userId,
     role: options.billing.role,
   } : undefined)
@@ -1220,25 +1379,31 @@ export async function promptLogprobs(
   text: string,
   options: ChatCompletionOptions = {},
 ): Promise<{ perplexity: number; tokenCount: number; meanLogprob: number; model: string }> {
-  const { cfg, models, settings } = await getTextConfigWithModels()
+  const { cfg, models, settings, perplexityModel } = await getPerplexityConfigWithModels()
   const candidates = buildPerplexityModelCandidates(cfg, models, settings)
   if (candidates.length === 0) {
     throw new Error(
-      '未配置可用于困惑度检测的模型：请在文本服务设置中填写「困惑度检测模型」（须支持 logprobs，如 qwen-plus-2025-04-28）',
+      '未配置可用于困惑度检测的模型：请在文本服务设置中填写「困惑度检测模型」（须支持 logprobs，如 qwen-plus）',
     )
   }
 
+  const preferChatFirst = cfg.provider.toLowerCase() === 'ali' || /dashscope|aliyun/i.test(cfg.baseUrl || '')
+
   let lastErr: Error | null = null
   for (const model of candidates) {
-    const modelOptions = { ...options, model }
+    const modelOptions = { ...options, model, config: cfg }
     try {
+      if (preferChatFirst) {
+        const result = await chatContinuationLogprobs(text, modelOptions)
+        return { ...result, model }
+      }
       try {
         const result = await completionPromptLogprobs(text, modelOptions)
         return { ...result, model }
       } catch (completionsErr: any) {
         logTaskWarn('AI', 'perplexity-chat-fallback', { model, error: completionsErr?.message })
-        // 明确不兼容的型号：勿再走 chat 续写硬撑，直接试下一候选
-        if (isPerplexityModelHardFail(completionsErr)) {
+        // 明确不支持 logprobs：换下一候选；「兼容模式不支持该型号」仍应改试 chat
+        if (shouldSkipChatAfterCompletionsFail(completionsErr)) {
           throw completionsErr instanceof Error ? completionsErr : new Error(String(completionsErr?.message || completionsErr))
         }
         const result = await chatContinuationLogprobs(text, modelOptions)
@@ -1246,13 +1411,19 @@ export async function promptLogprobs(
       }
     } catch (err: any) {
       lastErr = err instanceof Error ? err : new Error(String(err?.message || err))
-      logTaskWarn('AI', 'perplexity-model-failed', { model, error: lastErr.message })
+      logTaskWarn('AI', 'perplexity-model-failed', {
+        model,
+        host: cfg.provider,
+        baseUrl: cfg.baseUrl,
+        configuredPerplexityModel: perplexityModel || undefined,
+        error: lastErr.message,
+      })
     }
   }
 
   throw new Error(
     lastErr?.message
-      || '困惑度检测失败：请在文本服务设置中填写「困惑度检测模型」（须支持 logprobs，如 qwen-plus-2025-04-28）；qwen3.5 / qwen3.7 通常不支持',
+      || '困惑度检测失败：请在文本服务设置中填写「困惑度检测模型」（须支持 logprobs，如 qwen-plus）；qwen3.5 / qwen3.7 通常不支持。DashScope 兼容模式请优先填 qwen-plus 而非带日期快照名。',
   )
 }
 
@@ -1283,7 +1454,7 @@ export async function* chatCompletionStream(
     let data: any
     try { data = raw ? JSON.parse(raw) : {} } catch { data = {} }
     const msg = data?.error?.message || data?.message || raw.slice(0, 300) || `AI 请求失败 (${res.status})`
-    throw new Error(typeof msg === 'string' ? msg : JSON.stringify(msg))
+    throw new Error(formatTextApiError(typeof msg === 'string' ? msg : JSON.stringify(msg)))
   }
 
   const reader = res.body?.getReader()

@@ -163,12 +163,8 @@ async function runOutlineComplianceGate(args: {
         passed: detected.ok,
         attempts: 0,
         reasons,
-        // 规则路径不再产出章缝硬码；LLM 失败时仅机械越界可硬拒
-        hardReject: reasons.some(r =>
-          r.code === 'outline_endpoint_overshoot'
-          || r.code === 'next_chapter_beat_leak'
-          || r.code === 'outline_boundary_model',
-        ),
+        // LLM 失败时：机械越界不再 hardReject（避免伪造 continuity score=0）；仅空正文/真冷开篇硬拒由其它路径处理
+        hardReject: false,
       },
       stillCold: false,
     }

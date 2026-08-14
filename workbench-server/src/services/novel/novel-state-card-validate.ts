@@ -146,6 +146,78 @@ export function castNames(cast: string): string[] {
     .filter(s => s !== '未明示' && looksLikePersonName(s))
 }
 
+/** 从章末正文取可用作刚发生的尾句（确定性，防抽取诗意幻觉） */
+export function pickTipLastEventCandidate(content: string): string {
+  const tip = (content || '').replace(/\s+/g, ' ').trim()
+  if (!tip) return ''
+  const window = [...tip].slice(-900).join('')
+  const parts = window
+    .split(/[。！？!?]+/)
+    .map(s => s.replace(/^[“”"＇\s]+|[“”"＇\s]+$/g, '').trim())
+    .filter(s => {
+      const n = [...s].length
+      return n >= 8 && n <= 80
+    })
+  if (!parts.length) return ''
+  // 取最后一句；若过短则并上倒数第二句
+  const last = parts[parts.length - 1]!
+  if ([...last].length >= 12 || parts.length < 2) return last
+  return `${parts[parts.length - 2]}，${last}`
+}
+
+/**
+ * last_event 无法接地时：用章末尾句回填（须自身能接地）。
+ * 不改正文，只修卡。
+ */
+export function maybeRepairUngroundedLastEvent(
+  card: ChapterStateCard,
+  content: string,
+): ChapterStateCard {
+  const full = (content || '').replace(/\s+/g, ' ').trim()
+  if (!full) return card
+  if (fieldGroundedInText(card.progress.last_event, full)) return card
+  const cand = pickTipLastEventCandidate(full)
+  if (!cand || !fieldGroundedInText(cand, full)) return card
+  // 避免用与幻觉句无交集的极短噪声；尾句已过滤长度
+  return {
+    ...card,
+    progress: {
+      ...card.progress,
+      last_event: cand,
+    },
+    updated_at: new Date().toISOString(),
+  }
+}
+
+/**
+ * props 抽成上章长串/跨场杂糅时：只保留能在本章窗口接地的分句；全灭则「未明示」。
+ * 避免单维道具校验拖垮整张状态卡。
+ */
+export function maybeRepairUngroundedProps(
+  card: ChapterStateCard,
+  content: string,
+): ChapterStateCard {
+  const props = (card.props || '').trim()
+  if (!props || props === '未明示' || props === '无') return card
+  const window = buildStateCardContentWindow(content)
+  if (fieldGroundedInText(props, window)) return card
+
+  const parts = props
+    .split(/[；;。\n]+/)
+    .map(s => s.trim())
+    .filter(s => s.length >= 2 && s !== '未明示')
+  const kept = parts.filter(p => fieldGroundedInText(p, window))
+  const next = kept.length
+    ? kept.slice(0, 3).join('；').slice(0, 50)
+    : '未明示'
+  if (next === props) return card
+  return {
+    ...card,
+    props: next,
+    updated_at: new Date().toISOString(),
+  }
+}
+
 /**
  * 章内：卡字段须能在本章正文窗口中接地。
  */

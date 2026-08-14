@@ -70,7 +70,6 @@ const cold = detectChapterSeamColdOpen({
 })
 if (!cold) throw new Error('冷开篇路径应命中')
 
-// 顺叙合法
 const ok = detectChapterSeamStateJump({
   content: `
 门外忽然响起敲门声。秦卫国透过门缝看清来人，才开了一条缝应付几句。
@@ -83,19 +82,6 @@ const ok = detectChapterSeamStateJump({
 })
 if (ok) throw new Error(`有起势不应拦：${ok.message}`)
 
-// 先果后因合法：先写余波，窗口内再补叙敲门与来者（无「重新」重做）
-const flashOk = detectChapterSeamStateJump({
-  content: `
-他在原地站了两息，耳朵贴着门缝，听外头的脚步声一点点远下去——雪地里皮鞋底子硬，踩得比布鞋响。
-方才门外响起敲门声。来人是林场革委会的刘干事，笑着说上门关心。秦卫国不卑不亢，用话术周旋几句，才把门重新掩上——不，是把门轻轻带上，没有重做上章那道闩。
-苏婉在炕角问：“什么人？”
-“探底的。打发了。”
-`.trim(),
-  chapterNumber: 12,
-  prevChapterTail: prevTail,
-  prevSnapshot: snap,
-})
-// 「重新掩上」可能误触 C——改成无重新
 const flashOk2 = detectChapterSeamStateJump({
   content: `
 他在原地站了两息，耳朵贴着门缝，听外头的脚步声一点点远下去。
@@ -109,7 +95,6 @@ const flashOk2 = detectChapterSeamStateJump({
 })
 if (flashOk2) throw new Error(`先果后因补清起势不应拦：${flashOk2.message}`)
 
-// 仍非法：只有门外脚步，窗口内无起势/来者
 const orphanOnly = detectChapterSeamStateJump({
   content: `
 他在原地站了两息，耳朵贴着门缝，听外头的脚步声一点点远下去。
@@ -132,6 +117,12 @@ const forced = buildForcedSeamOpeningBlock({
 if (!/收束→外来冲突|手法自选|先果后因/.test(forced)) {
   throw new Error(`强制接缝应含手法自选：${forced.slice(0, 240)}`)
 }
+if (/他处收束|场合桥/.test(forced)) {
+  throw new Error('同场合收束不应含他处归家特例')
+}
+if (!/场合连续/.test(forced)) {
+  throw new Error('应含通用场合连续纪律')
+}
 
 console.log('verify-seam-quiet-close-jump OK', {
   doorCase: hit.message.slice(0, 40),
@@ -139,5 +130,4 @@ console.log('verify-seam-quiet-close-jump OK', {
   flashbackOk: !flashOk2,
   orphanOnly: true,
   forcedVisit: true,
-  flashOkIgnored: flashOk?.message?.slice(0, 40) || null,
 })

@@ -565,11 +565,26 @@ function firstBeatCoverOffset(content: string, phrase: string): number {
   const chars = [...content]
   if (chars.length < 40) return outlineBeatCoveredIn(content, phrase) ? chars.length : -1
   const step = Math.max(24, Math.floor(chars.length / 80))
+  let found = -1
   for (let end = Math.min(120, chars.length); end <= chars.length; end += step) {
-    if (outlineBeatCoveredIn(chars.slice(0, end).join(''), phrase)) return end
+    if (outlineBeatCoveredIn(chars.slice(0, end).join(''), phrase)) {
+      found = end
+      break
+    }
   }
-  if (outlineBeatCoveredIn(content, phrase)) return chars.length
-  return -1
+  if (found < 0) {
+    if (outlineBeatCoveredIn(content, phrase)) return chars.length
+    return -1
+  }
+  // 与删毒同源：粗步进收回到最小仍覆盖前缀，避免把末拍后一句毒尾算进「完成点」
+  let lo = Math.max(0, found - step)
+  let hi = found
+  while (lo < hi) {
+    const mid = Math.floor((lo + hi) / 2)
+    if (outlineBeatCoveredIn(chars.slice(0, mid).join(''), phrase)) hi = mid
+    else lo = mid + 1
+  }
+  return hi
 }
 
 function detectOutlineEndpointOvershoot(args: {
@@ -939,7 +954,7 @@ export function buildOutlineComplianceFixPrompt(args: {
       ? [
         '**【章缝硬性】**开篇时空点必须紧接【上章结尾】已发生事实之后；禁止倒退到上章已越过的更早情节节点。',
         '若上章末已在场共处，而大纲拍点1在屋外：须「室内承接 → 离场/隔夜 → 再写拍点1」，禁止开篇推门进来/提猎物归来硬凑。',
-        '上章末已完成态收束、本章有外来冲突：开篇窗口内须交代来者/起势（顺叙或先果后因均可）；禁止「重新/又把」重做收束，禁止整段不交代来者。',
+        '上章末已完成态收束、本章有外来冲突：开篇窗口内须交代来者/起势（顺叙或先果后因均可）；若开篇场合与上章末契约地点不同，须先有过渡；禁止「重新/又把」重做收束，禁止整段不交代来者。',
         '上章入夜→本章清晨为日循环正向，可接日间拍点；上章正午/午后后写清晨须开篇写明跨日。',
         '结构以大纲+上章结尾为准，禁止照抄已丢弃旧文。',
       ].join('')

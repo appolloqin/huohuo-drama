@@ -263,7 +263,7 @@ export function buildChapterOutlineDramaPromptBlock(fields: OutlineChapterDramaF
     `章末问题：${fields.endingQuestion}`,
     `信息增量：${fields.infoDelta}`,
     `主题回响：${fields.themeEcho}`,
-    '落地顺序：承接上章末 → 若【起因】前序未写到则先写清其过程 → 再写欲望/阻碍/局面变化/人物选择 → 章末落到具体问题；禁止跳过未完成的起因直接写结果态。',
+    '落地顺序：承接上章末 → 若【起因】前序未写到则先写清其过程（冲突可见） → 再写欲望/阻碍/局面变化（须有局势推进）/人物选择 → 章末落到【章末问题】未决事件；信息增量服务书名/梗概卖点可见。禁止跳过未完成的起因直接写结果态；禁止开篇纯盘点、章尾纯感慨。',
   ].join('\n')
 }
 
@@ -282,7 +282,7 @@ export function buildOutlineBookPromptBlock(fields: OutlineBookFields): string {
 }
 
 export const OUTLINE_DRAMA_PRIORITY_LINE =
-  '优先级：章缝与大纲边界（勿吃书勿越界）> 大纲戏剧要素落地 > 字数厚度（预算内写厚）。'
+  '优先级：章缝与大纲边界（勿吃书勿越界）> 开篇压力对峙与卖点首屏（约前300/500字）与章末未决钩 > 大纲戏剧要素落地 > 字数厚度（预算内写厚，禁止灌水盘点）。'
 
 /**
  * 写作用本章大纲：优先全书大纲中已带齐戏剧标签的第 N 章块；

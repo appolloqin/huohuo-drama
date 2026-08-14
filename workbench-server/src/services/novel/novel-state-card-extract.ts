@@ -21,7 +21,7 @@ timeline, place, scene, cast, last_event, open_threads, closed_beats, props, sum
 - place：章末主场地点（≤40字；只写章末落脚点，禁止全章旅程串联）
 - scene：章末场合状态，如室内/门口/途中/林中（≤40字；以章末为准）
 - cast：在场人物**全名**（姓+名，顿号分隔；禁止动作短语/代词/状语碎片）
-- last_event：章末刚发生（一句，须能在正文中找到相近表述；可用全名，勿用「她/他」起句；勿带多余引号）
+- last_event：章末刚发生（一句；**优先复用章末尾句原文/近原文**，勿另写诗意收束或正文没有的意象；可用全名，勿用「她/他」起句；勿带多余引号）
 - open_threads / closed_beats：可空
 - props：衣着/武器/关键物件与归属（≤50字）
 - summary_line：≤40字摘要

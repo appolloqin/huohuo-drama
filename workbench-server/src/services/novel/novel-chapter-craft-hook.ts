@@ -38,8 +38,12 @@ function joinExistingAndSegment(existingText: string, segment: string) {
 
 async function saveChapterCraft(episodeId: number, craft: ChapterCraftResult) {
   const ep = await episodesRepo.findEpisodeById(episodeId)
+  // chapter_appeal 与 chapter_craft 同存、与 continuity_check 解耦；永不写入 continuity
   const metadata = mergeEpisodeMetadata(ep?.metadata, {
     chapter_craft: craft as unknown as Record<string, unknown>,
+    ...(craft.appeal
+      ? { chapter_appeal: craft.appeal as unknown as Record<string, unknown> }
+      : { chapter_appeal: undefined }),
   })
   await episodesRepo.updateEpisode(episodeId, { metadata, updatedAt: now() })
 }

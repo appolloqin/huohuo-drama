@@ -86,6 +86,8 @@ export type EpisodeMetadata = {
   prose_char_count?: number
   /** 章节质量审校结果（独立于 continuity_check） */
   chapter_craft?: Record<string, unknown>
+  /** 吸引力审（独立于 continuity_check；可与 chapter_craft.appeal 同源） */
+  chapter_appeal?: Record<string, unknown>
 }
 
 function parseContinuityCheck(raw: unknown): ContinuityCheckResult | undefined {
@@ -358,6 +360,10 @@ export function mergeEpisodeMetadata(
   if ('chapter_craft' in patch) {
     if (patch.chapter_craft && typeof patch.chapter_craft === 'object') next.chapter_craft = patch.chapter_craft
     else delete next.chapter_craft
+  }
+  if ('chapter_appeal' in patch) {
+    if (patch.chapter_appeal && typeof patch.chapter_appeal === 'object') next.chapter_appeal = patch.chapter_appeal
+    else delete next.chapter_appeal
   }
   return JSON.stringify(next)
 }

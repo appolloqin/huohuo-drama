@@ -29,6 +29,10 @@ import {
 } from './novel-continuity-precheck.js'
 import { mergeSeamIntoLocalAudit } from './novel-chapter-seam.js'
 import {
+  computeSeamStructureVerdict,
+  formatSeamStructureVerdictBlock,
+} from './novel-seam-structure-verdict.js'
+import {
   formatCausalHardBlock,
   formatCausalRuleBlock,
   isCausalChainEnabled,
@@ -52,6 +56,8 @@ import {
   conflictsFromDimensionFails,
   dimensionPassClaimInvalid,
   parseDimensionAuditReport,
+  scrubDimensionAuditFalsePositives,
+  scrubModelConflictMessages,
 } from './novel-dimension-verdict.js'
 
 export type { ContinuityCheckResult } from '../../common/novel/novel-continuity-state.js'
@@ -82,6 +88,7 @@ const CHECK_SYSTEM_STATE = `你是网文 continuity 审校编辑（模型审）�
 **硬审/规则审**已由程序完成；你负责语义类硬伤。须对照：
 - **状态卡 6 维**（若提供）：时间线、地点、场景、人物、刚发生、道具/衣着
 - **一致性账本 15 维**（若提供）：环境场景、修为境界、资源道具、神态衣着、人设口吻、身体伤势、时间节奏、人际势力、伏笔设定、动作逻辑、认知记忆、功法能力、情绪递进、一致性提醒、本章变化
+**跨章只对照上述结构化契约**，提示中**不会**提供上章末正文；禁止以「上章原文某句未承接」为唯一依据。
 **主标准：逻辑自洽**（因果/时空/人物状态说得通；题材无关）。6/15 维是检查轴，不是「只比有字的维、字面不冲就过」。
 维有记录不得无交代推翻；未记录不凭空捏造该维硬伤，但仍须结合正文与其它事实推断。
 手法（正叙/倒叙/补叙/先因后果/先果后因）允许，但**不免除**自洽审查。「允许手法」≠「可无交代推翻上章已成立时空/地点/在场/进度/过程相位」。
@@ -89,12 +96,15 @@ const CHECK_SYSTEM_STATE = `你是网文 continuity 审校编辑（模型审）�
 重点：
 - 吃书：与【前序已写章节】/【因果起点】/状态卡/账本在**人名、关键事件、施动者、可推出状态**上逻辑矛盾
 - **无铺垫发明重大状态**：前序/大纲/账本未写却突然出现怀孕、腹中孩子等（含「肚子里那块肉」类）；须报 conflict
+- **稳定人设年龄**：全书大纲【主要人物】已写明的年龄，正文「几岁/多大」对白或旁白不得无交代改成其他岁数；须报 conflict
 - 跨章回忆/闪回：坠崖、推下、仇敌等关键情节的人物与上章不一致
 - **因果缺失**：正文状态变化但【变更记录】无对应因果链（硬审已列的勿重复）
 - 关键剧情矛盾：正文与**已成文**冲突（大纲/概要与之矛盾时不算硬伤，以已成文为准）
 - 章内复杂自洽：旁白/对话/心理在情节事实上矛盾
 - **章内进度回卷**：同一章内某推进过程已写到完成态，后文无闪回/补叙框又以当前进行时把同一完成态过程完整换皮再写一遍——须报 conflict，且 **动作逻辑**（可兼刚发生/本章变化）dimensions 标 fail；只问进度是否说得通，不限题材；通过总因不得用「无明显冲突」空话
+- **章内在场相位**：正文已确立某人独处/离场外出后，另一人物以同场动作/对白出场，须有同行、赶来、切场或闪回/补叙框；无框跳切不算合法手法。须报 conflict，**人物**与/或**动作逻辑**标 fail，并附摘录。「允许手法」≠「可无交代改变在场相位」
 - **章缝逻辑不自洽**：开篇时空/地点/在场/进度/过程相位与上章已成立事实冲突，且无补叙框/回忆框/跨日归来/新过程等交代使链条闭合——须报 conflict（无框的「再演一遍」不算补叙；即使文笔像倒叙）
+- **章缝结构卡（权威）**：若提示含【章缝结构判定｜权威】，时间线/地点/场景/刚发生的「跳切/无过渡」**必须与场合连续字段一致**；same/bridged 禁止判无过渡；仅 jump 可判场合不衔接；visitor_from_outline=yes 禁止判对应人物无铺垫空降；禁止声称「卡未识别到桥故正文无桥」
 - **过程/环境相位倒退**（题材无关）：上章已进入更晚/更重阶段，开篇无交代写回「才开始/初起」——须报 conflict（属时间线/环境场景/时间节奏自洽；**不是**「钟点词序」豁免范围）
 - 不要仅因晨/午/夜等**钟点词字面顺序** alone 报 conflict；有交代且能闭合的倒叙/先果后因不要拦；也不要以「有记录维字面不矛盾」为唯一通过条件；不要用「允许倒叙」或「钟点词序勿单独拦」跳过过程相位自洽审查；合法一句承接或有框回忆不算章内再演
 
@@ -142,8 +152,8 @@ const CHECK_SYSTEM_CAUSAL = `你是网文 continuity 审校编辑（因果链模
 - **禁止**把「禁止突破至凝气」类提醒套用到仍在淬体境内的连破
 - 仅当正文**实际写入**与【变更记录】矛盾的 major 境名（如记录写淬体、正文无因果却写凝气一层）才报
 
-须拦：吃书（人名/事件/地点与【因果起点】【前序正文】矛盾）；正文状态变化但【变更记录】无因果；章内事实矛盾；**章内进度回卷**（已完成态过程无框换皮再演→动作逻辑等维 fail）；**章缝回放**（上章末已完成的关键对白/场面高潮在本章开篇再完整演一遍）；**章缝逻辑不自洽**（开篇时空/地点/在场/进度/过程相位与上章已成立事实冲突且无补叙框/回忆框/跨日归来/新过程等交代；无框「再演一遍」不算补叙；手法允许不免除自洽）；**过程相位倒退**（上章已更晚/更重，开篇无交代写回才开始/初起）；**章缝后退写**（开篇早于上章末进度：过期大纲拍点重演，或较后拍点已完成却写更早拍点）；**章缝冷开篇**（开篇时空早于上章末已发生事实，或开篇未进入本章大纲前段）。
-勿拦：合法突破/连破（有因果）；与旧15维账本/一致性提醒不一致；有交代且链条闭合的倒叙/补叙；仅钟点词字面顺序 alone；合法一句承接或有框回忆；同主题加深/余波延展（非把已完成过程再演一遍）。
+须拦：吃书（人名/事件/地点与【因果起点】【前序正文】矛盾）；正文状态变化但【变更记录】无因果；章内事实矛盾；**稳定人设年龄**（大纲已定年龄，几岁对白写错）；**章内在场相位**（独处/离场已立后，他者无同行/赶来/切场/闪回框即以同场动作出场→人物/动作逻辑 fail）；**章内进度回卷**（已完成态过程无框换皮再演→动作逻辑等维 fail）；**章缝回放**（上章末已完成的关键对白/场面高潮在本章开篇再完整演一遍）；**章缝逻辑不自洽**（开篇时空/地点/在场/进度/过程相位与上章已成立事实冲突且无补叙框/回忆框/跨日归来/新过程等交代；无框「再演一遍」不算补叙；手法允许不免除自洽）；**章缝结构卡权威**（【章缝结构判定】场合连续 same/bridged 勿判无过渡跳变；仅 jump 可判场合不衔接；visitor_from_outline=yes 勿判空降）；**过程相位倒退**（上章已更晚/更重，开篇无交代写回才开始/初起）；**章缝后退写**（开篇早于上章末进度：过期大纲拍点重演，或较后拍点已完成却写更早拍点）；**章缝冷开篇**（开篇时空早于上章末已发生事实，或开篇未进入本章大纲前段）。
+勿拦：合法突破/连破（有因果）；与旧15维账本/一致性提醒不一致；有交代且链条闭合的倒叙/补叙；结构卡 bridged/same 的换场；仅钟点词字面顺序 alone；合法一句承接或有框回忆；同主题加深/余波延展（非把已完成过程再演一遍）。
 
 **勿拦（创作层面，不是 continuity 硬伤）**：
 - 本章大纲/写作说明的**篇幅比例、详略、节奏**（如「40% 聚焦夜潜过程」「前半章写 XX」）——审校**不管**结构配比
@@ -486,18 +496,24 @@ function mergeCheckResult(args: {
   checkedAt: string
   minScore: number
   causalMode?: boolean
+  chapterOutline?: string
+  seamVerdict?: import('./novel-seam-structure-verdict.js').SeamStructureVerdict | null
   /** 模型调用失败原文（空 content / 网关错误等），与「有正文但 JSON 解析失败」区分 */
   llmError?: string
   /** 有原始正文但 parseCheckResponse 失败 */
   rawUnparsed?: string
 }): ContinuityCheckResult {
-  const { parsed, local, content, contentHash, checkedAt, minScore, causalMode, llmError, rawUnparsed } = args
+  const {
+    parsed, local, content, contentHash, checkedAt, minScore, causalMode,
+    chapterOutline, seamVerdict, llmError, rawUnparsed,
+  } = args
   const hardItems = toAuditItems(local.hard)
   const ruleItems = toAuditItems(local.rule)
   const hardMessages = hardItems.map(i => i.message)
   const hardFailed = hardItems.length > 0
 
-  const dimReport = parsed ? parseDimensionAuditReport(parsed, content) : null
+  const dimReportRaw = parsed ? parseDimensionAuditReport(parsed, content) : null
+  const dimReport = scrubDimensionAuditFalsePositives(dimReportRaw, content, chapterOutline, seamVerdict)
   const dimConflicts = dimReport ? conflictsFromDimensionFails(dimReport) : []
   const claimBad = parsed
     ? dimensionPassClaimInvalid(parsed.passed === true, dimReport)
@@ -507,15 +523,16 @@ function mergeCheckResult(args: {
     ...(parsed?.conflicts || []).filter(c => typeof c === 'string' && c.trim()) as string[],
     ...dimConflicts,
   ]
-  const { accepted: modelMessages, rejected: modelRejected } = causalMode
+  const { accepted: acceptedRaw, rejected: modelRejected } = causalMode
     ? filterCausalModelMessages(rawModel, content)
     : filterModelConflicts(rawModel, content)
+  const modelMessages = scrubModelConflictMessages(acceptedRaw, content, chapterOutline, seamVerdict)
   const modelItems: ContinuityAuditItem[] = modelMessages.map(m => ({
     rule: classifyModelConflictRule(m),
     message: m,
   }))
-  // 维度 fail 若摘录过滤掉了，仍并入（带维名）
-  for (const msg of dimConflicts) {
+  // 维度 fail 若摘录过滤掉了，仍并入（带维名）；再按结构卡对齐
+  for (const msg of scrubModelConflictMessages(dimConflicts, content, chapterOutline, seamVerdict)) {
     if (!modelItems.some(m => m.message === msg)) {
       modelItems.push({ rule: 'dimension_inconsistency', message: msg })
     }
@@ -731,6 +748,17 @@ export async function checkNovelChapterContinuity(args: {
   })
   const canonLock = await buildCanonLockPrefix(dramaId, chapterNumber)
 
+  const seamVerdict = chapterNumber >= 2
+    ? computeSeamStructureVerdict({
+      content: trimmed,
+      chapterNumber,
+      prevChapterTail,
+      prevSnapshot,
+      chapterOutline,
+    })
+    : null
+  const seamStructureBlock = seamVerdict ? formatSeamStructureVerdictBlock(seamVerdict) : ''
+
   let local: { hard: AuditConflict[]; rule: AuditConflict[] }
   if (causalEnabled) {
     const causal = runCausalChainAudit({ content: trimmed, chapterNumber })
@@ -754,12 +782,13 @@ export async function checkNovelChapterContinuity(args: {
       prevChapterTail,
       prevChapterBody,
       chapterOutline,
+      bookOutline: meta.outline || '',
       prevSnapshot,
       extraGrounding: [canonBlock, canonLock].filter(Boolean).join('\n'),
     })
   }
 
-  // 因果模式未走 runLocalContinuityAudit，补拦「无铺垫怀孕」等重大生理状态发明
+  // 因果模式未走 runLocalContinuityAudit，补拦「无铺垫怀孕」等重大生理状态发明 + 稳定年龄
   if (causalEnabled) {
     const { checkUnpromptedPregnancyState } = await import('./novel-continuity-precheck.js')
     const grounding = [
@@ -776,6 +805,28 @@ export async function checkNovelChapterContinuity(args: {
     if (lifeHits.length) {
       local = {
         hard: [...local.hard, ...lifeHits],
+        rule: local.rule,
+      }
+    }
+    const { detectIntraCastPresenceFail } = await import('./novel-presence-phase.js')
+    const presenceHit = detectIntraCastPresenceFail(trimmed)
+    if (presenceHit) {
+      local = {
+        hard: [...local.hard, presenceHit],
+        rule: local.rule,
+      }
+    }
+    const {
+      extractStableCastFactsFromOutline,
+      detectStableAgeConflicts,
+    } = await import('./novel-stable-cast-facts.js')
+    const ageHits = detectStableAgeConflicts(
+      trimmed,
+      extractStableCastFactsFromOutline(meta.outline || ''),
+    )
+    if (ageHits.length) {
+      local = {
+        hard: [...local.hard, ...ageHits],
         rule: local.rule,
       }
     }
@@ -797,9 +848,6 @@ export async function checkNovelChapterContinuity(args: {
     ? formatCausalRuleBlock(local.rule.map(c => ({ ...c, layer: 'rule' as const })))
     : formatRuleAuditBlock(local.rule)
   const minScore = resolveContinuityMinScore(meta)
-  const prevTailBlock = prevChapterTail
-    ? `【上章结尾正文摘录（跨章衔接须一致）】\n${trunc(prevChapterTail, 1600)}`
-    : ''
   const worldBlock = meta.outline?.trim()
     ? extractOutlineWorldBlock(meta.outline, 1200)
     : ''
@@ -813,7 +861,8 @@ export async function checkNovelChapterContinuity(args: {
     stateCardSixBlock || '',
     ledgerFifteenBlock || '',
     stateBlock && !ledgerFifteenBlock ? `【应对齐的状态（章初须一致）】\n${stateBlock}` : '',
-    prevTailBlock,
+    // 跨章只认结构化契约（21 维 / 状态），不上章末原文进模型
+    seamStructureBlock,
     hardBlock,
     ruleBlock,
     worldBlock ? `【世界观设定 — 境界语义补审须对照】\n${worldBlock}` : '',
@@ -826,6 +875,7 @@ export async function checkNovelChapterContinuity(args: {
         ? `【本章大纲（创作参考 — 因果链审校不作为硬伤依据；勿因篇幅比例/详略与大纲不符报 conflict）】\n${trunc(chapterOutline, 1200)}`
         : `【本章大纲${chapterNumber >= 2 ? '（次要；与前序冲突以前序为准）' : ''}】\n${trunc(chapterOutline, 1200)}`
       : '',
+    `【正文规模】约 ${[...trimmed.replace(/\s+/g, '')].length} 字（完整待审正文，非开篇摘录；≥800 字时禁止以「仅截取开篇」为由不通过）`,
     `【待审校正文 — 须检查章内旁白/对话/心理是否自洽；${causalEnabled ? '因果链与吃书' : '人名/剧情/境界语义'}矛盾须附摘录】\n${trunc(trimmed, 10000)}`,
   ].filter(Boolean).join('\n\n')
 
@@ -867,6 +917,8 @@ export async function checkNovelChapterContinuity(args: {
     checkedAt,
     minScore,
     causalMode: causalEnabled,
+    chapterOutline,
+    seamVerdict,
     llmError,
     rawUnparsed,
   })

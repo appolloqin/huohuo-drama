@@ -23,6 +23,8 @@ import { extractChapterStateCard } from './novel-state-card-extract.js'
 import { findSiblingEpisode } from '../../common/drama/project-continuity.js'
 import {
   applyValidationToCard,
+  maybeRepairUngroundedLastEvent,
+  maybeRepairUngroundedProps,
   mergeValidationResults,
   validateStateCardAgainstContent,
   validateStateCardNeighborSeam,
@@ -55,16 +57,21 @@ async function validateAndAttachCard(args: {
   content: string
   prevCard?: ChapterStateCard | null
 }): Promise<{ card: ChapterStateCard; validation: StateCardValidationResult }> {
-  const intra = validateStateCardAgainstContent(args.card, args.content)
+  // 刚发生/道具幻觉：先确定性回填，再校验（不改正文）
+  const card = maybeRepairUngroundedProps(
+    maybeRepairUngroundedLastEvent(args.card, args.content),
+    args.content,
+  )
+  const intra = validateStateCardAgainstContent(card, args.content)
   const seam = args.prevCard
     ? validateStateCardNeighborSeam({
       prevCard: args.prevCard,
-      nextCard: args.card,
+      nextCard: card,
       nextOpening: args.content.slice(0, 700),
     })
     : { ok: true, status: 'ok' as const, issues: [] }
   const validation = mergeValidationResults(intra, seam)
-  return { card: applyValidationToCard(args.card, validation), validation }
+  return { card: applyValidationToCard(card, validation), validation }
 }
 
 /**

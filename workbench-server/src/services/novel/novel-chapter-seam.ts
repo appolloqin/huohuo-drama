@@ -16,6 +16,7 @@ import {
   detectChapterSeamQuietCloseJump,
   detectChapterBodyEventReplay,
   detectOpeningAgainstChapterEndSnapshot,
+  detectSeamPlaceJump,
   prevEndsWithDeparture,
   prevImpliesStableCopresence,
   prevTailWithSnapshotTime,
@@ -315,9 +316,12 @@ export function extractOutlineBoundaryLastBeat(outline: string): {
   const actionTags = new Set(['人物选择', '局面变化', '本章起因'])
   const actionItems = items.filter(i => i.tag && actionTags.has(i.tag) && !isSuspenseHookBeat(i.beat))
   const plotNonQ = items.filter(i => i.tag !== '章末问题' && !isSuspenseHookBeat(i.beat))
+  // 硬止点优先局面变化/具体事件；抽象「人物选择」态度句不作末拍（避免删毒误砍）
   const actionBeat = (
-    [...actionItems].reverse().find(i => i.tag === '人物选择')
-    || [...actionItems].reverse().find(i => i.tag === '局面变化')
+    [...actionItems].reverse().find(i => i.tag === '局面变化')
+    || [...actionItems].reverse().find(i => i.tag === '人物选择' && !isAbstractStanceBeat(i.beat))
+    || [...actionItems].reverse().find(i => i.tag === '本章起因')
+    || [...plotNonQ].reverse().find(i => !isAbstractStanceBeat(i.beat))
     || plotNonQ[plotNonQ.length - 1]
     || items[items.length - 1]
   )?.beat?.trim() || ''
@@ -335,6 +339,28 @@ export function isSuspenseHookBeat(beat: string): boolean {
   if (!t) return false
   if (/[？?]\s*$/.test(t)) return true
   return /会不会|能否|是否会|要不要|该不该/.test(t)
+}
+
+/**
+ * 态度/手法短拍（常见于【人物选择】）：无明确场面事件，不宜作删毒/章末硬止点。
+ * 例：「谨慎接触，多看少说」「以退为进，让对方无功而返」——易被短分句误命中导致整章被砍光。
+ * 含明确事件动词/物件的（如「冷静判断，设下陷阱」）不算抽象。
+ */
+export function isAbstractStanceBeat(beat: string): boolean {
+  const t = (beat || '').trim()
+  if (!t) return true
+  if (/设|捕|杀|猎|陷阱|进山|出门|进城|交易|盘问|登记|交货|开枪|逃跑|追击|敲门|进门|递|卖|买|换取|联系上|教|学|缝|炖|煮|埋|挖|砍|打脸/.test(t)) {
+    return false
+  }
+  if (/多看少说|以退为进|无功而返|步步为营|建立良好|靠的是脑子|话术周旋/.test(t)) {
+    return true
+  }
+  const parts = t.split(/[，,、；;]/).map(s => s.trim()).filter(Boolean)
+  if (parts.length >= 2 && parts.every(p => [...p].length <= 10)) {
+    if (/接触|示好|观察|判断|周旋|为营|少说|戒备|谨慎|冷静|主动|暗中/.test(t)) return true
+  }
+  if ([...t].length <= 14 && /^(谨慎|冷静|主动|暗中|步步)/.test(t)) return true
+  return false
 }
 
 /**
@@ -694,6 +720,14 @@ export function detectChapterSeamColdOpen(args: {
   })
   if (quietJump) return quietJump
 
+  const guestHomeHit = detectSeamPlaceJump({
+    content,
+    chapterNumber,
+    prevChapterTail,
+    prevSnapshot,
+  })
+  if (guestHomeHit) return guestHomeHit
+
   const prevForTime = prevTailWithSnapshotTime(prevChapterTail, prevSnapshot)
   if (!prevForTime.trim()) return null
 
@@ -946,13 +980,13 @@ export function buildForcedSeamOpeningBlock(args: {
     && !activeItems.some(i => i.tag === '本章起因')
   const beats = activeItems.map(i => i.beat).slice(0, 4)
   const beat1 = beats[0]
-  const hasTail = !!args.prevTail?.trim()
+  const hasTail = !!args.prevTail?.trim() || !!args.prevSnapshot
   const snap = args.prevSnapshot
   const copresent = prevImpliesStableCopresence(args.prevTail, snap)
   const quietToVisit = prevLooksCompletedQuietClose(args.prevTail, snap)
     && outlineImpliesExternalVisit(args.chapterOutline)
   const snapLine = snap
-    ? `0. **上章末契约（须轻锚，勿重演）**：时间「${snap.time || '见上章末'}」·地点「${snap.place || '见上章末'}」·刚发生「${snap.last_event || '见上章末'}」·在场「${snap.cast || '见上章末'}」${snap.closed_beats ? `·已闭合「${snap.closed_beats}」` : ''}。开篇用一句点场合即可；已闭合交付同场合勿再演。`
+    ? `0. **上章末契约（须轻锚，勿重演）**：时间「${snap.time || '见契约'}」·地点「${snap.place || '见契约'}」·刚发生「${snap.last_event || '见契约'}」·在场「${snap.cast || '见契约'}」${snap.closed_beats ? `·已闭合「${snap.closed_beats}」` : ''}。开篇用一句点场合即可；已闭合交付同场合勿再演。`
     : ''
   const closedBlock = snap?.closed_beats?.trim()
     ? `0f. **已闭合情节（同场合）**：上章已写完「${snap.closed_beats}」——同一时间/场地勿再掏出/递给/掰开；换日、换场或写明「又一次」后可写新交付；可一句回忆带过。`
@@ -973,17 +1007,18 @@ export function buildForcedSeamOpeningBlock(args: {
       '0e. **收束→外来冲突（开篇窗口内须交代）**：上章末已是完成态安静收束，本章大纲含外来冲突。',
       '手法自选：顺叙（承接→起势→应对）或先果后因/倒叙补叙（可先写余波，再补叙来者与起势）。',
       '硬性：开篇约前 900 字内须点名来者或写出敲/叫/来人起势；禁止「重新/又/再」重做上章收束；禁止窗口内永不交代来者。',
+      '大纲已点名来者可直接起名，不算无铺垫空降。',
     ].join('\n')
     : ''
   const step1 = !hasTail
     ? '1. 第一段：从本章大纲拍点1起笔，禁止编造大纲未列的离家/准备戏。'
     : quietToVisit
-      ? '1. 开篇须轻锚承接【上章结尾】完成态之后的新信息（手法自选），勿重做收束、勿复述已闭合交付。'
+      ? '1. 开篇须轻锚承接【上章末契约】完成态之后的新信息（手法自选），勿重做收束、勿复述已闭合交付。'
       : copresent
-        ? '1. 第一段：轻锚承接【上章结尾】已在场状态（一句即可），禁止推门进来、禁止雪光重开直接提猎物进门。'
+        ? '1. 第一段：轻锚承接【上章末契约】已在场状态（一句即可），禁止推门进来、禁止雪光重开直接提猎物进门。'
         : prevEndsWithDeparture(args.prevTail)
-          ? '1. 第一段：轻锚承接【上章结尾】已在途/离场状态，禁止倒退到封闭场合重演出发；可回忆半句，勿整段重演离家。'
-          : '1. 第一段：轻锚点明【上章结尾】场合/状态后进入本章新拍（一句即可），禁止复述上章闭合高潮；禁止清晨离家、目送叮嘱、重起炉灶式开篇。'
+          ? '1. 第一段：轻锚承接【上章末契约】已在途/离场状态，禁止倒退到封闭场合重演出发；可回忆半句，勿整段重演离家。'
+          : '1. 第一段：轻锚点明【上章末契约】场合/状态后进入本章新拍（一句即可），禁止复述上章闭合高潮；禁止清晨离家、目送叮嘱、重起炉灶式开篇。'
   const step2 = !beat1
     ? '2. 轻锚之后：立刻进入【本章大纲】第一个情节拍点。'
     : quietToVisit
@@ -994,8 +1029,9 @@ export function buildForcedSeamOpeningBlock(args: {
   return [
     '【开篇轻锚接缝 — 第2章起生效】',
     snapLine,
-    '0a. **轻锚（一句即可）**：须点明上章末场合/状态（如仍在炕上、屋里、夜里），再转入本章新信息；**禁止**把上章场面再演一遍。',
+    '0a. **轻锚（一句即可）**：须点明上章末契约中的场合/状态，再转入本章新信息；**禁止**把上章场面再演一遍。',
     '0a2. **轻锚篇幅**：接缝锚句合计 ≤ 铺垫拍预算约 8%；人名出场介绍也算进铺垫，不另开强制段。',
+    '0a3. **场合连续**：若开篇场合与【上章末契约·地点】不同，须先写过渡（离场/位移/次日或数日后等跨日/补叙框），再进入新场合；禁止无交代跳切。',
     '0b. **在场硬性**：上章末人物已在场共处时，禁止开篇再写进门/归来/抵达或凭空「在外一宿」；若要写归来或隔夜外出，须先承接离场。',
     '0b2. **离场硬性**：上章末已离场/在途时，禁止开篇倒退到封闭场合/出入口重演出发；须从上章末途中状态之后承接。',
     '0b3. **天候硬性**：上章末雨雪已落地/密下时，禁止开篇写成「才开始落/稀稀拉拉初起」；须承接已有天候，或写明另一场/次日天气。',
@@ -1056,66 +1092,60 @@ export function buildChapterSeamWriteBlock(
   opts?: {
     maxTailChars?: number
     /**
-     * 待落地【本章起因】：不注入上章末原文（续写诱饵），只给结构化已发生事实。
-     * 见 docs/superpowers/specs/2026-08-04-structured-seam-pending-catalyst-design.md
+     * @deprecated 恒为 true：章缝只注入结构化契约，永不附上章末散文。
+     * 见 docs/superpowers/specs/2026-08-12-structured-seam-contract-design.md
      */
     omitRawPrevProse?: boolean
     prevSnapshot?: import('../../common/novel/novel-continuity-state.js').ChapterEndSnapshot | null
+    /** 可选：本地章缝结构摘要（写作侧对齐审校权威） */
+    seamSummary?: string
   },
 ): string {
-  const tail = prevTail.trim()
-  const maxTail = Math.max(40, Math.min(1200, opts?.maxTailChars ?? 1200))
-  const omitRaw = !!opts?.omitRawPrevProse
   const snap = opts?.prevSnapshot
+  const hasContract = !!(
+    snap?.time?.trim()
+    || snap?.place?.trim()
+    || snap?.cast?.trim()
+    || snap?.last_event?.trim()
+  )
 
   const rules = [
     '【章缝硬规则 — 禁止回放上章高潮】',
-    '1. 本章起点 = 上章结尾**已经发生**之后；读者已知内容不要重演。',
-    '2. 禁止「同一高潮换措辞」：上章末已完成的关键对白、公开行动、冲突落点，开篇勿再铺一遍。',
+    '1. 本章起点 = 【上章末契约】已发生事实之后；读者已知内容不要重演。',
+    '2. 禁止「同一高潮换措辞」：契约中已闭合的对白/行动/冲突落点，开篇勿再铺一遍。',
     '3. 禁止拍点倒退：勿回到上章已越过的更早情节节点重开。',
-    '4. 禁止开篇时空早于上章末已发生事实；禁止倒退到上章已越过的更早情节节点重开。',
-    '5. **时辰**：开篇不得早于上章末已写明的日光/时辰（如日头正中后禁止晨光重开；到次日须写明次日）。',
-    '6. 允许：一两句承接或他人反应，然后立刻进入本章新阻力/新信息。',
+    '4. 禁止开篇时空早于契约已发生事实；禁止倒退到上章已越过的更早情节节点重开。',
+    '5. **时辰**：开篇不得早于契约已写明的日光/时辰（到次日须写明次日）。',
+    '6. **场合**：若开篇场合与契约地点不同，须先写过渡（离场/位移/跨日/补叙框），再进入新场合。',
+    '7. 允许：一两句承接或他人反应，然后立刻进入本章新阻力/新信息。',
   ]
 
-  if (!tail && !snap) {
+  if (!hasContract && !prevTail?.trim()) {
     return [
-      '【章缝硬规则】第2章起：从【上章结尾】已发生事实**之后**开笔。',
+      '【章缝硬规则】第2章起：从【上章末契约】已发生事实**之后**开笔。',
       '禁止把上章末已经写完的关键对白、公开行动或场面高潮再完整演一遍；一两句承接即可，立刻推进新信息/新阻力。',
-      '禁止拍点倒退：上章已完成的情节节点，开篇勿回到更早节点重演。',
-      '禁止开篇时空早于上章末已发生事实；禁止倒退到上章已越过的更早情节节点重开。',
+      '禁止拍点倒退与无交代场合跳切。',
     ].join('\n')
   }
 
-  if (omitRaw) {
-    const factLines = [
-      snap?.time?.trim() ? `时间：${snap.time.trim()}` : '',
-      snap?.place?.trim() ? `地点：${snap.place.trim()}` : '',
-      snap?.cast?.trim() ? `在场：${snap.cast.trim()}` : '',
-      snap?.last_event?.trim() ? `末事件：${snap.last_event.trim()}` : '',
-    ].filter(Boolean)
-    return [
-      ...rules,
-      '【上章已发生事实 — 结构化（禁止续写上章末悬念正文）】',
-      ...(factLines.length
-        ? factLines
-        : ['（无 snapshot；仅知须从上章已发生事实之后起笔，勿扩写上章末未决发现）']),
-      '硬性：本章【起因】若尚未落地，开篇须先写清该起因由【本章人物】完成；禁止把上章末未决物扩写成开篇主戏。',
-    ].join('\n')
-  }
+  const factLines = [
+    snap?.time?.trim() ? `时间：${snap.time.trim()}` : '',
+    snap?.place?.trim() ? `地点：${snap.place.trim()}` : '',
+    snap?.cast?.trim() ? `在场：${snap.cast.trim()}` : '',
+    snap?.last_event?.trim() ? `刚发生：${snap.last_event.trim()}` : '',
+    snap?.closed_beats?.trim() ? `已闭合：${snap.closed_beats.trim()}` : '',
+  ].filter(Boolean)
 
-  const speeches = extractSpeeches(tail.slice(-1000), 4)
-  const sentences = extractTailSentences(tail.slice(-800), 3)
-  const speechHint = speeches.length
-    ? `上章末已出现的对白（勿再完整复述）：\n${speeches.map((s, i) => `${i + 1}. 「${s.slice(0, 60)}${s.length > 60 ? '…' : ''}」`).join('\n')}`
-    : ''
-  const sentenceHint = !speeches.length && sentences.length
-    ? `上章末关键收束句（勿换皮重写同一拍）：\n${sentences.map((s, i) => `${i + 1}. ${s.slice(0, 70)}${s.length > 70 ? '…' : ''}`).join('\n')}`
-    : ''
   return [
     ...rules,
-    speechHint || sentenceHint,
-    `【上章结尾（须承接，勿重演；禁止照抄词组）】\n${tail.slice(-maxTail)}`,
+    '【上章末契约 — 结构化（禁止注入/续写上章末正文）】',
+    ...(factLines.length
+      ? factLines
+      : ['（契约字段暂缺；须从上章已发生事实之后起笔，勿扩写上章末未决发现）']),
+    opts?.seamSummary?.trim()
+      ? `【章缝结构提示】${opts.seamSummary.trim()}`
+      : '',
+    '硬性：本章【起因】若尚未落地，开篇须先写清该起因由【本章人物】完成；禁止把上章末未决物扩写成开篇主戏。',
   ].filter(Boolean).join('\n')
 }
 

@@ -34,6 +34,20 @@ export function writeTextBlob(relativePath: string, content: string): void {
   fs.writeFileSync(abs, content, 'utf8')
 }
 
+/** 删除相对 DATA_ROOT（及 legacy root）下的文本 blob；不存在则忽略 */
+export function deleteTextBlob(relativePath: string): void {
+  const rel = (relativePath || '').trim()
+  if (!rel) return
+  for (const root of [DATA_ROOT, resolveLegacyDataRoot()]) {
+    try {
+      const abs = path.join(root, rel)
+      if (fs.existsSync(abs)) fs.unlinkSync(abs)
+    } catch {
+      /* ignore */
+    }
+  }
+}
+
 export function resolveInlineOrBlob(
   inline: string | null | undefined,
   blobPath: string | null | undefined,

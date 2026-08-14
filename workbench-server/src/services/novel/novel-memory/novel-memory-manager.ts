@@ -29,6 +29,31 @@ import {
   type ChapterEndMeta,
 } from './novel-memory-parser.js'
 import { novelMemoryInitialized, novelMemoryPaths } from './novel-memory-paths.js'
+import {
+  extractStableCastFactsFromOutline,
+  type StableCastFact,
+} from '../novel-stable-cast-facts.js'
+
+function buildCharacterSheetsFromStableFacts(facts: StableCastFact[]): string {
+  const blocks = facts.map((f) => [
+    `## ${f.name}`,
+    '',
+    '### 基础属性（稳定）',
+    `- 年龄：${f.ageYears != null ? `${f.ageYears}岁` : ''}`,
+    '- 性格底色：',
+    '- 核心动机：',
+    '- 说话风格：',
+    '',
+    '### 时序状态（新覆盖旧，只保留最新）',
+    '| 卷 | 章 | 状态项 | 当前值 | 触发事件 |',
+    '|----|-----|--------|--------|----------|',
+    '',
+    '### 创伤与承诺（长期跟踪）',
+    '- [ ]',
+    '',
+  ].join('\n'))
+  return `# 人物档案\n\n${blocks.join('\n')}`
+}
 
 export type { ChapterEndMeta } from './novel-memory-parser.js'
 
@@ -92,7 +117,13 @@ export class NovelMemoryManager {
     if (!fs.existsSync(this.paths.chars)) {
       let chars = characterSheetsTemplate()
       if (seed?.title) chars = chars.replace('主角名', seed.title.slice(0, 8))
+      if (seed?.outline) {
+        const facts = extractStableCastFactsFromOutline(seed.outline)
+        if (facts.length) chars = buildCharacterSheetsFromStableFacts(facts)
+      }
       this.writeChars(chars)
+    } else if (seed?.outline) {
+      this.syncStableAgesFromOutline(seed.outline)
     }
     if (!fs.existsSync(this.paths.plot)) {
       let plot = plotLedgerTemplate()
@@ -374,11 +405,50 @@ ${extractActivePlots(plot, false)}
     fs.mkdirSync(path.dirname(filePath), { recursive: true })
     fs.writeFileSync(filePath, content, 'utf-8')
   }
+
+  /** 已有档案缺年龄时，从大纲【主要人物】补全（不覆盖已有非空年龄） */
+  syncStableAgesFromOutline(outline: string) {
+    const facts = extractStableCastFactsFromOutline(outline)
+    if (!facts.length) return
+    let chars = this.readChars()
+    let changed = false
+    for (const f of facts) {
+      if (f.ageYears == null) continue
+      const header = `## ${f.name}`
+      const ageLine = `- 年龄：${f.ageYears}岁`
+      if (!chars.includes(header)) {
+        chars += `\n\n${header}\n\n### 基础属性（稳定）\n${ageLine}\n- 性格底色：\n- 核心动机：\n- 说话风格：\n\n### 时序状态（新覆盖旧，只保留最新）\n| 卷 | 章 | 状态项 | 当前值 | 触发事件 |\n|----|-----|--------|--------|----------|\n\n### 创伤与承诺（长期跟踪）\n- [ ]\n`
+        changed = true
+        continue
+      }
+      const idx = chars.indexOf(header)
+      const ageIdx = chars.indexOf('- 年龄：', idx)
+      const nextHeader = chars.indexOf('\n## ', idx + 4)
+      const sectionEnd = nextHeader >= 0 ? nextHeader : chars.length
+      if (ageIdx < 0 || ageIdx > sectionEnd) {
+        const insertAt = chars.indexOf('\n', idx) + 1
+        chars = `${chars.slice(0, insertAt)}\n### 基础属性（稳定）\n${ageLine}\n${chars.slice(insertAt)}`
+        changed = true
+        continue
+      }
+      const lineEnd = chars.indexOf('\n', ageIdx)
+      const cur = chars.slice(ageIdx, lineEnd >= 0 ? lineEnd : undefined)
+      if (/年龄：\s*$/.test(cur) || /年龄：\s*$/.test(cur.trim()) || cur.trim() === '- 年龄：') {
+        chars = `${chars.slice(0, ageIdx)}${ageLine}${lineEnd >= 0 ? chars.slice(lineEnd) : ''}`
+        changed = true
+      }
+    }
+    if (changed) this.writeChars(chars)
+  }
 }
 
-export function ensureNovelMemory(dramaId: number, seed?: { outline?: string; premise?: string; title?: string }) {
+export function ensureNovelMemory(
+  dramaId: number,
+  seed?: { outline?: string; premise?: string; title?: string; syncStableAges?: boolean },
+) {
   const mgr = new NovelMemoryManager(dramaId)
   if (!NovelMemoryManager.exists(dramaId)) mgr.init(seed)
+  else if (seed?.syncStableAges && seed.outline) mgr.syncStableAgesFromOutline(seed.outline)
   return mgr
 }
 

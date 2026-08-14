@@ -13,7 +13,6 @@ import {
 import { applyDeterministicContinuityFixes } from './novel-continuity-deterministic-fix.js'
 import {
   buildCanonLockPrefix,
-  loadPrevChapterContentTail,
   resolveContinuityInjectBlock,
 } from './novel-continuity.js'
 
@@ -193,17 +192,12 @@ export async function patchNovelChapterContinuity(args: {
 
   const canonLock = await buildCanonLockPrefix(dramaId, chapterNumber)
   const stateBlock = await resolveContinuityInjectBlock(dramaId, chapterNumber)
-  const prevTail = await loadPrevChapterContentTail(dramaId, chapterNumber)
-  const prevTailBlock = prevTail
-    ? `【上章结尾（跨章衔接须一致）】\n${prevTail.slice(-1600)}`
-    : ''
 
   const user = [
     `【书名】${dramaTitle}`,
     `【章节】第 ${chapterNumber} 章`,
     canonLock,
     stateBlock ? `【应对齐的状态】\n${stateBlock}` : '',
-    prevTailBlock,
     fixInstructions,
     historyBlock,
     '',

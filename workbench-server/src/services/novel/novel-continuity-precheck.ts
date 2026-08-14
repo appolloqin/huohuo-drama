@@ -15,6 +15,11 @@ import {
   type ParsedRealmMention,
 } from '../../common/novel/novel-realm-utils.js'
 import { detectChapterSeamReplay } from './novel-chapter-seam.js'
+import { detectIntraCastPresenceFail } from './novel-presence-phase.js'
+import {
+  detectStableAgeConflicts,
+  extractStableCastFactsFromOutline,
+} from './novel-stable-cast-facts.js'
 
 export type AuditConflict = {
   layer: 'hard' | 'rule'
@@ -565,6 +570,8 @@ export function runLocalContinuityAudit(args: {
   /** 上章更长正文，供交付重演检 */
   prevChapterBody?: string
   chapterOutline?: string
+  /** 全书大纲（用于稳定人设年龄等） */
+  bookOutline?: string
   prevSnapshot?: import('../../common/novel/novel-continuity-state.js').ChapterEndSnapshot | null
   /** 额外接地文本：写作说明、已成文上下文等 */
   extraGrounding?: string
@@ -586,9 +593,16 @@ export function runLocalContinuityAudit(args: {
   })
 
   const intra = checkIntraChapterRealmNarration(narrationMentions, narration, expectedFields)
+  const presenceHit = detectIntraCastPresenceFail(trimmed)
+  const ageFacts = extractStableCastFactsFromOutline(
+    [args.bookOutline || '', chapterOutline || '', args.extraGrounding || ''].join('\n'),
+  )
+  const ageHits = detectStableAgeConflicts(trimmed, ageFacts)
   const hard: AuditConflict[] = [
     ...intra.hard,
     ...checkUnpromptedPregnancyState(trimmed, grounding),
+    ...(presenceHit ? [presenceHit] : []),
+    ...ageHits,
   ]
   const rule: AuditConflict[] = [
     ...intra.rule,

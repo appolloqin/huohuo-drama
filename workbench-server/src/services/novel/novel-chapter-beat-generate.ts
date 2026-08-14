@@ -57,6 +57,7 @@ import {
 } from './novel-outline-drama-fields.js'
 import { alignNovelChapterOutlineBoundary } from './novel-outline-boundary.js'
 import { chapterLengthTokenBudget, polishNovelChapterProse } from './novel-prose-polish.js'
+import { buildFrozenPresencePhaseBlock } from './novel-presence-phase.js'
 
 const PRIOR_TAIL_CHARS = 720
 
@@ -148,6 +149,64 @@ async function loadNextChapterOutlineText(dramaId: number, chapterNumber: number
   }
 }
 
+/**
+ * 首拍开篇规则（题材无关）：第1章可直接冲突/对白；第≥2章先承接再爆发。
+ * 导出供合同冒烟断言。
+ */
+export function buildBeatOpeningRule(args: {
+  chapterNumber: number
+  seamRetryHint?: string
+  hasPriorFrozen?: boolean
+  priorTail?: string
+}): string {
+  const { chapterNumber, seamRetryHint, hasPriorFrozen, priorTail } = args
+  if (chapterNumber >= 2) {
+    return [
+      '【开篇硬性 — 章缝承接后再爆发】',
+      '1. 先轻锚承接上章已发生事实 / 落地未决【本章起因】；禁止跳切吃书、禁止复述上章收束对白。',
+      '2. 承接后立刻进入本拍冲突或对白，短平快；环境最多一句锚，禁止开篇大段盘点。',
+      '3. 禁止照抄上章末特色词组（若提示中列出了「勿再复述」条目，更不得沿用）。',
+      seamRetryHint ? `【上轮硬伤】${seamRetryHint}` : '',
+    ].filter(Boolean).join('\n')
+  }
+  if (hasPriorFrozen && priorTail) {
+    return `【已写正文（已冻结，禁止重写/删改/回放）】\n…${priorTail}`
+  }
+  return [
+    '【开篇硬性 — 冲突/对白切入】',
+    '优先压力方对白或对峙动作开场；环境最多一句锚。',
+    '约前300字内必须出现压力方（催债/夺产/点名等）对白或动作；约前500字内须亮出卖点冲突物（债额/夺产/骂名等）。',
+    '压力落地后约前200～400字内主角须反制（撕契/拒签/嘴炮）；约前800字内须亮翻身手段或对赌/识破；同章禁重复盘点家底/骂名/契纸。',
+    '禁止开篇大段设定/家底盘点/元说明（如「没有系统」）。',
+    '禁止开篇长段冻醒/感官苏醒/记忆灌入；穿越身份最多嵌一句。',
+    '短平快进入本章欲望与阻碍。',
+  ].join('\n')
+}
+
+/** 末拍收束规则：必须落到未决钩，禁止纯感慨 */
+export function buildBeatEndingRule(args: {
+  hasNextHead: boolean
+  seamRetryHint?: string
+}): string {
+  const hookLine =
+    '【章尾挖坑】必须落到大纲【章末问题】所指未决事件；禁止「心里松了」「那是家」等纯感慨收束代替钩子。'
+  if (args.hasNextHead) {
+    return [
+      '【末拍双目标】',
+      '1. 写完本拍（本章大纲末拍）即收束本章主冲突。',
+      '2. 再留短落点：时间/地点/在场须使下章能自然续上，不得时空打架。',
+      '3. 章末停在下章开篇之前；禁止照抄/复述下章已写开篇（提示中不下发下章原文）。',
+      '4. 禁止另起下章未接续的支线终局；禁止再开新人物登门。',
+      hookLine,
+      args.seamRetryHint ? `【上轮硬伤】${args.seamRetryHint}` : '',
+    ].filter(Boolean).join('\n')
+  }
+  return [
+    '【末拍】写完本拍即整章收束；写到本章大纲硬止点即停；禁止再开新场面/新人物登门/新完成态；不考虑下章。',
+    hookLine,
+  ].join('\n')
+}
+
 async function generateOneBeat(args: {
   sharedSystem: string
   sharedUserPrefix: string
@@ -171,16 +230,16 @@ async function generateOneBeat(args: {
   const prior = priorTail(frozenProse)
   const hasNextHead = !!args.nextChapterHead?.trim()
 
-  const openingRule = args.chapterNumber >= 2 && isFirst
-    ? [
-      '【开篇硬性 — 禁止章缝回放】',
-      '轻锚最多一句点明场合/状态，立刻进入本拍新信息；禁止复述、扩写或换皮重演【上章结尾】中的对白/收束句/场面描写。',
-      '禁止照抄上章末特色词组（若提示中列出了「勿再复述」条目，更不得沿用）。',
-      args.seamRetryHint ? `【上轮硬伤】${args.seamRetryHint}` : '',
-    ].filter(Boolean).join('\n')
+  const openingRule = isFirst
+    ? buildBeatOpeningRule({
+      chapterNumber: args.chapterNumber,
+      seamRetryHint: args.seamRetryHint,
+      hasPriorFrozen: !!prior && args.chapterNumber < 2,
+      priorTail: prior,
+    })
     : prior
       ? `【已写正文（已冻结，禁止重写/删改/回放）】\n…${prior}`
-      : '【开篇】本章第一拍，按大纲本拍开写。'
+      : '【开篇】按大纲本拍开写。'
 
   // 第2章起第一拍：勿灌旧稿开篇摘录（常含章缝回放毒句）
   const draftExcerpt = args.isRewrite && !(isFirst && args.chapterNumber >= 2)
@@ -188,20 +247,17 @@ async function generateOneBeat(args: {
     : ''
 
   const lastBeatRule = isLast
-    ? (hasNextHead
-      ? [
-        '【末拍双目标】',
-        '1. 写完本拍（本章大纲末拍）即收束本章主冲突。',
-        '2. 再留短落点：时间/地点/在场须使下章能自然续上，不得时空打架。',
-        '3. 章末停在下章开篇之前；禁止照抄/复述下章已写开篇（提示中不下发下章原文）。',
-        '4. 禁止另起下章未接续的支线终局；禁止再开新人物登门。',
-        args.seamRetryHint ? `【上轮硬伤】${args.seamRetryHint}` : '',
-      ].filter(Boolean).join('\n')
-      : '【末拍】写完本拍即整章收束；写到本章大纲硬止点即停；禁止再开新场面/新人物登门/新完成态；不考虑下章。')
+    ? buildBeatEndingRule({
+      hasNextHead,
+      seamRetryHint: args.seamRetryHint,
+    })
     : `【禁止】提前写第 ${item.index + 1} 拍及之后情节；禁止发明大纲未列后续。`
 
   const frozenNoReplay = !isFirst && frozenProse.trim()
     ? buildFrozenProgressNoReplayBlock(frozenProse)
+    : ''
+  const frozenPresence = !isFirst && frozenProse.trim()
+    ? buildFrozenPresencePhaseBlock(frozenProse)
     : ''
 
   const beatUser = joinBlocks([
@@ -211,6 +267,7 @@ async function generateOneBeat(args: {
       ? `【已写正文（已冻结，禁止重写/删改/回放）】\n…${prior}`
       : '',
     frozenNoReplay,
+    frozenPresence,
     `【本拍任务 — 第 ${item.index}/${beatTotal} 拍 · ${item.phase}】\n${item.beat}`,
     item.tag === '本章起因' || item.phase === '起因'
       ? '【本拍】写清该起因由【本章人物】完成；禁止续写上章末悬念正文。'
@@ -410,6 +467,7 @@ export async function generateNovelChapterByBeats(
     retrievalQuery: [chapterOutline, prompt].filter(Boolean).join('\n'),
     writingBrief: outlineAlign.alignedBrief || prompt,
     bookOutline: meta.outline,
+    chapterOutline,
   })
 
   const outlineDramaCheck = assertOutlineChapterFields(
@@ -487,7 +545,7 @@ export async function generateNovelChapterByBeats(
     chapterNumber >= 2
       ? buildChapterSeamWriteBlock(prevTail, {
         maxTailChars: 160,
-        omitRawPrevProse: pendingCatalysts.length > 0,
+        omitRawPrevProse: true,
         prevSnapshot: prevSnap,
       })
       : '',
@@ -521,7 +579,7 @@ export async function generateNovelChapterByBeats(
     beats: items.length,
     userTarget,
     mode,
-    omitRawPrevProse: pendingCatalysts.length > 0,
+    omitRawPrevProse: true,
     pendingCatalysts: pendingCatalysts.slice(0, 3),
     hasNextHead: withNext && !!nextChapterHead.trim(),
   })

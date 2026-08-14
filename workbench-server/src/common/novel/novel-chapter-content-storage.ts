@@ -2,7 +2,7 @@ import fs from 'node:fs'
 import path from 'node:path'
 import { DATA_ROOT } from '../media/local-media-store.js'
 import { resolveDataRoot, resolveLegacyDataRoot } from '../media/data-root.js'
-import { readTextBlob, writeTextBlob } from '../storage/text-blob-storage.js'
+import { readTextBlob, writeTextBlob, deleteTextBlob } from '../storage/text-blob-storage.js'
 import { splitProseAndChangeRecord } from './novel-change-record.js'
 
 const CH_FILE = (chapterNumber: number) => `ch_${String(chapterNumber).padStart(3, '0')}.md`
@@ -67,19 +67,36 @@ export type PersistNovelChapterArgs = {
 }
 
 /**
+ * 清空章节正文时删除磁盘文件（含 novel-memory 与旧 storage/novels）。
+ * 仅清 DB blobPath 而不删文件时，hydrate 仍会通过 findNovelMemory 读回旧文。
+ */
+export function deleteNovelChapterContentFiles(
+  dramaId: number,
+  episodeId: number,
+  chapterNumber: number,
+): void {
+  const existing = findNovelMemoryChapterRelativePath(dramaId, chapterNumber)
+  if (existing) deleteTextBlob(existing)
+  deleteTextBlob(legacyStorageNovelsRelativePath(dramaId, episodeId))
+}
+
+/**
  * 小说正文落盘到 novel-memory/…/chapters；DB content 置空，路径写入 content_blob_path。
  * 若正文尾附有【变更记录】，只写读者正文（变更记录应由 metadata.causal_change_record 承载）。
+ * 空正文：删除已有章节文件并返回 blobPath=null。
  */
 export function persistNovelChapterContentToDisk(
   args: PersistNovelChapterArgs,
 ): { inline: null; blobPath: string | null; changeBlock: string | null } {
-  const { dramaId, chapterNumber, value } = args
+  const { dramaId, episodeId, chapterNumber, value } = args
   if (value == null || String(value).trim() === '') {
+    deleteNovelChapterContentFiles(dramaId, episodeId, chapterNumber)
     return { inline: null, blobPath: null, changeBlock: null }
   }
 
   const { prose, changeBlock } = splitProseAndChangeRecord(String(value))
   if (!prose.trim()) {
+    deleteNovelChapterContentFiles(dramaId, episodeId, chapterNumber)
     return { inline: null, blobPath: null, changeBlock }
   }
 

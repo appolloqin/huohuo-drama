@@ -5,6 +5,9 @@ import {
   fieldGroundedInText,
   castNames,
   looksLikePersonName,
+  maybeRepairUngroundedLastEvent,
+  maybeRepairUngroundedProps,
+  pickTipLastEventCandidate,
   validateStateCardAgainstContent,
   validateStateCardNeighborSeam,
 } from '../src/services/novel/novel-state-card-validate.js'
@@ -131,6 +134,50 @@ const journeyHome = validateStateCardNeighborSeam({
 })
 if (!journeyHome.ok) {
   throw new Error(`journey-then-home end should pass seam: ${journeyHome.issues.map(i => i.message).join(';')}`)
+}
+
+// 抽取幻觉「刚发生」：用章末尾句回填后应能接地
+const halluProse = [
+  '门闩在身后哐当一声撞上。院里头一下子安静下来。',
+  '秦卫国站在原地没动，听着脚步远去，才慢慢松开手里那块石头。',
+  '他转身进屋时，苏婉已经坐了起来，棉袄披在肩头，两只手死死攥着被角，眼睛红红的。',
+].join('')
+const tipCand = pickTipLastEventCandidate(halluProse)
+if (!tipCand || !fieldGroundedInText(tipCand, halluProse)) {
+  throw new Error(`tip candidate should ground: ${tipCand}`)
+}
+const halluCard = maybeRepairUngroundedLastEvent(
+  baseCard({
+    progress: { catalyst_done: 'unknown', last_event: '院门豁口里只剩一线冷光！' },
+    place: '院内',
+    scene: '屋里',
+    cast: '秦卫国、苏婉',
+  }),
+  halluProse,
+)
+if (halluCard.progress.last_event.includes('一线冷光')) {
+  throw new Error(`hallucinated last_event should be repaired: ${halluCard.progress.last_event}`)
+}
+if (!fieldGroundedInText(halluCard.progress.last_event, halluProse)) {
+  throw new Error(`repaired last_event should ground: ${halluCard.progress.last_event}`)
+}
+
+const propsCard = maybeRepairUngroundedProps(
+  baseCard({
+    props: '秦卫国面色苍白干瘦，眼底带血丝未退，裹紧皮袄踩开胶胶底鞋，背绳磨得起毛，站于张老倔矮凳旁未上热炕；四十来斤狍子已扛回自家院',
+    place: '黑市',
+    scene: '巷口',
+    cast: '秦卫国、老鬼',
+    progress: { catalyst_done: 'yes', last_event: '他终于联系上中间人老鬼' },
+  }),
+  '秦卫国摸进黑市巷口，多看少说，终于联系上中间人老鬼，约定改日带货再谈。',
+)
+if (propsCard.props !== '未明示' && /张老倔|狍子|热炕/.test(propsCard.props || '')) {
+  throw new Error(`cross-chapter props should be repaired away: ${propsCard.props}`)
+}
+const propsOk = validateStateCardAgainstContent(propsCard, '秦卫国摸进黑市巷口，多看少说，终于联系上中间人老鬼，约定改日带货再谈。')
+if (propsOk.issues.some(i => i.code === 'props_ungrounded')) {
+  throw new Error('repaired props must not fail props_ungrounded')
 }
 
 console.log('verify-state-card-validate OK')

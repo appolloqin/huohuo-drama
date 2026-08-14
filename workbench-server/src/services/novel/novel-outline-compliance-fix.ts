@@ -447,14 +447,23 @@ export async function maybeFixOutlineCompliance(args: {
     if (!chapterOutline?.trim()) return text
     const stripped = stripOutlinePoisonProse({ content: text, chapterOutline })
     if (!stripped.changed) return text
-    // 全毒：交后续按大纲+上下文重写，禁止回退原文
-    if (stripped.keepCount < 1 || !stripped.text.trim()) {
-      logTaskWarn('Novel', 'outline-poison-strip-all', {
+    // 删毒结果为空：保留原文（旧逻辑清空会导致修写级联 + 越界稿硬拒）
+    if (!stripped.text.trim()) {
+      logTaskWarn('Novel', 'outline-poison-strip-empty-keep', {
         chapterNumber,
         from: countNovelChars(text),
         actionBeat: stripped.actionBeat.slice(0, 40),
       })
-      return ''
+      return text
+    }
+    if (stripped.keepCount < 1) {
+      logTaskWarn('Novel', 'outline-poison-strip-empty-keep', {
+        chapterNumber,
+        from: countNovelChars(text),
+        to: countNovelChars(stripped.text),
+        actionBeat: stripped.actionBeat.slice(0, 40),
+      })
+      return text
     }
     // 删毒后可能很短（再由 LLM 在大纲内写厚）；只要确实砍掉毒段就采用
     if (stripped.removedChars < 80 && countNovelChars(stripped.text) < 40) return text
@@ -485,7 +494,19 @@ export async function maybeFixOutlineCompliance(args: {
         }
       } else {
         check = await detect(content)
-        if (check.ok) {
+        const afterStripChars = countNovelChars(content)
+        // 删毒后远短于本章目标：不得标通过（日志曾出现 chars=60 score=10000）
+        const stripFloor = Math.max(400, Math.round(minLen * 0.45))
+        if (check.ok && afterStripChars < stripFloor) {
+          check = {
+            ok: false,
+            reasons: [{
+              code: 'outline_endpoint_overshoot',
+              message:
+                `删毒后正文过短（约${afterStripChars}字，低于本章下限约${stripFloor}字），须按大纲重写补足，禁止以碎片稿通过`,
+            }],
+          }
+        } else if (check.ok) {
           return { content, fixed: true, passed: true, attempts: 0, reasons: [] }
         }
       }
@@ -642,9 +663,7 @@ export async function maybeFixOutlineCompliance(args: {
       continue
     }
 
-    // 修写后再次删毒，防止模型把下章结果态写回
-    next = applyPoisonStrip(next)
-
+    // 修写稿不在此删毒：不一致留给本轮 detect；交付时对最终稿只删一次
     const nextCheck = await detect(next, fixBrief)
     lastReasons = nextCheck.reasons
     const nextScore = scoreOf(next, fixBrief) - reasonPenalty(nextCheck.reasons)
@@ -712,7 +731,6 @@ export async function maybeFixOutlineCompliance(args: {
     })
     attempts += 1
     if (nuclear) {
-      nuclear = applyPoisonStrip(nuclear)
       const nuclearCheck = await detect(nuclear, outlineOnlyBrief)
       const nuclearScore = scoreOf(nuclear, outlineOnlyBrief) - reasonPenalty(nuclearCheck.reasons)
       const nuclearN = countNovelChars(nuclear)
@@ -754,8 +772,8 @@ export async function maybeFixOutlineCompliance(args: {
     }
   }
 
-  // ????????????????????/?????????
-  let deliver = applyPoisonStrip(best)
+  // 先选定交付稿，再对最终稿最多删毒一次（删与大纲不一致处）；禁止选稿路径反复删毒
+  let deliver = best
   const originalScore = scoreOf(original, fixBrief) - reasonPenalty(check.reasons)
   const originalRank = seamHardRank(check.reasons)
   const bestRank = seamHardRank(bestReasons)
@@ -811,6 +829,21 @@ export async function maybeFixOutlineCompliance(args: {
       originalChars: countNovelChars(original),
       softMin,
     })
+  }
+
+  {
+    const preStrip = deliver
+    const preDetect = await detect(preStrip, fixBrief)
+    if (shouldStripPoison(preDetect.reasons)) {
+      deliver = applyPoisonStrip(preStrip)
+      if (deliver !== preStrip) {
+        logTaskWarn('Novel', 'outline-poison-strip-final', {
+          chapterNumber,
+          from: countNovelChars(preStrip),
+          to: countNovelChars(deliver),
+        })
+      }
+    }
   }
 
   // 交付态仍为空：硬拒（勿交给后续一致性审去报 empty_content）
@@ -887,21 +920,14 @@ export async function maybeFixOutlineCompliance(args: {
   const deliverStillForward = lastReasons.some(r => r.code === 'chapter_forward_seam_copy')
   const deliverStillOrphan = lastReasons.some(r => r.code === 'draft_orphan_replay')
 
-  // 章末越界 / 下章抢戏修不掉 → 硬拒绝（禁止「软通过」放行击杀等下章情节）
+  // 章末越界 / 下章抢戏：删毒后仍在则软告警，把正文交给后续 21 维一致性审
+  // （证据：hardReject 会 buildHardRejectContinuityCheck 写成 score=0 且 dimensions=0，绕过主审）
   if (deliverStillOvershoot) {
-    logTaskWarn('Novel', 'outline-compliance-hard-reject-overshoot', {
+    logTaskWarn('Novel', 'outline-compliance-overshoot-soft-to-continuity', {
       chapterNumber,
       codes: lastReasons.map(r => r.code),
       chars: deliverChars,
     })
-    return {
-      content: '',
-      fixed: false,
-      passed: false,
-      attempts,
-      reasons: lastReasons.length ? lastReasons : check.reasons,
-      hardReject: true,
-    }
   }
 
   if (
@@ -910,6 +936,7 @@ export async function maybeFixOutlineCompliance(args: {
     || deliverStillOrphan
     || deliverStillAgency
     || deliverStillForward
+    || deliverStillOvershoot
   ) {
     logTaskWarn('Novel', 'outline-compliance-soft-warn', {
       chapterNumber,
@@ -925,10 +952,12 @@ export async function maybeFixOutlineCompliance(args: {
     })
   }
 
-  // 仅剩软告警时可接受；越界/抢戏已在上方硬拒绝，不得出现在 softOnly
+  // 仅剩软告警时可标大纲关通过；越界已改为交给 21 维，列入 softOnly 以免 outline_compliance 误导 UI
   const softOnly = lastReasons.length > 0 && lastReasons.every(r => [
     'early_beats_missing',
     'outline_boundary_model',
+    'outline_endpoint_overshoot',
+    'next_chapter_beat_leak',
     'chapter_event_replay',
     'draft_orphan_replay',
     'catalyst_agency_fail',

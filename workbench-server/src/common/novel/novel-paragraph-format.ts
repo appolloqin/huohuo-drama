@@ -11,9 +11,14 @@ export function mapTextPreservingLineBreaks(text: string, mapBlock: (block: stri
   return text.split(/(\n+)/).map(part => (/^\n+$/.test(part) ? part : mapBlock(part))).join('')
 }
 
-/** 按句末标点拆句；勿在省略号「……」处断开 */
+/** 按句末标点拆句；勿在省略号「……」处断开；勿在「句末+收引号」处断开 */
 function splitSentences(text: string): string[] {
-  return text.split(/(?<=[。！？!?])/).map(s => s.trim()).filter(Boolean)
+  // “十九。” / 「走吧。」 —— 句号后紧跟收引号时必须同属一句，否则会变成：
+  // “十九。\n\n”苏婉…
+  return text
+    .split(/(?<=[。！？!?])(?![」』”'"])/)
+    .map(s => s.trim())
+    .filter(Boolean)
 }
 
 function paragraphBlocks(text: string): string[] {
@@ -62,7 +67,7 @@ export function hasMultiSentenceLines(text: string): boolean {
 }
 
 function isDialogueHeavy(sentence: string): boolean {
-  return /「/.test(sentence) || /」/.test(sentence) || /^["“「]/.test(sentence.trim())
+  return /[「」『』“”]/.test(sentence) || /^["“「『]/.test(sentence.trim())
 }
 
 function isShortOnomatopoeia(sentence: string): boolean {
@@ -186,7 +191,7 @@ export function varyNovelParagraphRhythm(text: string): string {
   if (paragraphLengthCv(varied) < 0.5 && splitSentences(flat).length >= 4) {
     varied = splitWallAlternatingShortLong(flat)
   }
-  return mergeOrphanShortParagraphs(
+  return mergeLeadingCloseQuoteParagraphs(
     enforceMaxSentencesPerParagraph(varied.length ? varied.join('\n\n') : trimmed),
   )
 }
@@ -210,7 +215,7 @@ export function enforceMaxSentencesPerParagraph(
     }
     out.push(...splitWallIntoParagraphs(block))
   }
-  return mergeOrphanShortParagraphs(out.join('\n\n'))
+  return mergeLeadingCloseQuoteParagraphs(mergeOrphanShortParagraphs(out.join('\n\n')))
 }
 
 function isOrphanShortBeat(block: string): boolean {
@@ -223,11 +228,30 @@ function isOrphanShortBeat(block: string): boolean {
 }
 
 /**
+ * 段首收引号粘回上一段（拆句/模型偶发把 ” 独自成段）。
+ */
+export function mergeLeadingCloseQuoteParagraphs(text: string): string {
+  const blocks = paragraphBlocks(text)
+  if (blocks.length < 2) return text.trim()
+  const merged: string[] = []
+  for (const raw of blocks) {
+    const b = raw.trim()
+    if (!b) continue
+    if (merged.length && /^[」』”'"]/.test(b)) {
+      merged[merged.length - 1] = `${merged[merged.length - 1]}${b}`
+      continue
+    }
+    merged.push(b)
+  }
+  return merged.join('\n\n')
+}
+
+/**
  * 极短独占段并入下一段（按长度/结构，不按具体词）。
  * 文末仍无法合并的极短句：句号改为感叹号（短拍语气）。
  */
 export function mergeOrphanShortParagraphs(text: string): string {
-  const blocks = paragraphBlocks(text)
+  const blocks = paragraphBlocks(mergeLeadingCloseQuoteParagraphs(text))
   if (blocks.length < 2) {
     return blocks.length === 1 ? punchStandaloneBeat(blocks[0]!) : text.trim()
   }
@@ -248,7 +272,7 @@ export function mergeOrphanShortParagraphs(text: string): string {
   if (merged.length < blocks.length && merged.some(isOrphanShortBeat)) {
     return mergeOrphanShortParagraphs(merged.join('\n\n'))
   }
-  return merged.map(punchStandaloneBeat).join('\n\n')
+  return mergeLeadingCloseQuoteParagraphs(merged.map(punchStandaloneBeat).join('\n\n'))
 }
 
 /** 仍独占一行的极短拍：凡以句号收束的，统一改为感叹号（不维护词表） */
@@ -266,8 +290,10 @@ export function toNaturalNovelParagraphs(text: string): string {
   if (!trimmed) return trimmed
   const flat = paragraphBlocks(trimmed).join('')
   const paragraphs = splitWallIntoParagraphs(flat)
-  return enforceMaxSentencesPerParagraph(
-    mergeOrphanShortParagraphs(paragraphs.length ? paragraphs.join('\n\n') : flat),
+  return mergeLeadingCloseQuoteParagraphs(
+    enforceMaxSentencesPerParagraph(
+      mergeOrphanShortParagraphs(paragraphs.length ? paragraphs.join('\n\n') : flat),
+    ),
   )
 }
 
@@ -285,7 +311,9 @@ export function preserveNovelLineLayout(_reference: string, output: string, _for
     const avg = nonEmptyLines(out).reduce((s, l) => s + l.length, 0) / nonEmptyLines(out).length
     if (avg <= 55) out = toNaturalNovelParagraphs(out)
   }
-  return enforceMaxSentencesPerParagraph(mergeOrphanShortParagraphs(out))
+  return mergeLeadingCloseQuoteParagraphs(
+    enforceMaxSentencesPerParagraph(mergeOrphanShortParagraphs(out)),
+  )
 }
 
 export function needsParagraphSplit(text: string): boolean {

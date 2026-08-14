@@ -1157,6 +1157,19 @@ function notifyChapterCraft(craft) {
       min: craft.min_score ?? 70,
     }) + tip)
   }
+  const appeal = craft?.appeal
+  if (appeal && appeal.layer === 'appeal') {
+    if (appeal.passed === false) {
+      toast.warning(tx(tm.value.novel.chapterAppealToastWarn, {
+        summary: appeal.summary || '',
+      }))
+    } else {
+      const soft = (appeal.dimensions || []).find(d => d.level === 'soft')
+      if (soft?.message) {
+        toast.info(tx(tm.value.novel.chapterAppealToastSoft, { tip: soft.message }))
+      }
+    }
+  }
 }
 
 function notifyAiHumanize(det) {

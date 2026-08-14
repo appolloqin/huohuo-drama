@@ -224,7 +224,7 @@ export async function loadPrevChapterContentAnchors(
   return parts.join('\n\n')
 }
 
-/** 第 N 章（N≥2）写作上下文：前序已写正文 + 可选章末账本 */
+/** 第 N 章（N≥2）写作上下文：结构化契约 only（不上章末/开篇原文） */
 export async function buildSerialWrittenContextBlock(
   dramaId: number,
   targetChapter: number,
@@ -233,11 +233,10 @@ export async function buildSerialWrittenContextBlock(
   if (targetChapter < 2) return ''
 
   const prevNum = targetChapter - 1
-  const scale = novelContextScale(targetChapter)
   const parts: string[] = [
     opts?.skipLedger
-      ? '【前序已写正文 — 吃书/人名/事件对照；境界与突破以【因果起点】【变更记录】为准，勿对照旧状态账本冻结】'
-      : '【前序已写章节 — 已发生事实以此为准；本章仅结合「本章大纲」+ 此处上下文续写，勿引用全书大纲其他章未写成的人名/事件】',
+      ? '【前序契约 — 吃书/人名/事件对照结构化字段；境界与突破以【因果起点】【变更记录】为准】'
+      : '【前序结构化契约 — 已发生事实以账本/章末快照为准；本章仅结合「本章大纲」+ 此处契约续写，勿索取上章正文】',
   ]
 
   if (!opts?.skipLedger) {
@@ -251,11 +250,12 @@ export async function buildSerialWrittenContextBlock(
     }
   }
 
-  const anchors = await loadPrevChapterContentAnchors(dramaId, targetChapter, {
-    headMax: scale.headMax,
-    tailMax: scale.tailMax,
-  })
-  if (anchors) parts.push(anchors)
+  const prevSnap = await loadPrevChapterEndSnapshot(dramaId, targetChapter)
+  if (prevSnap) {
+    parts.push(formatChapterEndSnapshotBlock(prevSnap, {
+      title: `【第 ${prevNum} 章末状态契约】`,
+    }))
+  }
 
   return parts.filter(Boolean).join('\n\n')
 }
@@ -280,10 +280,12 @@ export async function buildNovelWriteContext(args: {
   includeSelfHint?: boolean
   writingBrief?: string
   bookOutline?: string
+  /** 本章大纲（按需稳定人设信号） */
+  chapterOutline?: string
 }) {
   const {
     dramaId, chapterNumber, chapterId, meta, retrievalQuery, includeSelfHint = true,
-    writingBrief, bookOutline,
+    writingBrief, bookOutline, chapterOutline,
   } = args
   const scale = novelContextScale(chapterNumber)
 
@@ -345,11 +347,24 @@ export async function buildNovelWriteContext(args: {
 
   const characterBlock = await buildProjectCharacterRosterBlock(dramaId)
 
+  const { maybeFormatStableCastFactsInjectBlock } = await import('./novel-stable-cast-facts.js')
+  // 按需注入：第1章已有全书大纲；其后仅当本章 brief/检索触及年龄·登记等
+  const stableCastFactsBlock = chapterNumber === 1
+    ? ''
+    : maybeFormatStableCastFactsInjectBlock(
+      bookOutline || meta.outline || '',
+      writingBrief,
+      retrievalQuery,
+      chapterOutline,
+    )
+
   let memoryBlock = ''
   if (meta.long_memory_enabled !== false) {
+    // 不在每次写作时把大纲年龄 sync 进档案（会变成每章常驻污染）；仅 ensure 目录存在
     const mgr = ensureNovelMemory(dramaId, {
       outline: bookOutline || meta.outline,
       premise: meta.premise,
+      syncStableAges: false,
     })
     const vol = mgr.resolveVol(chapterNumber, bookOutline || meta.outline)
     memoryBlock = await mgr.buildInjectBlock({
@@ -369,6 +384,7 @@ export async function buildNovelWriteContext(args: {
     : ''
 
   const structuredBlock = [
+    stableCastFactsBlock,
     memoryBlock,
     causalBlock,
     canonLockBlock,
@@ -390,7 +406,7 @@ export async function buildNovelWriteContext(args: {
     prevChapterEndSnapshot: prevSnap,
     structuredBlock,
     continuity,
-    characterBlock,
+    characterBlock: [characterBlock, stableCastFactsBlock].filter(Boolean).join('\n\n'),
     selfHint: includeSelfHint ? selfHint : '',
     causalEnabled,
   }

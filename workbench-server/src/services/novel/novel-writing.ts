@@ -681,9 +681,10 @@ export async function buildContinueNovelMessages(args: {
     chapterNumber,
     chapterId,
     meta,
-    retrievalQuery: existingText.slice(-500),
+    retrievalQuery: [chapterOutline, existingText.slice(-500)].filter(Boolean).join('\n'),
     writingBrief: alignedBrief || undefined,
     bookOutline: meta.outline,
+    chapterOutline,
   })
 
   const lengthRule = soft
@@ -734,7 +735,7 @@ export async function buildContinueNovelMessages(args: {
   const openChapterContinue = !existingText.trim() || countNovelChars(existingText) < 80
   const seamBlock = chapterNumber >= 2 && (openChapterContinue || pendingCatalysts.length > 0)
     ? buildChapterSeamWriteBlock(prevTailEarly, {
-      omitRawPrevProse: pendingCatalysts.length > 0 || openChapterContinue,
+      omitRawPrevProse: true,
       prevSnapshot: prevSnapEarly,
       maxTailChars: 160,
     })
@@ -885,6 +886,7 @@ export async function buildGenerateNovelChapterMessages(args: {
     retrievalQuery: [chapterOutline, alignedBrief].filter(Boolean).join('\n'),
     writingBrief: alignedBrief,
     bookOutline: meta.outline,
+    chapterOutline,
   })
 
   const tokenCeiling = chapterLengthTokenBudget(maxLen)
@@ -1047,7 +1049,7 @@ export async function buildGenerateNovelChapterMessages(args: {
     : []
   const seamBlock = chapterNumber >= 2
     ? buildChapterSeamWriteBlock(prevTail, {
-      omitRawPrevProse: pendingCatalysts.length > 0,
+      omitRawPrevProse: true,
       prevSnapshot: prevSnap,
       maxTailChars: 160,
     })

@@ -138,6 +138,54 @@ export const DIMENSION_AUDIT_FIXTURES: readonly DimensionAuditFixture[] = [
     badContent: padNovel('我本是知府公子赵明远，此刻在雪地里闲逛，与秦卫国进林寻踪的事实相悖。'),
   },
   {
+    id: 'presence-bad-teleport',
+    group: 'state_card',
+    dimension: '人物',
+    okAnchor: '推门进了山',
+    badExcerpt: '苏婉拿过那截湿糟糟的麻绳',
+    breakHint: '独处/离场已立后，他者无桥接即以同场动作出场',
+    prevCard: withCard({}),
+    prevLedger: withLedger({}),
+    okContent: padNovel(
+      '秦卫国推门进了山。雪粒子砸脸。他正挑桦木，苏婉从坡下赶了上来，接过麻绳说这哪能用。',
+    ),
+    badContent: padNovel(
+      '秦卫国捆成一卷背上身，推门进了山。雪粒子砸脸。他压住桦木试弹力。苏婉拿过那截湿糟糟的麻绳，捻了两下说这哪能用。',
+    ),
+  },
+  {
+    id: 'presence-ok-bridge',
+    group: 'state_card',
+    dimension: '动作逻辑',
+    okAnchor: '赶了上来',
+    badExcerpt: '苏婉拿过那截湿糟糟的麻绳',
+    breakHint: '有赶来桥接则同场合法；无桥接则动作逻辑不自洽',
+    prevCard: withCard({}),
+    prevLedger: withLedger({}),
+    okContent: padNovel(
+      '秦卫国推门进了山。听见雪壳响，苏婉从坡下赶了上来，拿过麻绳捻了两下。',
+    ),
+    badContent: padNovel(
+      '秦卫国推门进了山。他独自挑树。苏婉拿过那截湿糟糟的麻绳，在手指间捻了两下。',
+    ),
+  },
+  {
+    id: 'presence-ok-mention-only',
+    group: 'state_card',
+    dimension: '人物',
+    okAnchor: '想起苏婉',
+    badExcerpt: '苏婉拿过那截湿糟糟的麻绳',
+    breakHint: '仅想起不构成同场；同场无桥接才是硬伤',
+    prevCard: withCard({}),
+    prevLedger: withLedger({}),
+    okContent: padNovel(
+      '秦卫国独自推门进了山。雪地里他想起苏婉还在屋里纳鞋底，便加快手脚布套。',
+    ),
+    badContent: padNovel(
+      '秦卫国独自推门进了山。苏婉拿过那截湿糟糟的麻绳，在手指间捻了两下。',
+    ),
+  },
+  {
     id: 'sc-last-event',
     group: 'state_card',
     dimension: '刚发生',

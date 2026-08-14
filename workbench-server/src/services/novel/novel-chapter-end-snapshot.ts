@@ -17,6 +17,10 @@ import { splitProseAndChangeRecord } from '../../common/novel/novel-change-recor
 import * as episodesRepo from '../../db/repos/episodes/index.js'
 import { now } from '../../common/http/response.js'
 import type { AuditConflict } from './novel-continuity-precheck.js'
+import {
+  computeSeamStructureVerdict,
+  hasSeamBridge,
+} from './novel-seam-structure-verdict.js'
 
 export { formatChapterEndSnapshotBlock, normalizeChapterEndSnapshot }
 export type { ChapterEndSnapshot }
@@ -145,7 +149,7 @@ function guessTimeLabel(text: string): string | undefined {
 }
 
 /** 无场面词表：仅从章末近句抽一短场景短语供契约展示 */
-function guessPlaceLabel(text: string): string | undefined {
+export function guessPlaceLabel(text: string): string | undefined {
   const tail = text.trim().slice(-240)
   if (/屋里|屋内|房间里|灶房|茅屋/.test(tail)) return '屋里'
   const m = tail.match(/在([\u4e00-\u9fff]{2,8})(?:里|上|中|旁|边)/)
@@ -238,7 +242,7 @@ const DELIVERY_DAY_PHASE_CUES: { phase: number; label: string; re: RegExp }[] = 
 
 /** 跨日明示 + 场合话术（结构词；勿含又掏/又拿等交付动词本身） */
 const DELIVERY_OCCASION_JUMP_RE =
-  /次日|翌日|第二天|隔日|一夜过|过了一夜|一觉醒|睡到天亮|天又亮|第二日|隔夜|天亮(?:了|以后)?|换(?:了)?地方|另一次|又一次|再一次|后来|过了一会儿|过了片刻|片刻后|不久后|随后到了/
+  /次日|翌日|第二天|隔日|数日|几天|过了几天|过了几日|隔了几天|一夜过|过了一夜|一觉醒|睡到天亮|天又亮|第二日|隔夜|天亮(?:了|以后)?|换(?:了)?地方|另一次|又一次|再一次|后来|过了一会儿|过了片刻|片刻后|不久后|随后到了/
 
 function findDeliveryDayPhases(text: string): { phase: number; label: string }[] {
   const hits: { phase: number; label: string }[] = []
@@ -248,12 +252,42 @@ function findDeliveryDayPhases(text: string): { phase: number; label: string }[]
   return hits
 }
 
-function normalizePlaceKey(place?: string | null): string {
+export function normalizePlaceKey(place?: string | null): string {
   const t = (place || '').replace(/\s+/g, '').trim()
   if (!t || t === '未明示') return ''
   if (/屋里|屋内|房间|灶房|茅屋|炕上/.test(t)) return '室内'
   if (/门外|门口|院|路口|道上|路上|外头|村口/.test(t)) return '室外'
   return t.slice(0, 6)
+}
+
+/**
+ * 开篇是否已有章缝过渡（跨日/离场/位移/补叙框）。
+ * 与章缝结构卡 `hasSeamBridge` 同源（避免双标准）。
+ */
+export function openingHasSeamBridge(content: string, maxChars = 1200): boolean {
+  return hasSeamBridge(content, maxChars)
+}
+
+/**
+ * 章缝场合跳切（通用）：读结构卡 place_continuity===jump。
+ * 不绑来客/自家/题材场面；本地硬审用，不依赖上章原文进模型。
+ */
+export function detectSeamPlaceJump(args: {
+  content: string
+  chapterNumber: number
+  prevChapterTail?: string
+  prevSnapshot?: ChapterEndSnapshot | null
+  chapterOutline?: string
+}): AuditConflict | null {
+  const v = computeSeamStructureVerdict(args)
+  if (!v || v.place_continuity !== 'jump') return null
+  return {
+    layer: 'hard',
+    rule: 'chapter_seam_place_jump',
+    message:
+      `章缝场合跳切：上章末场合「${v.prev_place}」与本章开篇场合「${v.open_place}」不一致，且开篇窗口内无离场/位移/跨日/补叙等过渡交代。`
+      + '请先承接上章末场合并写明过渡，再进入新场合；禁止无交代跳切。',
+  }
 }
 
 /**
@@ -634,7 +668,7 @@ export function detectChapterSeamPresenceReentry(args: {
   const departed = prevEndsWithDeparture(prevChapterTail) || prevPlaceCat === 'away'
   // 已在途却开篇落回门内/门口：须有跨日/归来明示才放行（避免「门口看天再出发」漏检）
   const homeRewindExempt =
-    /次日|翌日|第二天|隔日|一夜过|过了一夜|一觉醒|赶回[了家]?|回到[了家]?|返回[了家]?|昨[晚夜].{0,6}回/.test(
+    /次日|翌日|第二天|隔日|数日|几天|过了几天|过了几日|隔了几天|一夜过|过了一夜|一觉醒|赶回[了家]?|回到[了家]?|返回[了家]?|昨[晚夜].{0,6}回/.test(
       opening.replace(/\s+/g, '').slice(0, 500),
     )
 

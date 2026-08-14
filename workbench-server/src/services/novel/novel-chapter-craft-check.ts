@@ -7,11 +7,23 @@ import { countNovelChars } from '../../common/novel/novel-char-limit.js'
 import { stripNovelChangeRecord } from '../../common/novel/novel-change-record.js'
 import type { NovelMetadata } from '../../common/novel/novel-meta.js'
 import { resolveChapterCraftMinScore } from '../../common/novel/novel-meta.js'
+import { logTaskWarn } from '../../common/task/task-logger.js'
 import { parseChapterCraftTags, type ChapterCraftTags } from './novel-chapter-craft-tags.js'
 import {
   assertOutlineChapterFields,
   buildChapterOutlineDramaPromptBlock,
 } from './novel-outline-drama-fields.js'
+import {
+  buildCommercialAppealAudit,
+  listOpeningAppealHardFails,
+  type CommercialAppealAudit,
+} from './novel-commercial-appeal-audit.js'
+import {
+  applyAppealFeelVeto,
+  runAppealFeelAudit,
+  shouldRunAppealFeelAudit,
+  type AppealFeelResult,
+} from './novel-commercial-appeal-feel.js'
 
 export type DramaGateLevel = '有' | '弱' | '无'
 export type DramaGateCode =
@@ -57,6 +69,8 @@ export type ChapterCraftResult = {
   drama_gates: Record<DramaGateCode, DramaGateEntry>
   drama_gate_passed: boolean
   soft_alerts: Array<{ code: string; message: string }>
+  /** 吸引力审（与 continuity 解耦；由 drama_gates 投影 + 本地软信号） */
+  appeal?: CommercialAppealAudit
 }
 
 export function computeDramaGatePassed(
@@ -114,6 +128,8 @@ compliance_veto=true 仅当命中：未成年人色情擦边、性暴力细节�
 desire_on_page, obstacle_on_page, choice_on_page, hook_on_page, info_delta,
 emotion_shown, theme_echo, conflict_layer, stakes_shift, opening_promise。
 「弱」=有痕迹但不饱满；「无」=正文未落地。opening_promise=开篇约前300～800字有本章看点/赌注。
+opening_promise 与 hook_on_page 同时供「吸引力审」使用（与连贯性审解耦，勿混写）。
+opening_promise=「无」若开篇主要是冻醒/感官苏醒/记忆灌入+家底盘点，而缺少催债/夺产/点名等外部对峙。
 
 只输出 JSON：
 {
@@ -237,7 +253,9 @@ export async function checkNovelChapterCraft(args: {
 
   // 审校模型空正文/抛错：勿把「戏剧门全无」当成硬失败去整章重写（会反复生成同一模板开篇）
   const softAlerts: Array<{ code: string; message: string }> = []
+  let skipAppealGates = craftModelFailed
   if (craftModelFailed || (!Number.isFinite(scoreRaw) && Object.keys(parsed).length === 0)) {
+    skipAppealGates = true
     score = Math.max(minScore, 72)
     for (const code of DRAMA_GATE_CODES) {
       drama_gates[code] = { level: '弱', note: '审校未返回有效结果，暂缓门禁' }
@@ -249,7 +267,61 @@ export async function checkNovelChapterCraft(args: {
     })
   }
 
+  // 开篇吸引力硬信号：压力窗口/卖点首屏/醒炕盘点/扩展 L1 → opening_promise=无，触发 craft 修写
+  // 模型不可用时跳过 L1 硬拦与 L2，避免空转
+  let feel: AppealFeelResult | null = null
+  if (!skipAppealGates) {
+    const hardOpens = listOpeningAppealHardFails(prose, args.chapterNumber)
+    if (hardOpens.length) {
+      drama_gates.opening_promise = {
+        level: '无',
+        note: hardOpens.map((h) => h.message).join('；').slice(0, 120),
+      }
+      drama_gate_passed = computeDramaGatePassed(drama_gates)
+      logTaskWarn('Novel', 'appeal-l1-hard-fail', {
+        chapterNumber: args.chapterNumber,
+        codes: hardOpens.map((h) => h.code),
+      })
+    } else if (shouldRunAppealFeelAudit({
+      chapterNumber: args.chapterNumber,
+      craftModelFailed: false,
+      hardFailCount: 0,
+    })) {
+      feel = await runAppealFeelAudit({
+        content: prose,
+        chapterNumber: args.chapterNumber,
+        dramaTitle: args.dramaTitle,
+        billing: args.billing
+          ? { ...args.billing, reason: '小说章节吸引力观感审' }
+          : undefined,
+      })
+      if (!feel.unavailable) {
+        const veto = applyAppealFeelVeto(drama_gates, feel)
+        drama_gates = veto.drama_gates
+        if (veto.vetoed) {
+          drama_gate_passed = computeDramaGatePassed(drama_gates)
+          logTaskWarn('Novel', 'appeal-l2-flat', {
+            chapterNumber: args.chapterNumber,
+            note: veto.note,
+          })
+        }
+      }
+    }
+  }
+
   const passed = !complianceVeto && score >= minScore && (craftModelFailed || (functionOk && drama_gate_passed))
+
+  const appeal = buildCommercialAppealAudit({
+    craft: { drama_gates, checked_at: checkedAt },
+    content: prose,
+    chapterNumber: args.chapterNumber,
+    feel: feel && !feel.unavailable ? feel : null,
+  })
+  for (const d of appeal.dimensions) {
+    if (d.level === 'soft' || (d.level === '无' && d.code !== 'opening_promise' && d.code !== 'hook_on_page')) {
+      softAlerts.push({ code: `appeal_${d.code}`, message: d.message })
+    }
+  }
 
   return {
     passed,
@@ -267,22 +339,68 @@ export async function checkNovelChapterCraft(args: {
     drama_gates,
     drama_gate_passed,
     soft_alerts: softAlerts,
+    appeal,
   }
 }
 
 export function buildChapterCraftFixPrompt(basePrompt: string, craft: ChapterCraftResult): string {
-  const gateFixes = DRAMA_GATE_CODES
-    .filter((code) => craft.drama_gates?.[code]?.level === '无')
-    .map((code, i) => `${i + 1}. 大纲戏剧未落地【${code}】：${craft.drama_gates[code]?.note || '请对照本章大纲该字段用行动写出来'}`)
+  const missing = (code: typeof DRAMA_GATE_CODES[number]) =>
+    craft.drama_gates?.[code]?.level === '无'
+  // 吸引力优先：开篇承诺、章尾钩先于其他戏剧闸
+  const priorityCodes: Array<typeof DRAMA_GATE_CODES[number]> = [
+    'opening_promise',
+    'hook_on_page',
+  ]
+  const restCodes = DRAMA_GATE_CODES.filter(c => !priorityCodes.includes(c))
+  const ordered = [...priorityCodes, ...restCodes].filter(missing)
+  const appealHard = (craft.appeal?.dimensions || []).filter(d =>
+    !d.passed && (
+      d.code === 'wake_inventory_opening'
+      || d.code === 'opening_pressure_window'
+      || d.code === 'opening_sell_point'
+      || d.code === 'opening_soft_collapse'
+      || d.code === 'capability_sell_late'
+      || d.code === 'repeat_inventory'
+      || d.code === 'llm_feel_flat'
+    ),
+  )
+  const gateFixes = ordered.map((code, i) => {
+    const tip = code === 'opening_promise'
+      ? (
+        appealHard.length
+          ? `开篇吸引力未过：${appealHard.map(d => d.message).join('；')}。须前200～400字内主角反制（撕契/拒签/嘴炮），前800字亮翻身手段/对赌/识破；禁止重复盘点与长段重生糊糊`
+          : /醒炕|苏醒|压力方|卖点|糊糊|翻身|重复盘点|观感审/.test(craft.drama_gates?.opening_promise?.note || '')
+            ? '开篇约前300字须先落压力方对白/对峙，并亮出卖点冲突物；前800字亮能力/对赌；穿越最多嵌一句；禁止冻醒盘点与重复家底'
+            : '开篇约前300～800字须有本章看点/冲突或对白承诺，禁止纯盘点开场'
+      )
+      : code === 'hook_on_page'
+        ? '章尾须落到未决具体事件钩，禁止纯感慨收束'
+        : (craft.drama_gates[code]?.note || '请对照本章大纲该字段用行动写出来')
+    return `${i + 1}. 大纲戏剧未落地【${code}】：${tip}`
+  })
+  const feelFix = appealHard.find(d => d.code === 'llm_feel_flat')?.message
+  const appealHardBlock = appealHard.length
+    ? [
+      '【吸引力硬修（必须执行，勿只润色）】',
+      '1. 删：穿越/车间回忆最多嵌一句；「爹瘫娘瞎/让房契/80工分/懒汉骂名/怯弟妹」每簇全章只落地一次，后文用动作推进勿复读。',
+      '2. 压：压力方亮出卖点后约200字内完成主角反制（撕契/拒签/嘴炮），随即亮翻身手段或对赌；禁止中段浆糊降温。',
+      '3. 禁说明书：修机/手艺用1～3句动作+一句结论打脸，爽点在对峙/对赌，不在零件科普。',
+      '4. 字辈：父与叔伯等同辈姓名须与大纲一致且同辈字辈相同；发现混辈须按大纲改正。',
+      feelFix ? `5. 观感指令：${feelFix}` : '',
+      ...appealHard.filter(d => d.code !== 'llm_feel_flat').slice(0, 4).map((d) =>
+        `- 硬拦【${d.code}】：${d.message}`),
+    ].filter(Boolean)
+    : []
   const lines = [
     '【章节质量修正任务】上一稿未达好章节标准，请重写本章正文（可保留可用情节），必须修好下列问题：',
     ...craft.conflicts.slice(0, 8).map((c, i) => `${i + 1}. ${c}`),
     ...gateFixes,
+    ...appealHardBlock,
     craft.compliance_veto
       ? `合规否决：${craft.compliance_reasons.join('；') || '触及红线'}——须彻底改写避开。`
       : '',
     `当前分 ${craft.score}，须 ≥ ${craft.min_score}；functions_hit 须 ≥ 2；大纲戏剧门槛须全部为有/弱。`,
-    '优先修：对照大纲欲望/阻碍/选择/局面变化/章末问题与开头承诺；禁止只加水字数或空喊口号；禁止重演上章闭合交付。',
+    '优先修：①开篇承诺（opening_promise）②章尾钩（hook_on_page）③欲望/阻碍/选择/局面变化；禁止只加水字数或空喊口号；禁止重演上章闭合交付。',
     '',
     '【原写作说明】',
     basePrompt,
