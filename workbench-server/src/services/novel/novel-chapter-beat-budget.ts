@@ -1,11 +1,17 @@
 /**
  * 大纲拍点字数预算：把用户目标拆到拍点上，边界内写厚，末拍后 0 字。
+ * 第1～8章：分拍节点绑定恨→爽→急→盼（见 novel-chapter-emotion-beats）。
  * 题材无关（相位名仅作提示标签；戏剧标签大纲优先用标签名，避免把「起因」误标成「铺垫」）。
  */
 import {
   extractOutlineBeatItems,
   filterStaleCatalystBeatItems,
 } from './novel-chapter-seam.js'
+import {
+  buildEmotionBeatSpecs,
+  EMOTION_BEAT_WEIGHTS,
+  shouldBindEmotionBeats,
+} from './novel-chapter-emotion-beats.js'
 
 const PHASE_LABELS_5 = ['铺垫', '起因', '发展', '高潮', '收束'] as const
 
@@ -79,8 +85,47 @@ export type ChapterBeatBudget = {
   promptBlock: string
 }
 
+function allocateTargets(userTarget: number, weights: number[]): number[] {
+  const n = weights.length
+  const sumW = weights.reduce((a, b) => a + b, 0) || 1
+  const raw = weights.map(w => Math.round(userTarget * (w / sumW)))
+  let diff = userTarget - raw.reduce((a, b) => a + b, 0)
+  let cursor = Math.floor(n / 2)
+  while (diff !== 0 && n > 0) {
+    const step = diff > 0 ? 1 : -1
+    raw[cursor] = Math.max(50, (raw[cursor] || 0) + step)
+    diff -= step
+    cursor = (cursor + 1) % n
+  }
+  return raw
+}
+
+function toBudgetItems(
+  specs: Array<{ phase: string; beat: string; tag?: string }>,
+  raw: number[],
+  endpointPending: boolean,
+): ChapterBeatBudgetItem[] {
+  const n = specs.length
+  return specs.map((item, i) => {
+    const targetChars = raw[i] || 50
+    const isLast = i === n - 1
+    const lo = Math.max(40, Math.floor(targetChars * 0.85))
+    const hi = Math.max(lo + 20, Math.ceil(targetChars * (endpointPending && isLast ? 1.08 : 1.15)))
+    return {
+      index: i + 1,
+      phase: item.phase,
+      beat: item.beat,
+      tag: item.tag,
+      targetChars,
+      minChars: lo,
+      maxChars: hi,
+    }
+  })
+}
+
 /**
  * 将 userTarget 分配到大纲拍点；无拍点时返回空预算（仅总目标提示）。
+ * 传入 chapterNumber∈[1,8] 时强制四拍：恨→爽→急→盼。
  */
 export function resolveChapterBeatBudgets(args: {
   chapterOutline?: string
@@ -88,10 +133,37 @@ export function resolveChapterBeatBudgets(args: {
   endpointPending?: boolean
   /** 上章末正文：已落地的【本章起因】不再占拍点预算/生成 */
   prevChapterTail?: string
+  /** 第1～8章绑定恨爽急盼分拍 */
+  chapterNumber?: number
 }): ChapterBeatBudget {
   const userTarget = Math.min(20000, Math.max(500, Math.round(Number(args.userTarget)) || 3000))
+  const pending = !!args.endpointPending
+  const outline = args.chapterOutline || ''
+
+  if (shouldBindEmotionBeats(args.chapterNumber) && outline.trim()) {
+    const emotionSpecs = buildEmotionBeatSpecs({
+      chapterOutline: outline,
+      chapterNumber: Number(args.chapterNumber),
+      prevChapterTail: args.prevChapterTail,
+    })
+    const raw = allocateTargets(userTarget, [...EMOTION_BEAT_WEIGHTS])
+    const items = toBudgetItems(emotionSpecs, raw, pending)
+    const lines = items.map(
+      it => `${it.index}. [${it.phase}] ${it.beat.split('\n')[0] || it.beat} → 约 ${it.minChars}～${it.maxChars} 字（目标 ${it.targetChars}）`,
+    )
+    const promptBlock = [
+      '【篇幅预算 — 恨→爽→急→盼（第1～8章硬绑定）】',
+      `用户目标合计 ${userTarget} 字；分拍节点必须按恨→爽→急→盼顺序各写一次；写完「盼」即停；盼之后预算 0 字。`,
+      ...lines,
+      '每拍只演本情绪职：恨=极限压迫；爽=一次硬刚+余震；急=未决期限/加码；盼=本事短亮。',
+      '禁止另开侦查/盘点/说明书拍；某拍写不够只在该拍内加交锋与余震，禁止挪到未写拍或发明第五拍。',
+      '优先级：已发生事实（勿回放）> 四拍情绪职 > 大纲要素落地 > 旧稿结构。',
+    ].join('\n')
+    return { beatCount: items.length, userTarget, items, promptBlock }
+  }
+
   const beatItems = filterStaleCatalystBeatItems(
-    substantiveBeatItems(extractOutlineBeatItems(args.chapterOutline || '')),
+    substantiveBeatItems(extractOutlineBeatItems(outline)),
     args.prevChapterTail,
   )
   const n = beatItems.length
@@ -105,35 +177,16 @@ export function resolveChapterBeatBudgets(args: {
   }
 
   const weights = beatWeightTemplate(n)
-  const sumW = weights.reduce((a, b) => a + b, 0) || 1
-  const raw = weights.map(w => Math.round(userTarget * (w / sumW)))
-  // 微调合计为 userTarget
-  let diff = userTarget - raw.reduce((a, b) => a + b, 0)
-  let cursor = Math.floor(n / 2)
-  while (diff !== 0 && n > 0) {
-    const step = diff > 0 ? 1 : -1
-    raw[cursor] = Math.max(50, (raw[cursor] || 0) + step)
-    diff -= step
-    cursor = (cursor + 1) % n
-  }
-
-  const pending = !!args.endpointPending
-  const items: ChapterBeatBudgetItem[] = beatItems.map((item, i) => {
-    const targetChars = raw[i] || 50
-    const isLast = i === n - 1
-    const lo = Math.max(40, Math.floor(targetChars * 0.85))
-    const hi = Math.max(lo + 20, Math.ceil(targetChars * (pending && isLast ? 1.08 : 1.15)))
-    const phase = phaseLabelFromDramaTag(item.tag) || phaseLabelForIndex(i, n)
-    return {
-      index: i + 1,
-      phase,
+  const raw = allocateTargets(userTarget, weights)
+  const items: ChapterBeatBudgetItem[] = toBudgetItems(
+    beatItems.map((item, i) => ({
+      phase: phaseLabelFromDramaTag(item.tag) || phaseLabelForIndex(i, n),
       beat: item.beat,
       tag: item.tag,
-      targetChars,
-      minChars: lo,
-      maxChars: hi,
-    }
-  })
+    })),
+    raw,
+    pending,
+  )
 
   const lines = items.map(
     it => `${it.index}. [${it.phase}] ${it.beat} → 约 ${it.minChars}～${it.maxChars} 字（目标 ${it.targetChars}）`,

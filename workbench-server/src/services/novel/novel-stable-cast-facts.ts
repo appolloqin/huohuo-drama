@@ -225,8 +225,12 @@ const AGE_REPLY_SHE_HE_RE = new RegExp(
 )
 
 /**
- * 正文年龄与大纲稳定人设冲突 → hard
- * 覆盖：近距「N岁」、问答后隔段答「二十三。」、以及无问句的「二十三。」她答（答句结构）
+ * 正文年龄与大纲稳定人设冲突 → hard（仅高置信问答结构）
+ *
+ * **不做**「人名附近出现 N岁」近距硬拦：旁白里弟妹/回忆/年限与人名相邻极常见，近距归因误报率高，不适合 hard。
+ * 近距年龄一致性交给模型语义审（软）；硬拦只认：
+ * - 显式「几岁/多大」问答后的答句
+ * - 「二十三。」她答 / 他答 结构答句
  */
 export function detectStableAgeConflicts(
   content: string,
@@ -240,29 +244,7 @@ export function detectStableAgeConflicts(
   for (const f of facts) {
     if (f.ageYears == null || !hay.includes(f.name)) continue
 
-    // 1) 「苏婉…19岁 / 二十三岁」同窗（避免「十九岁」再切出「九岁」误报）
-    const nearName = new RegExp(
-      `${f.name}.{0,60}(?:^|[^\\d一二三四五六七八九十两零〇])(${ageTok})岁`
-      + `|(?:^|[^\\d一二三四五六七八九十两零〇])(${ageTok})岁.{0,40}${f.name}`,
-      'g',
-    )
-    let m: RegExpExecArray | null
-    while ((m = nearName.exec(hay))) {
-      const tok = m[1] || m[2]
-      if (!tok) continue
-      const stated = parseAgeToken(tok)
-      if (stated == null || stated === f.ageYears) continue
-      out.push({
-        layer: 'hard',
-        rule: 'stable_age_conflict',
-        message:
-          `稳定人设年龄冲突：「${f.name}」大纲为${f.ageYears}岁，正文写「${tok}岁」。`
-          + `摘录「${hay.slice(Math.max(0, m.index - 8), m.index + m[0].length).slice(0, 36)}」`,
-      })
-      break
-    }
-
-    // 2) 年龄问答：问句后允许隔写作用（至约 1200 字），答句可无「岁」（「二十三。」她答）
+    // 1) 年龄问答：问句后允许隔写作用（至约 1200 字），答句可无「岁」（「二十三。」她答）
     AGE_Q_RE.lastIndex = 0
     let qm: RegExpExecArray | null
     while ((qm = AGE_Q_RE.exec(hay)) !== null) {
@@ -307,7 +289,7 @@ export function detectStableAgeConflicts(
       if (caught) break
     }
 
-    // 3) 无问句仍答年龄：「二十三。」她答 — 前窗须有该人名（结构答句，不依赖几岁词）
+    // 2) 无问句仍答年龄：「二十三。」她答 — 前窗须有该人名（结构答句，不依赖几岁词）
     AGE_REPLY_SHE_HE_RE.lastIndex = 0
     let rm: RegExpExecArray | null
     while ((rm = AGE_REPLY_SHE_HE_RE.exec(hay)) !== null) {

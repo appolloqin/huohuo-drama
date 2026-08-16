@@ -22,6 +22,10 @@ import {
   prevTailWithSnapshotTime,
 } from './novel-chapter-end-snapshot.js'
 import { stripLengthAdjustInstructionEcho } from '../../common/novel/novel-change-record.js'
+import {
+  extractEmotionBoundaryActionBeat,
+  outlineHasExplicitEmotionBeats,
+} from './novel-outline-drama-fields.js'
 
 /** 兼容 「」『』“” 及 ASCII 引号（用 \u 避免源码引号歧义） */
 const SPEECH_RE = new RegExp(
@@ -197,6 +201,7 @@ const DRAMA_SETTING_TAGS = new Set([
 /** 戏剧标签：手法/调性/信息注记，不进情节拍点序列（勿当章末硬止点） */
 const DRAMA_META_TAGS = new Set([
   '冲突层', '情绪手法', '主题回响', '信息增量',
+  '恨', '爽', '急', '盼', '爽型',
 ])
 
 const DRAMA_TAG_LINE_RE = /^【([^】]{1,24})】\s*(.*)$/
@@ -303,8 +308,9 @@ export function extractOutlineBeatPhrases(outline: string, max = 12): string[] {
 }
 
 /**
- * 章末硬止点用拍：优先【人物选择】/【局面变化】等行动拍；
- * 【章末问题】作悬念锚，不单独当「须写完」的末拍（避免信息增量类注记抢末位）。
+ * 章末硬止点用拍：
+ * - 有显式【恨】【爽】【急】【盼】时：硬止【盼】（或【急】），勿用【局面变化】（否则急/盼被当毒尾）
+ * - 否则：优先【人物选择】/【局面变化】等行动拍；【章末问题】作悬念锚
  */
 export function extractOutlineBoundaryLastBeat(outline: string): {
   lastBeat: string
@@ -313,13 +319,25 @@ export function extractOutlineBoundaryLastBeat(outline: string): {
 } {
   const items = extractOutlineBeatItems(outline, 16)
   const endingQuestion = items.find(i => i.tag === '章末问题')?.beat?.trim() || ''
+
+  if (outlineHasExplicitEmotionBeats(outline)) {
+    const emotionEnd = extractEmotionBoundaryActionBeat(outline)
+    if (emotionEnd) {
+      return {
+        lastBeat: emotionEnd,
+        endingQuestion,
+        actionBeat: emotionEnd,
+      }
+    }
+  }
+
   const actionTags = new Set(['人物选择', '局面变化', '本章起因'])
   const actionItems = items.filter(i => i.tag && actionTags.has(i.tag) && !isSuspenseHookBeat(i.beat))
   const plotNonQ = items.filter(i => i.tag !== '章末问题' && !isSuspenseHookBeat(i.beat))
-  // 硬止点优先局面变化/具体事件；抽象「人物选择」态度句不作末拍（避免删毒误砍）
+  // 硬止点优先「人物选择」具体行动（章末悬念前最后一拍）；局面变化常在中段，不宜当章终点
   const actionBeat = (
-    [...actionItems].reverse().find(i => i.tag === '局面变化')
-    || [...actionItems].reverse().find(i => i.tag === '人物选择' && !isAbstractStanceBeat(i.beat))
+    [...actionItems].reverse().find(i => i.tag === '人物选择' && !isAbstractStanceBeat(i.beat))
+    || [...actionItems].reverse().find(i => i.tag === '局面变化')
     || [...actionItems].reverse().find(i => i.tag === '本章起因')
     || [...plotNonQ].reverse().find(i => !isAbstractStanceBeat(i.beat))
     || plotNonQ[plotNonQ.length - 1]

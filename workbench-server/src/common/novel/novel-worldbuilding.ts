@@ -1,5 +1,9 @@
 /** 第 1 章写作固定注入：有真实世界观块时展开；无则不注入修真占位 */
-import { NOVEL_OUTLINE_WORLD_SECTION } from '../../agents/novel-defaults.js'
+import {
+  NOVEL_OUTLINE_WORLD_SECTION,
+  isCultivationPowerGenre,
+  isMundaneNonCultivationGenre,
+} from '../../agents/novel-defaults.js'
 import { extractWorldRules } from '../../services/novel/novel-memory/novel-memory-parser.js'
 import { NovelMemoryManager } from '../../services/novel/novel-memory/novel-memory-manager.js'
 
@@ -39,10 +43,32 @@ function pickWorldLines(section: string): { cultivation: string; regions: string
   return { cultivation, regions, factions }
 }
 
+/**
+ * 大纲是否含真·修真境界链（有则第1章可展开；无则禁止灌淬体凝气）。
+ * 题材优先：种田修真等力量标签 → 可展开；明确年代现实 → 禁灌。
+ */
+export function outlineHasCultivationRealmChain(section: string, genre?: string): boolean {
+  const s = section || ''
+  if (isMundaneNonCultivationGenre(genre)) return false
+  if (isCultivationPowerGenre(genre)) {
+    return /淬体|凝气|筑基|炼气|金丹|元婴|化神|灵气|修真|境界链|修炼体系/.test(s)
+  }
+  // 无题材或模糊题材：看大纲是否显式修炼体系+境界，或宗门仙侠语境
+  if (!/淬体|凝气|筑基|炼气|金丹|元婴|化神|灵气|修真|境界链/.test(s)) return false
+  if (/修炼体系\s*[：:]/.test(s) && /淬体|凝气|筑基|炼气|金丹|元婴|化神/.test(s)) return true
+  const xianxiaCtx = /宗门|灵根|修仙|仙侠|玄幻|东荒|南荒|北域|中州|散修|灵石|功法|飞升/.test(s)
+  if (xianxiaCtx) return true
+  // 年代/农村强信号且无宗门语境 → 旧大纲误塞的淬体词不当修真链
+  const ruralOrMundane = /公社|大队|工分|供销社|知青|户口|生产队|197\d|198\d|199\d/.test(s)
+  if (ruralOrMundane) return false
+  return true
+}
+
 /** 第 1 章世界观注入块；无真实块时返回空字符串（勿注入修真占位） */
 export function buildChapter1WorldIntroBlock(args: {
   outline?: string
   dramaId?: number
+  genre?: string
 }): string {
   let raw = extractOutlineWorldBlock(args.outline || '')
   if (!raw && args.dramaId && NovelMemoryManager.exists(args.dramaId)) {
@@ -52,22 +78,40 @@ export function buildChapter1WorldIntroBlock(args: {
   if (!raw) return ''
 
   const { cultivation, regions, factions } = pickWorldLines(raw)
+  const hasRealmChain = outlineHasCultivationRealmChain(raw, args.genre)
   const bullets = [
-    cultivation ? `- 修炼体系/境界：${cultivation.replace(/^\*\*[^*]+\*\*[：:]\s*/, '')}` : '',
-    regions ? `- 大陆/地域：${regions.replace(/^\*\*[^*]+\*\*[：:]\s*/, '')}` : '',
-    factions ? `- 门派/势力：${factions.replace(/^\*\*[^*]+\*\*[：:]\s*/, '')}` : '',
+    cultivation
+      ? (hasRealmChain
+        ? `- 修炼体系/境界：${cultivation.replace(/^\*\*[^*]+\*\*[：:]\s*/, '')}`
+        : `- 力量/规则要点：${cultivation.replace(/^\*\*[^*]+\*\*[：:]\s*/, '')}`)
+      : '',
+    regions ? `- 地域：${regions.replace(/^\*\*[^*]+\*\*[：:]\s*/, '')}` : '',
+    factions ? `- 势力/组织：${factions.replace(/^\*\*[^*]+\*\*[：:]\s*/, '')}` : '',
   ].filter(Boolean)
 
+  const writeRules = hasRealmChain
+    ? [
+      '写作要求（第1章专用，优先级高于「快节奏」）：',
+      '1. **修炼体系**：须自然交代大纲中的**完整境界链**；说明当前主角所处位置；可借路人/回忆带出，禁止说明书堆砌',
+      '2. **地域**：须写出大纲主要地理单元及关系',
+      '3. **门派/势力**：须至少自然带出 2 个大纲中的势力名及与主角关系',
+      '4. 世界观展开建议占全章 400～800 字（分散在对话、动作、环境中）',
+      '5. 禁止自造大纲未列的地名/境界别称',
+    ]
+    : [
+      '写作要求（第1章专用）：',
+      '1. 按大纲交代时代/地域/组织规则即可；**禁止**写入淬体、凝气、筑基、炼气、金丹等修真境界词（含比喻、村语假托）',
+      '2. 地域与组织按大纲自然带出，勿编造宗门修真设定',
+      '3. 禁止把无修真力量体系的现实/年代题材写成修真升级文',
+    ]
+
   return [
-    '【第1章须介绍的世界观 — 正文前 1/3 须充分展开，名称须与下列完全一致，禁止别称（如大纲写凝气则不得写炼气）】',
+    hasRealmChain
+      ? '【第1章须介绍的世界观 — 正文前 1/3 须充分展开，名称须与下列完全一致】'
+      : '【第1章世界观要点 — 按大纲落地；禁止修真境界串味】',
     raw,
-    bullets.length ? '\n要点（须全部写入正文，不可只提一两境）：\n' + bullets.join('\n') : '',
+    bullets.length ? '\n要点：\n' + bullets.join('\n') : '',
     '',
-    '写作要求（第1章专用，优先级高于「快节奏」）：',
-    '1. **修炼体系**：须自然交代大纲中的**完整境界链**（至少依次点到各 major 境名，而非只写「淬体、凝气」两句）；说明当前主角所处位置及上下境界关系；可借路人/回忆/宗门规矩带出，**禁止**用一整段说明书堆完就结束',
-    '2. **大陆/地域**：须写出大纲中的**主要地理单元名称**（如东荒/南荒/中州等，有几写几）及彼此大致关系或差异，篇幅不少于 150 字的信息量',
-    '3. **门派/势力**：须至少自然带出 **2 个**大纲中的宗门/势力名及与主角或当前场景的关系',
-    '4. 以上世界观展开建议占全章 **400～800 字**（分散在对话、动作、环境描写中），**不是**条目列表，也**不是**只用 3～5 句概括带过',
-    '5. 禁止自造大纲未列的大陆/境界别称（如大纲无「九霄大陆」则不得写；须用大纲中的地域名）',
+    ...writeRules,
   ].filter(Boolean).join('\n')
 }

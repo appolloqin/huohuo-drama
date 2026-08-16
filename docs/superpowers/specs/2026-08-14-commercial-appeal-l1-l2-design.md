@@ -51,10 +51,21 @@ craft 修写 ≤ resolveChapterCraftRewriteMax（默认 3）
 |---|---|
 | 既有 `wake_inventory_opening` | 1～3（不变） |
 | 既有 `opening_pressure_window` / `opening_sell_point` | 1～5（不变） |
-| **新增** L1：`opening_soft_collapse` / `capability_sell_late` / `repeat_inventory` | **1～8** |
+| **新增** L1：`opening_soft_collapse` / `capability_sell_late` / `repeat_inventory` / `emotion_beats_*` / `post_climax_decompress` | **1～8** |
+| **叠加** 节奏/同构/新意（见 `2026-08-14-commercial-appeal-rhythm-novelty-design.md`） | **1～8**；emotion 仅管有无与粗顺序；间距/同构/大纲偏转入 `listOpeningAppealHardFails` |
 | L2 观感审 | **1～8**，且仅 L1（含既有+新增）全无硬失败时 |
 
-第 6～8 章：只跑新增三维 + L2；不把既有 1～5 门槛扩展到 6～8。若第 6～8 章开篇无外部压力，`opening_soft_collapse` 不触发（见下），仍可因 `capability_sell_late` / `repeat_inventory` / L2 失败。
+第 6～8 章：只跑新增 L1 + L2；不把既有 1～5 门槛扩展到 6～8。若第 6～8 章开篇无外部压力，`opening_soft_collapse` 不触发（见下），仍可因 `capability_sell_late` / `repeat_inventory` / 情绪四拍 / L2 失败。
+
+### 大纲映射（题材无关，须同步改大纲）
+
+| 拍 | 大纲字段 | 正文要求 |
+|---|---|---|
+| 恨 | 【本章起因】+【阻碍】 | 欺压/羞辱先可见 |
+| 爽 | 【人物选择】/【局面变化】 | 一次硬刚打脸，勿复读 |
+| 急 | 【章末问题】 | 具体期限/对赌未决 |
+| 盼 | 【信息增量】 | 本事短动作结论 |
+| — | 章尾 | 停急/盼钩；禁高潮后温情泄压 |
 
 ## L1 启发式 — 可测阈值
 

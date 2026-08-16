@@ -3,6 +3,8 @@
  * Run: npx tsx scripts/verify-outline-poison-strip.ts
  */
 import { stripOutlinePoisonProse } from '../src/services/novel/novel-outline-poison-strip.js'
+import { extractOutlineBoundaryLastBeat } from '../src/services/novel/novel-chapter-seam.js'
+import { detectOutlineCompliance } from '../src/services/novel/novel-outline-compliance.js'
 
 function pad(s: string, n: number): string {
   let out = s
@@ -200,5 +202,46 @@ if (!rNone.text.trim() || rNone.text.length < 100) {
 }
 if (rNone.changed) throw new Error('unaligned draft should not strip-all')
 console.log('unaligned-keep-original ok')
+
+// 恨爽急盼：局面变化后的急/盼不得当毒尾砍掉
+const emotionOutline = [
+  '第1章：雪夜逼债',
+  '【本章起因】二叔踹门逼债',
+  '【阻碍】字据抵房',
+  '【局面变化】从任人拿捏到当众立下还款死约，秦守财被迫接受延期，但放话到期必来收房',
+  '【人物选择】当场写下新字据赌自己的手',
+  '【章末问题】一个月后五十块从哪来？',
+  '【恨】秦守财踹门拍字据逼腾房',
+  '【爽】秦建国立约硬刚并亮修机本事',
+  '【急】一个月内先还五十否则收房',
+  '【盼】柴油机修好抵债；缺弹簧垫圈须自制',
+  '【爽型】硬撕',
+].join('\n')
+const emotionBody = [
+  '门被踹开。秦守财拍着字据骂着要腾房。',
+  '秦建国按住字据：「账我认，一个月先还五十。」又踩上院里柴油机：「这机器我修，修好抵工分。」秦守财嘴角一抽，账本差点滑落。',
+  '「腊月二十结账，少一分扣口粮。」他甩下盖章欠款单。',
+  '秦建国敲了敲缸体，眉头微皱：「……缺个弹簧垫圈，得自己做。」墙角锈铁堆着，他掂了掂。',
+].join('')
+const rEmo = stripOutlinePoisonProse({ content: emotionBody, chapterOutline: emotionOutline })
+if (!/缺个弹簧|自己做/.test(rEmo.text)) {
+  throw new Error('emotion 盼/急 tail must not be stripped as poison')
+}
+if ([...rEmo.text].length < [...emotionBody].length * 0.85) {
+  throw new Error(`emotion strip removed too much: ${[...rEmo.text].length}/${[...emotionBody].length}`)
+}
+const emoBound = extractOutlineBoundaryLastBeat(emotionOutline)
+if (!/弹簧垫圈|自制|柴油机/.test(emoBound.actionBeat)) {
+  throw new Error(`emotion boundary must be 盼, got: ${emoBound.actionBeat}`)
+}
+const emoCheck = detectOutlineCompliance({
+  content: emotionBody,
+  chapterOutline: emotionOutline,
+  chapterNumber: 1,
+})
+if (emoCheck.reasons.some(r => r.code === 'outline_endpoint_overshoot')) {
+  throw new Error('emotion chapter must not false-positive outline_endpoint_overshoot')
+}
+console.log('emotion-beat strip keep 急盼 ok', { action: emoBound.actionBeat.slice(0, 40), len: [...rEmo.text].length })
 
 console.log('PASS')

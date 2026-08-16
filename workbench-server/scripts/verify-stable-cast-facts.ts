@@ -108,4 +108,34 @@ if (noQHits.some(h => /秦卫国/.test(h.message))) {
   throw new Error(`no-Q must not pin 秦卫国: ${JSON.stringify(noQHits)}`)
 }
 
+// 旁白近距「人名…N岁」不做硬拦（易把弟妹年龄挂到兄长）；仅问答结构硬拦
+{
+  const familyOutline = `
+【主要人物】
+- **秦建民**：大弟，15岁。
+- **秦建英**：二妹，12岁。
+- **秦建军**：小弟，8岁。
+`
+  const familyFacts = extractStableCastFactsFromOutline(familyOutline)
+  if (!familyFacts.some(f => f.name === '秦建民' && f.ageYears === 15)) {
+    throw new Error(`family facts: ${JSON.stringify(familyFacts)}`)
+  }
+  const siblingProse = [
+    '炕角三个小的缩成一团。',
+    '秦建民把两个弟妹往身后挡，十五岁的半大小子，胳膊细得像柴。',
+    '秦建英才十二岁，棉袄肘子上的补丁摞着补丁。',
+  ].join('')
+  if (detectStableAgeConflicts(siblingProse, familyFacts).length) {
+    throw new Error('sibling near-age narration must NOT hard-fail')
+  }
+  const wrongNarration = '秦建民缩在墙角，十二岁的半大小子不敢吭声。'
+  if (detectStableAgeConflicts(wrongNarration, familyFacts).length) {
+    throw new Error('proximity-only wrong age must NOT hard-fail (model soft only)')
+  }
+  const wrongQa = '队长盯着秦建民问几岁了。「十二。」他答。'
+  if (!detectStableAgeConflicts(wrongQa, familyFacts).some(h => /秦建民/.test(h.message) && /十二/.test(h.message))) {
+    throw new Error('explicit age Q&A wrong answer must still hard-fail')
+  }
+}
+
 console.log('verify-stable-cast-facts OK')

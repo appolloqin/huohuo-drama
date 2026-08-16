@@ -123,8 +123,29 @@ const dramaBudget = resolveChapterBeatBudgets({
 if (dramaBudget.beatCount < 5) throw new Error(`drama budget beats ${dramaBudget.beatCount}`)
 if (dramaBudget.promptBlock.includes('拍点不足')) throw new Error('should not say insufficient beats')
 
+/** 第1～8章：分拍绑定恨爽急盼 */
+const emotionBudget = resolveChapterBeatBudgets({
+  chapterOutline: dramaOffice,
+  userTarget: 2800,
+  endpointPending: false,
+  chapterNumber: 3,
+})
+if (emotionBudget.beatCount !== 4) throw new Error(`emotion beats ${emotionBudget.beatCount}`)
+const phases = emotionBudget.items.map(i => i.phase).join('')
+if (phases !== '恨爽急盼') throw new Error(`emotion phases ${phases}`)
+if (!emotionBudget.promptBlock.includes('恨→爽→急→盼')) throw new Error('emotion budget prompt')
+if (!emotionBudget.items[0]!.beat.includes('阻碍') && !emotionBudget.items[0]!.beat.includes('压迫')) {
+  throw new Error('hate beat must carry obstacle')
+}
+if (!emotionBudget.items[1]!.beat.includes('人物选择') && !emotionBudget.items[1]!.beat.includes('硬')) {
+  throw new Error('shuang beat must carry choice')
+}
+const sumE = emotionBudget.items.reduce((a, it) => a + it.targetChars, 0)
+if (sumE !== 2800) throw new Error(`emotion sum ${sumE}`)
+
 console.log('verify-chapter-beat-budget OK', {
   phases: r.items.map(i => `${i.phase}:${i.targetChars}`),
   officeBeats: extractOutlineBeatPhrases(dramaOffice),
   dramaBudgetCount: dramaBudget.beatCount,
+  emotionPhases: emotionBudget.items.map(i => `${i.phase}:${i.targetChars}`),
 })

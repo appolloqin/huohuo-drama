@@ -68,6 +68,13 @@ export type AiDetectionResult = {
   ai_detect_warning?: string
   writing_model?: string
   suggestions?: AiDetectionSuggestion[]
+  /** 朱雀式分段报告（本站启发式，非朱雀官方分） */
+  segments?: import('./ai-detect-segments.js').AiDetectSegment[]
+  sampling?: {
+    windows: import('./ai-detect-segments.js').AiDetectSamplingWindow[]
+  }
+  /** 高危段数量（suspected+ai） */
+  high_band_count?: number
 }
 
 /** 修改建议展示门槛（原 0.55 过高：用词 72% 以外的次高维常被整表吞掉） */

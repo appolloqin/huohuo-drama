@@ -405,6 +405,29 @@
               {{ aiDetectionResult.humanize_warning }}
             </span>
           </p>
+          <p v-if="aiDetectionResult.ai_detect_warning" class="ai-detect-disclaimer">
+            {{ aiDetectionResult.ai_detect_warning }}
+          </p>
+          <div v-if="aiHotSegments.length" class="ai-detect-segments">
+            <p class="ai-detect-signals-title">
+              {{ tm.aiDetectHub.segmentsTitle }}
+              <span class="dim">（{{ aiDetectionResult.high_band_count ?? aiHotSegments.length }}）</span>
+            </p>
+            <ul class="ai-segment-list">
+              <li
+                v-for="seg in aiHotSegments"
+                :key="seg.index"
+                class="ai-segment-item"
+                :class="`band-${seg.band}`"
+              >
+                <div class="ai-segment-head">
+                  <span>#{{ seg.index + 1 }} · {{ aiSegmentBandLabel(seg.band) }}</span>
+                  <span>{{ Math.round((seg.aigc ?? 0) * 100) }}%</span>
+                </div>
+                <p v-if="seg.text" class="ai-segment-text">{{ seg.text }}</p>
+              </li>
+            </ul>
+          </div>
           <div v-if="aiDetectionResult.signals?.length" class="ai-detect-signals">
             <p class="ai-detect-signals-title">{{ tm.novel.aiDetectSignals }}</p>
             <ul class="ai-signal-list">
@@ -706,6 +729,18 @@ const aiConfidenceLabel = computed(() => {
   if (c === 'high') return tm.value.novel.aiDetectConfidenceHigh
   return tm.value.novel.aiDetectConfidenceMedium
 })
+
+const aiHotSegments = computed(() => {
+  const segs = aiDetectionResult.value?.segments
+  if (!Array.isArray(segs)) return []
+  return segs.filter((s) => s?.band === 'suspected' || s?.band === 'ai')
+})
+
+function aiSegmentBandLabel(band) {
+  if (band === 'ai') return tm.value.aiDetectHub.bandAi
+  if (band === 'suspected') return tm.value.aiDetectHub.bandSuspected
+  return tm.value.aiDetectHub.bandHuman
+}
 
 const prevChapterNum = computed(() => {
   const num = chapterNum.value
@@ -1752,6 +1787,42 @@ html[data-theme="dark"] .ai-detect-loading-overlay {
   font-size: 13px;
   font-weight: 700;
   color: var(--text-1);
+}
+.ai-detect-disclaimer {
+  margin: 0 0 10px;
+  font-size: 12px;
+  color: var(--text-3);
+  line-height: 1.45;
+}
+.ai-detect-segments { margin: 12px 0; }
+.ai-segment-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.ai-segment-item {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 8px 10px;
+  background: var(--bg-1);
+}
+.ai-segment-item.band-ai { border-color: rgba(198, 40, 40, 0.35); background: rgba(198, 40, 40, 0.06); }
+.ai-segment-item.band-suspected { border-color: rgba(245, 124, 0, 0.35); background: rgba(245, 124, 0, 0.06); }
+.ai-segment-head {
+  display: flex;
+  justify-content: space-between;
+  font-size: 12px;
+  font-weight: 700;
+  margin-bottom: 4px;
+}
+.ai-segment-text {
+  margin: 0;
+  font-size: 12px;
+  color: var(--text-2);
+  line-height: 1.5;
 }
 .ai-signal-list {
   list-style: none;

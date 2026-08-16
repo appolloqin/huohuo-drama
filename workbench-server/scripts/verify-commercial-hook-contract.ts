@@ -4,11 +4,16 @@
  */
 import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
-import { NOVEL_OUTLINE_STRUCTURE_HINT, NOVEL_DEFAULT_PROMPTS } from '../src/agents/novel-defaults.js'
+import { NOVEL_OUTLINE_STRUCTURE_HINT, NOVEL_DEFAULT_PROMPTS, isMundaneNonCultivationGenre, isCultivationPowerGenre, detectOutlineCultivationBleed, buildOutlineWorldHardRequirement } from '../src/agents/novel-defaults.js'
 import { WEBNOVEL_CHAPTER_PROSE_GUIDE } from '../src/agents/webnovel-prose-style.js'
+import {
+  buildAppealSingleCodeFixBlock,
+  EMOTION_CORE_CONTRACT_VERSION,
+} from '../src/services/novel/novel-emotion-core-contract.js'
 import {
   buildChapterOutlineDramaPromptBlock,
   OUTLINE_DRAMA_PRIORITY_LINE,
+  assertOutlineChapterFields,
 } from '../src/services/novel/novel-outline-drama-fields.js'
 import {
   buildBeatOpeningRule,
@@ -22,6 +27,11 @@ import {
   detectAppealWakeInventoryOpening,
   detectAppealOpeningPressureWindow,
   detectAppealOpeningSellPoint,
+  detectAppealHateThinDecompress,
+  detectStakesMismatchText,
+  extractCommonSenseAnchorAmount,
+  extractActiveDemandAmounts,
+  evaluateStakesCommonSense,
   listOpeningAppealHardFails,
 } from '../src/services/novel/novel-commercial-appeal-audit.js'
 
@@ -45,8 +55,142 @@ mustInclude('HINT', NOVEL_OUTLINE_STRUCTURE_HINT, [
   '开篇对峙拍',
   '卖点首屏',
   '同辈字辈一致',
+  '时代背景',
+  '禁止',
+  '筑基',
+  '2026-08-16-v3-ssot',
+  '动作震慑',
+])
+mustInclude('prose', WEBNOVEL_CHAPTER_PROSE_GUIDE, [
+  EMOTION_CORE_CONTRACT_VERSION,
+  '动作震慑',
+  '本事露尖',
+  '拢共天数',
 ])
 mustInclude('outline agent', NOVEL_DEFAULT_PROMPTS.novel_outline.instructions, ['吸引力', '冲突切口', '人物定名', '字辈'])
+{
+  const block = buildAppealSingleCodeFixBlock({
+    hardFails: [
+      { code: 'hate_thin_decompress', message: 'a' },
+      { code: 'stakes_mismatch', message: 'b' },
+    ],
+  })
+  if (!block.includes('本轮只修最高优先级一码') || !block.includes(EMOTION_CORE_CONTRACT_VERSION)) {
+    throw new Error('craft single-code fix block must include SSOT version')
+  }
+  if (block.includes('本轮硬拦【stakes_mismatch】')) {
+    throw new Error('single-code fix must not hard-list second code as 本轮硬拦')
+  }
+}
+if (!isMundaneNonCultivationGenre('年代重生') || isCultivationPowerGenre('年代重生')) {
+  throw new Error('年代重生 must be mundane non-cultivation')
+}
+if (!isCultivationPowerGenre('都市修真') || isMundaneNonCultivationGenre('都市修真')) {
+  throw new Error('都市修真 must be cultivation power genre')
+}
+if (!isCultivationPowerGenre('种田修真') || isMundaneNonCultivationGenre('种田修真')) {
+  throw new Error('种田修真 must be cultivation power genre')
+}
+if (isMundaneNonCultivationGenre('种田') || isCultivationPowerGenre('种田')) {
+  throw new Error('bare 种田 must be ambiguous (neither hard A nor hard B)')
+}
+if (detectOutlineCultivationBleed('【世界观设定】\n修炼体系：淬体-凝气-筑基\n', '种田')) {
+  throw new Error('bare 种田 must not hard-fail cultivation bleed (may be farming-xianxia)')
+}
+if (!detectOutlineCultivationBleed('【世界观设定】\n修炼体系：淬体-凝气-筑基\n', '年代文')) {
+  throw new Error('年代文 outline with 筑基 must fail bleed detect')
+}
+if (detectOutlineCultivationBleed('【世界观设定】\n时代背景：1976\n地域：西北\n组织/规则：大队\n', '年代文')) {
+  throw new Error('clean 年代文 outline must pass bleed detect')
+}
+if (!buildOutlineWorldHardRequirement('年代文').includes('禁止') || buildOutlineWorldHardRequirement('年代文').includes('完整境界链')) {
+  throw new Error('年代文 hard req must ban cultivation chain')
+}
+if (!buildOutlineWorldHardRequirement('玄幻').includes('修炼体系')) {
+  throw new Error('玄幻 hard req must require cultivation')
+}
+if (!buildOutlineWorldHardRequirement('种田修真').includes('修炼体系') || !buildOutlineWorldHardRequirement('种田修真').includes('种田修真')) {
+  throw new Error('种田修真 hard req must require cultivation chain')
+}
+if (!buildOutlineWorldHardRequirement('种田').includes('种田修真')) {
+  throw new Error('bare 种田 hard req must mention 种田修真 → A branch')
+}
+
+{
+  const badStake = '欠他的三块钱今天必须还，不还就把西偏房的门板卸走抵账。三日内拿不出三块钱，门板卸走，透风冻死人。'
+  if (!detectStakesMismatchText(badStake)) {
+    throw new Error('三块主催（默认锚2→须≥40）must detect stakes mismatch')
+  }
+  const okStake =
+    '【常识锚】壮劳力月余约2块。要清一百二十块今天必须还，不还就把西偏房收走。'
+  if (detectStakesMismatchText(okStake)) {
+    throw new Error('锚2×20=40、主催120 must pass stakes check')
+  }
+  const bypassStake =
+    '欠他的三块钱今天必须还，不还就把西偏房的门板卸走抵账。另有一百二十块总账秋后算。'
+  if (!detectStakesMismatchText(bypassStake)) {
+    throw new Error('三块主催+一百二十旁衬 must still stakes-mismatch')
+  }
+  // 回归：勿把「常识锚×16」当锚；勿把「三十二」拆成「十二」
+  const messy =
+    '壮劳力月余约2块算，三十二块七毛四顶得了一年半，是常识锚×16。天亮前把欠队里的三十二块七毛四交清。'
+  if (extractCommonSenseAnchorAmount(messy) !== 2) {
+    throw new Error(`anchor must be 2 from 月余约2块, got ${extractCommonSenseAnchorAmount(messy)}`)
+  }
+  const dem = extractActiveDemandAmounts(messy)
+  if (!dem.includes(32) || dem.includes(12) || dem.includes(16)) {
+    throw new Error(`demand must include 32 not 12/16, got ${JSON.stringify(dem)}`)
+  }
+  const ev = evaluateStakesCommonSense(messy)
+  if (ev.ok || ev.anchor !== 2 || !ev.demands.includes(32)) {
+    throw new Error(`messy eval should fail with anchor2 demand32, got ${JSON.stringify(ev)}`)
+  }
+  const ch1 = [
+    '第1章：穿来就是债',
+    '【本章时间】1976年',
+    '【本章地点】西偏房',
+    '【本章人物】秦建国、秦卫东',
+    '【本章起因】秦卫东拍门要三块钱，不还卸门板',
+    '【欲望】弄清烂账',
+    '【阻碍】欠三块',
+    '【局面变化】认账三日还清保住门板',
+    '【人物选择】先认账',
+    '【冲突层】人际',
+    '【情绪手法】对峙',
+    '【章末问题】三块从哪来',
+    '【信息增量】账目曝光',
+    '【主题回响】认清刀口',
+    '【恨】秦卫东要三块钱+卸门板',
+    '【爽】秦建国动作震慑并露尖修机本事',
+    '【急】三天期限，拿不出三块钱门板卸走透风冻死',
+    '【盼】缺一环：翻出旧铜套',
+    '【爽型】当众对赌',
+  ].join('\n')
+  const badCh = assertOutlineChapterFields(ch1, 1)
+  if (badCh.ok || !badCh.invalid.some((i) => i.includes('赌注错位'))) {
+    throw new Error('outline ch1 with 三块+卸门 must invalid stakes')
+  }
+}
+
+{
+  const thin = [
+    '“开门！秦建国你个懒骨头，太阳照屁股了还装死呢！”门板被踹得砰砰响，糊窗的报纸簌簌掉渣。',
+    '秦建国一下睁了眼。头顶是发黑的房梁，北风从墙缝里钻进来，刀子似的刮脸。',
+  ].join('')
+  if (!detectAppealHateThinDecompress(thin, 1)) {
+    throw new Error('thin kick+wake dump must fail hate_thin_decompress')
+  }
+  if (!listOpeningAppealHardFails(thin, 1).some((f) => f.code === 'hate_thin_decompress')) {
+    throw new Error('hate_thin_decompress must be hard fail')
+  }
+  const thick = [
+    '“开门！秦建国，欠队里一百二十块工分债不还，今天就把后罩房收走，你们全家滚出去！”门板被踹得砰砰响。',
+    '秦德东闯进来，字据往炕上一甩。',
+  ].join('')
+  if (detectAppealHateThinDecompress(thick, 1)) {
+    throw new Error('stake-first opening must not fail hate_thin_decompress')
+  }
+}
 
 const outlineSkill = readFileSync(
   join(process.cwd(), '../agent-skills/novel_outline/SKILL.md'),
@@ -61,8 +205,8 @@ mustInclude('hooks skill', hooksSkill, ['本章人物', '无名称谓', '施压'
 
 // Task2: prose + drama
 mustInclude('PROSE_GUIDE', WEBNOVEL_CHAPTER_PROSE_GUIDE, [
-  '短平快', '对白或冲突', '章尾挖坑', '盘点', '开篇禁醒炕', '开篇压力窗口', '卖点首屏',
-  '开篇反制', '能力卖点', '禁重复盘点', '禁说明书节奏', '字辈沿用',
+  '短平快', '对白或冲突', '章尾挖坑', '开篇', '卖点首屏',
+  '开篇反制', '能力卖点', '禁说明书节奏', '字辈沿用', EMOTION_CORE_CONTRACT_VERSION,
 ])
 const drama = buildChapterOutlineDramaPromptBlock({
   chapterNumber: 1,
@@ -81,10 +225,10 @@ const drama = buildChapterOutlineDramaPromptBlock({
   themeEcho: '尊严',
 })
 mustInclude('drama block', drama, ['冲突可见', '未决事件', '卖点'])
-mustInclude('priority', OUTLINE_DRAMA_PRIORITY_LINE, ['开篇压力', '卖点首屏', '章末未决'])
+mustInclude('priority', OUTLINE_DRAMA_PRIORITY_LINE, ['恨→爽→急→盼', '开篇压力', '章末未决', '第三版三刀', EMOTION_CORE_CONTRACT_VERSION])
 
 // Task3: beat rules
-mustInclude('open ch1', buildBeatOpeningRule({ chapterNumber: 1 }), ['压力方', '卖点', '冻醒', '翻身手段', '重复盘点'])
+mustInclude('open ch1', buildBeatOpeningRule({ chapterNumber: 1 }), ['压力方', '卖点', '冻醒', '恨', '冲突前置'])
 mustInclude('open ch2', buildBeatOpeningRule({ chapterNumber: 2 }), ['承接', '爆发', '冲突'])
 mustInclude('end', buildBeatEndingRule({ hasNextHead: false }), ['章末问题', '未决', '感慨'])
 

@@ -19,6 +19,16 @@ export type HumanizeDetectionHint = {
     match_text?: string
     count?: number
   }>
+  /** 高危分段（朱雀式 band） */
+  segments?: Array<{
+    index: number
+    band: string
+    aigc: number
+    text?: string
+    char_start?: number
+    char_end?: number
+  }>
+  high_band_count?: number
 }
 
 function formatDetectionHints(hints?: HumanizeDetectionHint | null): string {
@@ -26,6 +36,7 @@ function formatDetectionHints(hints?: HumanizeDetectionHint | null): string {
   const lines: string[] = []
   if (hints.probability != null) lines.push(`AI 生成概率约 ${hints.probability}%`)
   if (hints.verdict) lines.push(`判定：${hints.verdict}`)
+  if (hints.high_band_count != null) lines.push(`高危段数：${hints.high_band_count}`)
   if (hints.signals?.length) {
     const top = hints.signals
       .slice()
@@ -33,6 +44,14 @@ function formatDetectionHints(hints?: HumanizeDetectionHint | null): string {
       .slice(0, 6)
       .map(s => `${s.key} ${Math.round(s.score * 100)}%`)
     lines.push(`高发维度：${top.join('、')}`)
+  }
+  const hotSegs = (hints.segments || []).filter(s => s.band === 'suspected' || s.band === 'ai')
+  if (hotSegs.length) {
+    lines.push('高危段落（优先改节奏/句式，禁止同义词堆砌）：')
+    for (const s of hotSegs.slice(0, 8)) {
+      const snip = (s.text || '').replace(/\s+/g, ' ').slice(0, 100)
+      lines.push(`- [#${s.index + 1} ${s.band} ${Math.round(s.aigc * 100)}%] ${snip}`)
+    }
   }
   if (hints.suggestions?.length) {
     lines.push('修改建议（句级精修优先）：')
@@ -181,17 +200,29 @@ export function buildExcerptFirstHumanizeUser(
     perplexity: hints?.perplexity,
     target: opts?.target ?? 39,
   })
+  // 高危段摘录优先插入须改列表
+  const hotSegItems = (hints?.segments || [])
+    .filter(s => (s.band === 'suspected' || s.band === 'ai') && (s.text || '').trim())
+    .slice(0, 6)
+    .map(s => ({
+      signal_key: `segment_${s.band}`,
+      text: (s.text || '').replace(/\s+/g, ' ').slice(0, 120),
+    }))
+  const mergedItems = [
+    ...hotSegItems,
+    ...items.filter(it => !hotSegItems.some(h => h.text && it.text.includes(h.text.slice(0, 40)))),
+  ].slice(0, 12)
   const title = opts?.title || '【专项·检测定点精修】'
   const pplHeavy = (hints?.signals?.find(s => s.key === 'perplexity')?.score ?? 0) >= 0.55
     || (hints?.probability ?? 0) >= 70
     || (hints?.perplexity != null && hints.perplexity > 0 && hints.perplexity < 3)
-  const listLines = items.length
-    ? items.map((it, i) => `${i + 1}. [${it.signal_key}] ${it.text}`)
+  const listLines = mergedItems.length
+    ? mergedItems.map((it, i) => `${i + 1}. [${it.signal_key}] ${it.text}`)
     : ['（无摘录：仅按统计指纹轻触，其余不动）']
 
-  const scopeRules = wideWindow || pplHeavy
+  const scopeRules = wideWindow || pplHeavy || hotSegItems.length > 0
     ? [
-      '1. 开篇约前 500 字必须重写句式与用词（可保留专名与事实）；另改下列摘录所在整段（非整章）',
+      '1. 优先改「高危段落」与下列摘录所在整段：打乱句长/段长节奏、拆模板过渡；禁止同义词堆砌当主手段',
       '2. 目标：提高对检测模型的不可预测性（换搭配、拆过顺长句、段长参差）；勿只改半句敷衍',
       '3. 未点名段落尽量保留；保专名、情节、数字；禁止堆语气词、另造情节',
       '4. 只输出完整正文',
@@ -205,9 +236,10 @@ export function buildExcerptFirstHumanizeUser(
 
   return [
     title,
-    '说明：只改检测已定位的片段邻域，降低对本次检测模型的续写可预测性；不做文学开篇课，不点名具体范文切口。',
+    '说明：只改检测已定位的片段邻域，降低对本次检测模型的续写可预测性；改节奏/结构，不做同义词硬换。',
     usedFallback ? '说明：无定位建议，仅扰动文首/文中样本窗。' : '',
     wideWindow ? '说明：当前困惑度极低（样本窗已加宽），须实质改写开篇与命中段，禁止微调敷衍。' : '',
+    hotSegItems.length ? '说明：已标注高危段，须优先改这些段的句段节奏。' : '',
     pplHeavy
       ? '说明：本次主因是困惑度偏低——须刻意换非常用搭配、打乱过顺句式，使检测模型更难猜下一句；仍保持网文可读，勿诗化、勿改情节。'
       : '',

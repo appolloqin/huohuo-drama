@@ -17,8 +17,13 @@ import {
   outlineBeatCoveredIn,
   outlineCatalystCoveredIn,
 } from './novel-outline-beat-cover.js'
+import {
+  extractOutlineEmotionBeatTexts,
+  outlineHasExplicitEmotionBeats,
+} from './novel-outline-drama-fields.js'
 
 const KEEP_DRAMA_TAGS = new Set(['本章起因', '阻碍', '局面变化', '人物选择'])
+const KEEP_EMOTION_TAGS = ['恨', '爽', '急', '盼'] as const
 
 /** 删毒砍掉大半长稿时作废（交大纲修写，禁止留下 60 字碎片却标通过） */
 const CATASTROPHIC_STRIP_RATIO = 0.65
@@ -115,6 +120,29 @@ export function resolvePoisonStripKeepBeats(chapterOutline: string): {
   const items = extractOutlineBeatItems(outline, 16)
   const tagged = items.filter((i): i is OutlineBeatItem & { tag: string } => !!i.tag)
 
+  // 显式恨爽急盼：保留四拍，硬止【盼】——禁止用局面变化截掉急/盼
+  if (outlineHasExplicitEmotionBeats(outline)) {
+    const emo = extractOutlineEmotionBeatTexts(outline)
+    const keepItems: KeepBeat[] = KEEP_EMOTION_TAGS
+      .map((tag, index) => {
+        const beat = tag === '恨' ? emo.hate
+          : tag === '爽' ? emo.shuang
+            : tag === '急' ? emo.ji
+              : emo.pan
+        return { beat, tag, index }
+      })
+      .filter(b => charLen(b.beat) >= 4)
+    const actionBeat = boundary.actionBeat || emo.pan || emo.ji || ''
+    if (actionBeat && !keepItems.some(b => b.beat === actionBeat)) {
+      keepItems.push({ beat: actionBeat, tag: '盼', index: keepItems.length })
+    }
+    return {
+      keepBeats: keepItems.map(b => b.beat),
+      keepItems: keepItems.map((b, index) => ({ ...b, index })),
+      actionBeat,
+    }
+  }
+
   let keepItems: KeepBeat[]
   if (tagged.length >= 2) {
     keepItems = tagged
@@ -180,6 +208,21 @@ export function stripOutlinePoisonProse(args: {
       text: content,
       changed: false,
       keepCount: 0,
+      discardCount: 0,
+      removedChars: 0,
+      keepBeats,
+      actionBeat,
+    }
+  }
+
+  // 恨爽急盼成稿：急/盼在【局面变化】/爽场本事词之后是合法正文；
+  // 「首次覆盖末拍再砍尾」会把盼段误杀（盼文案常与爽场修机等共词）。真越界由下章泄漏等规则把关。
+  if (outlineHasExplicitEmotionBeats(outline)) {
+    const keepCount = content.split(/[。！？\n]+/).filter(s => charLen(s.trim()) >= 6).length
+    return {
+      text: content,
+      changed: false,
+      keepCount,
       discardCount: 0,
       removedChars: 0,
       keepBeats,

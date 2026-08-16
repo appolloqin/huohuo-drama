@@ -1024,6 +1024,20 @@ async function chatCompletionTextOnce(
   const url = `${base}/chat/completions`
   const maxTokens = resolveRequestMaxTokens(cfg, options)
   const requestBody = buildChatCompletionRequestBody(cfg, messages, { ...options, maxTokens })
+  // 每次请求打印提示词（可用 NOVEL_LOG_PROMPTS=0 关闭）
+  if (process.env.NOVEL_LOG_PROMPTS !== '0') {
+    const model = options.model || cfg.model
+    const reason = options.billing?.reason || ''
+    console.log(
+      `[AI] chat-completion-prompt | model=${model} reason=${reason} maxTokens=${maxTokens} messages=${messages.length}`,
+    )
+    for (const m of messages) {
+      const raw = typeof m.content === 'string' ? m.content : JSON.stringify(m.content ?? '')
+      const max = m.role === 'system' ? 8000 : 16000
+      const body = raw.length > max ? `${raw.slice(0, max)}\n…[truncated ${raw.length - max} chars]` : raw
+      console.log(`---------- ${m.role} (${raw.length} chars) ----------\n${body}\n`)
+    }
+  }
   const res = await fetchWithRetry(url, {
     method: 'POST',
     headers: {

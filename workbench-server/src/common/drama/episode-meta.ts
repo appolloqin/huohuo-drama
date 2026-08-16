@@ -55,6 +55,26 @@ export type EpisodeAiDetection = {
   ai_detect_warning?: string
   writing_model?: string
   perplexity_model?: string
+  /** 朱雀式分段摘要（落库瘦身，通常无 text） */
+  segments?: Array<{
+    index: number
+    char_start: number
+    char_end: number
+    aigc: number
+    band: 'human' | 'suspected' | 'ai'
+    probability: number
+    perplexity?: number
+  }>
+  high_band_count?: number
+  sampling?: {
+    windows: Array<{
+      label: string
+      char_start: number
+      char_end: number
+      perplexity?: number
+      probability?: number
+    }>
+  }
 }
 
 export type ProductionPipeline = 'ai_video' | 'frame_slideshow'
@@ -252,6 +272,45 @@ function parseAiDetection(ai: unknown): EpisodeAiDetection | undefined {
       : undefined,
     humanize_warning: typeof src.humanize_warning === 'string' && src.humanize_warning.trim()
       ? src.humanize_warning.trim()
+      : undefined,
+    same_family_detect: typeof src.same_family_detect === 'boolean' ? src.same_family_detect : undefined,
+    ai_detect_warning: typeof src.ai_detect_warning === 'string' && src.ai_detect_warning.trim()
+      ? src.ai_detect_warning.trim()
+      : undefined,
+    writing_model: typeof src.writing_model === 'string' ? src.writing_model : undefined,
+    perplexity_model: typeof src.perplexity_model === 'string' ? src.perplexity_model : undefined,
+    high_band_count: Number.isFinite(Number(src.high_band_count))
+      ? Math.max(0, Math.round(Number(src.high_band_count)))
+      : undefined,
+    segments: Array.isArray(src.segments)
+      ? src.segments
+        .filter((s: unknown) => s && typeof s === 'object')
+        .map((s: Record<string, unknown>) => {
+          const band = s.band === 'human' || s.band === 'suspected' || s.band === 'ai' ? s.band : 'suspected'
+          return {
+            index: Number.isFinite(Number(s.index)) ? Number(s.index) : 0,
+            char_start: Number.isFinite(Number(s.char_start)) ? Number(s.char_start) : 0,
+            char_end: Number.isFinite(Number(s.char_end)) ? Number(s.char_end) : 0,
+            aigc: Math.min(1, Math.max(0, Number(s.aigc) || 0)),
+            band,
+            probability: Math.min(100, Math.max(0, Number(s.probability) || Math.round((Number(s.aigc) || 0) * 100))),
+            perplexity: Number.isFinite(Number(s.perplexity)) ? Number(s.perplexity) : undefined,
+          }
+        })
+        .slice(0, 40)
+      : undefined,
+    sampling: src.sampling && typeof src.sampling === 'object' && Array.isArray((src.sampling as { windows?: unknown }).windows)
+      ? {
+          windows: ((src.sampling as { windows: unknown[] }).windows)
+            .filter((w) => w && typeof w === 'object')
+            .map((w: Record<string, unknown>) => ({
+              label: typeof w.label === 'string' ? w.label : 'head',
+              char_start: Number.isFinite(Number(w.char_start)) ? Number(w.char_start) : 0,
+              char_end: Number.isFinite(Number(w.char_end)) ? Number(w.char_end) : 0,
+              perplexity: Number.isFinite(Number(w.perplexity)) ? Number(w.perplexity) : undefined,
+              probability: Number.isFinite(Number(w.probability)) ? Number(w.probability) : undefined,
+            })),
+        }
       : undefined,
   }
 }

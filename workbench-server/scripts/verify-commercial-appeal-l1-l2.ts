@@ -57,9 +57,17 @@ if (flatFails.length < 1) {
 }
 const flatCodes = new Set(flatFails.map((f) => f.code))
 if (![...flatCodes].some((c) =>
-  c === 'opening_soft_collapse' || c === 'capability_sell_late' || c === 'repeat_inventory'
+  c === 'opening_soft_collapse'
+  || c === 'wake_inventory_opening' || c === 'opening_pressure_window' || c === 'opening_sell_point'
 )) {
-  throw new Error(`flat sample should hit extended L1, got ${[...flatCodes].join(',')}`)
+  throw new Error(`flat sample should hit structural L1, got ${[...flatCodes].join(',')}`)
+}
+if ([...flatCodes].some((c) =>
+  c === 'hate_late' || c === 'shuang_gap' || c === 'ji_pan_gap'
+  || c === 'capability_sell_late' || c === 'emotion_beats_missing' || c === 'emotion_beats_order'
+  || c === 'repeat_inventory'
+)) {
+  throw new Error(`semantic/repeat soft codes must not hard-fail, got ${[...flatCodes].join(',')}`)
 }
 
 const tightFails = listOpeningAppealHardFails(tightSample, 1)
@@ -71,9 +79,7 @@ if (detectAppealCapabilitySellLate(tightSample, 1)) throw new Error('tight capab
 if (detectAppealRepeatInventory(tightSample, 1)) throw new Error('tight repeat')
 
 const ch9 = listOpeningAppealHardFails(flatSample, 9)
-if (ch9.some((f) =>
-  f.code === 'opening_soft_collapse' || f.code === 'capability_sell_late' || f.code === 'repeat_inventory'
-)) {
+if (ch9.some((f) => f.code === 'opening_soft_collapse')) {
   throw new Error('chapter 9 must not run extended L1')
 }
 
@@ -160,8 +166,9 @@ if (!WEBNOVEL_CHAPTER_PROSE_GUIDE.includes('开篇反制')) {
 if (!WEBNOVEL_CHAPTER_PROSE_GUIDE.includes('能力卖点')) {
   throw new Error('prose guide missing 能力卖点')
 }
-if (!buildBeatOpeningRule({ chapterNumber: 1 }).includes('翻身手段')) {
-  throw new Error('beat opening missing 翻身手段')
+const openCh1 = buildBeatOpeningRule({ chapterNumber: 1 })
+if (!openCh1.includes('恨') || !openCh1.includes('压力方')) {
+  throw new Error('beat opening missing 恨场/压力方')
 }
 
 console.log('verify-commercial-appeal-l1-l2 OK', {

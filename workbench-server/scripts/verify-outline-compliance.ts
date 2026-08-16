@@ -287,6 +287,34 @@ if (rZheme.reasons.some(r => r.code === 'named_as_generic')) {
 if (weak.length >= 2500) throw new Error('weak draft should stay short')
 if (buildChapter1WorldIntroBlock({}) !== '') throw new Error('empty world should return empty block')
 
+{
+  const ruralWorld = `${NOVEL_OUTLINE_WORLD_SECTION}\n时代：1976年西北农村\n地域：红旗公社\n组织：生产大队、供销社\n`
+  const ruralBlock = buildChapter1WorldIntroBlock({ outline: ruralWorld, genre: '年代文' })
+  if (!ruralBlock.includes('禁止') || !/淬体|筑基/.test(ruralBlock)) {
+    throw new Error('rural world inject must forbid xianxia realm bleed')
+  }
+  if (/完整境界链/.test(ruralBlock)) {
+    throw new Error('rural world must not require cultivation realm chain dump')
+  }
+  // 旧大纲误塞淬体词 + 年代题材：仍禁止当修真链展开
+  const bleedWorld = `${NOVEL_OUTLINE_WORLD_SECTION}\n修炼体系：淬体-凝气-筑基\n地域：红旗公社红旗大队\n组织：工分、供销社\n`
+  const bleedBlock = buildChapter1WorldIntroBlock({ outline: bleedWorld, genre: '年代文' })
+  if (/完整境界链/.test(bleedBlock) || !bleedBlock.includes('禁止')) {
+    throw new Error('rural+bleed realm words must not force realm-chain dump')
+  }
+  // 种田修真：即便有公社场景，也须展开修炼体系
+  const farmXianxia = `${NOVEL_OUTLINE_WORLD_SECTION}\n修炼体系：淬体-凝气-筑基\n大陆/地域：青石村、灵气矿脉\n门派/势力：青云宗、村中散修\n`
+  const farmBlock = buildChapter1WorldIntroBlock({ outline: farmXianxia, genre: '种田修真' })
+  if (!/完整境界链/.test(farmBlock) || !farmBlock.includes('淬体')) {
+    throw new Error('种田修真 must expand cultivation realm chain')
+  }
+  const xianxiaWorld = `${NOVEL_OUTLINE_WORLD_SECTION}\n修炼体系：淬体-凝气-筑基\n大陆/地域：东荒\n门派/势力：青云宗、赤焰门\n`
+  const xBlock = buildChapter1WorldIntroBlock({ outline: xianxiaWorld, genre: '玄幻' })
+  if (!xBlock.includes('修炼体系') || !xBlock.includes('淬体') || !/完整境界链/.test(xBlock)) {
+    throw new Error('xianxia world must still expand cultivation')
+  }
+}
+
 const hardPriority = buildOutlineBeatHardBlock({
   chapterOutline: paraOutline,
   writingBrief: '说明目标可以写得比大纲更大，但不得越界。',

@@ -16,6 +16,7 @@ import {
 import { detectBriefPendingStateOvershoot } from './novel-brief-compliance.js'
 import { filterDraftByChapterOutline } from './novel-draft-outline-filter.js'
 import { filterSubstantiveOutlineBeats, outlineBeatCoveredIn, beatAnchorTokens, outlineCatalystCoveredIn } from './novel-outline-beat-cover.js'
+import { outlineHasExplicitEmotionBeats } from './novel-outline-drama-fields.js'
 
 export { outlineBeatCoveredIn, filterSubstantiveOutlineBeats, outlineCatalystCoveredIn } from './novel-outline-beat-cover.js'
 
@@ -591,6 +592,9 @@ function detectOutlineEndpointOvershoot(args: {
   content: string
   chapterOutline: string
 }): OutlineComplianceReason | null {
+  // 恨爽急盼章：局面变化后的急/盼是合法正文；「戏剧末拍越界」启发式会误杀，改由下章泄漏/悬念揭晓把关
+  if (outlineHasExplicitEmotionBeats(args.chapterOutline)) return null
+
   const boundary = extractOutlineBoundaryLastBeat(args.chapterOutline)
   const allBeats = substantiveBeats(extractOutlineBeatPhrases(args.chapterOutline))
   // 硬止点用行动拍；勿用悬念问句/信息注记当「须写完」的末拍

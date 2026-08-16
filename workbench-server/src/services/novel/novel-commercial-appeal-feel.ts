@@ -20,10 +20,11 @@ export type AppealFeelResult = {
 type GateEntry = { level: string; note?: string; excerpt?: string }
 
 const FEEL_SYSTEM = `你是男频网文「商业吸引力」短审。只判断读感是否平淡，不评文风炫技，不评连贯性吃书。
+合同版本 2026-08-16-v3-ssot（题材无关）：恨冲突前置；爽=动作震慑+本事露尖；急=拢共天数；盼=短缺一环。
 只输出 JSON：
 {"flat":true|false,"mid_cooling":true|false,"missing_payoff":"短句","fix_directive":"一句可执行修写指令"}
-flat=true 仅当：开篇/中段明显降温、重复盘点、爽点过晚、像催债流水账。
-flat=false 若冲突推进快、主角有反制、能力/对赌较早落地。
+flat=true 仅当：缺恨→爽→急→盼任一拍、顺序乱、中段降温、爽无动作震慑/无本事露尖、本事拖到盼才首亮、急无天数感、盼扩成翻找半章、高潮后温情泄压、流水账说明书。
+flat=false 若四拍清晰符合上述合同；章末停未决钩。
 禁止长评、禁止 markdown。`
 
 function trunc(s: string, max: number) {

@@ -105,6 +105,7 @@ export async function runChapterCraftPipelineHook(args: {
       meta,
       writingBrief: brief,
       chapterOutline,
+      priorChapterContent: prevChapterTail,
       billing: billing ? { ...billing, reason: `小说章节质量审校${suffix}` } : undefined,
     })
     await saveChapterCraft(episodeId, craft)
@@ -138,7 +139,26 @@ export async function runChapterCraftPipelineHook(args: {
   if (isChapterCraftStrictEnabled(meta) && !craft.passed) {
     while (!craft.passed) {
       if (rewriteMax > 0 && rewriteAttempts >= rewriteMax) {
-        // 停损：带未通过质量结果交付正文，不空白硬停（合规一票否决仍上抛）
+        // 第1～8章吸引力硬失败：禁止「未过审仍落库」；上抛让前端/批量可见原因
+        const appealBlocked = chapterNumber >= 1 && chapterNumber <= 8 && (
+          craft.drama_gates?.opening_promise?.level === '无'
+          || craft.appeal?.passed === false
+        )
+        if (appealBlocked) {
+          const appealMsgs = (craft.appeal?.dimensions || [])
+            .filter((d) => !d.passed)
+            .map((d) => d.message)
+            .slice(0, 5)
+          throw new ContinuityRewriteAbortError({
+            chapterNumber,
+            rewriteAttempts,
+            score: craft.score,
+            conflicts: appealMsgs.length ? appealMsgs : craft.conflicts,
+            summary: craft.summary || '吸引力硬闸未过',
+            reason: 'craft_fail',
+          })
+        }
+        // 其他质量项：停损交付（合规一票否决仍上抛）
         break
       }
       if (blockRegen) {
@@ -304,6 +324,24 @@ export async function runChapterCraftContinueHook(args: {
   if (isChapterCraftStrictEnabled(meta) && !craft.passed) {
     while (!craft.passed) {
       if (rewriteMax > 0 && rewriteAttempts >= rewriteMax) {
+        const appealBlocked = chapterNumber >= 1 && chapterNumber <= 8 && (
+          craft.drama_gates?.opening_promise?.level === '无'
+          || craft.appeal?.passed === false
+        )
+        if (appealBlocked) {
+          const appealMsgs = (craft.appeal?.dimensions || [])
+            .filter((d) => !d.passed)
+            .map((d) => d.message)
+            .slice(0, 5)
+          throw new ContinuityRewriteAbortError({
+            chapterNumber,
+            rewriteAttempts,
+            score: craft.score,
+            conflicts: appealMsgs.length ? appealMsgs : craft.conflicts,
+            summary: craft.summary || '吸引力硬闸未过',
+            reason: 'craft_fail',
+          })
+        }
         break
       }
       rewriteAttempts += 1

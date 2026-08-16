@@ -21,7 +21,7 @@ import {
   WEBNOVEL_REWRITE_LAYOUT_RULE,
   WEBNOVEL_STAT_FINGERPRINT_GUIDE,
 } from '../../agents/webnovel-prose-style.js'
-import { NOVEL_OUTLINE_STRUCTURE_HINT, NOVEL_OUTLINE_VOLUME_SECTION, NOVEL_OUTLINE_WORLD_SECTION } from '../../agents/novel-defaults.js'
+import { NOVEL_OUTLINE_STRUCTURE_HINT, NOVEL_OUTLINE_VOLUME_SECTION, NOVEL_OUTLINE_WORLD_SECTION, buildOutlineWorldHardRequirement } from '../../agents/novel-defaults.js'
 import { buildNovelAgentSystem, novelAgentCompletionOptions } from './novel-agent-prompt.js'
 import { polishNovelChapterProse, chapterLengthTokenBudget } from './novel-prose-polish.js'
 import { normalizeNovelTemporalNumerals } from '../../common/novel/novel-temporal-numerals.js'
@@ -273,7 +273,7 @@ export async function generateNovelWritingBrief(args: {
     `【关键词】\n${keywords}`,
     chapterNumber >= 2
       ? '请输出含【一致性账本】的写作说明；**不得改写前序已锁定的人名与事件**，本章大纲仅作方向参考。'
-      : '请输出含【一致性账本】的写作说明；第1章须规划如何自然介绍修炼体系/境界、大陆/地域与门派势力（与【世界观设定】一致）。',
+      : '请输出含【一致性账本】的写作说明；第1章须按【世界观设定】落地：有修炼体系则自然介绍境界/地域/门派；现实/年代/都市/种田则只介绍时代、地域与组织规则，禁止淬体凝气筑基等修真词。',
     NO_THINKING_OUTPUT_RULE,
   ].filter(Boolean).join('\n\n')
 
@@ -377,7 +377,7 @@ async function generateOutlineSkeleton(
     genre ? `【题材】${genre}` : '',
     `【计划章数】${totalChapters}`,
     `【创意/梗概】\n${premise}`,
-    `【硬性要求】大纲开头必须是「${NOVEL_OUTLINE_WORLD_SECTION}」，且须含「修炼体系」「大陆/地域」「修真门派/势力」三项；修炼体系用「-」连接完整境界链。须含「${NOVEL_OUTLINE_VOLUME_SECTION}」，每卷写明卷名、章节范围与本卷大纲。`,
+    `【硬性要求】大纲开头必须是「${NOVEL_OUTLINE_WORLD_SECTION}」。${buildOutlineWorldHardRequirement(genre)}须含「${NOVEL_OUTLINE_VOLUME_SECTION}」，每卷写明卷名、章节范围与本卷大纲。`,
     NO_THINKING_OUTPUT_RULE,
   ].filter(Boolean).join('\n\n')
 
@@ -385,7 +385,7 @@ async function generateOutlineSkeleton(
     [{ role: 'system', content: system }, { role: 'user', content: user }],
     { ...options, billing },
   )
-  return assertValidNovelCreativeOutput(skeleton, 'outline_skeleton')
+  return assertValidNovelCreativeOutput(skeleton, 'outline_skeleton', undefined, { genre })
 }
 
 async function generateVolumeChapterSummaries(args: {
@@ -574,7 +574,7 @@ export async function generateNovelOutline(args: {
   }
 
   return ensureOutlineBookDramaFields({
-    outline: assertValidNovelCreativeOutput(outline, 'outline', undefined, { totalChapters }),
+    outline: assertValidNovelCreativeOutput(outline, 'outline', undefined, { totalChapters, genre }),
     title,
     premise,
     billing,
@@ -603,7 +603,7 @@ async function generateNovelOutlineSingleShot(
     genre ? `【题材】${genre}` : '',
     `【计划章数】${totalChapters}`,
     `【创意/梗概】\n${premise}`,
-    `【硬性要求】大纲开头必须是「${NOVEL_OUTLINE_WORLD_SECTION}」，且须含「修炼体系」「大陆/地域」「修真门派/势力」三项；修炼体系用「-」连接完整境界链。须含「${NOVEL_OUTLINE_VOLUME_SECTION}」，每卷写明卷名、章节范围与本卷大纲。分章概要必须写满第 ${totalChapters} 章，不得中途截断。新地点/道具须有出场来由；【冲突层】仅外部/人际/自我。`,
+    `【硬性要求】大纲开头必须是「${NOVEL_OUTLINE_WORLD_SECTION}」。${buildOutlineWorldHardRequirement(genre)}须含「${NOVEL_OUTLINE_VOLUME_SECTION}」，每卷写明卷名、章节范围与本卷大纲。分章概要必须写满第 ${totalChapters} 章，不得中途截断。新地点/道具须有出场来由；【冲突层】仅外部/人际/自我。`,
     NO_THINKING_OUTPUT_RULE,
   ].filter(Boolean).join('\n\n')
 
@@ -611,7 +611,7 @@ async function generateNovelOutlineSingleShot(
     [{ role: 'system', content: system }, { role: 'user', content: user }],
     { ...options, billing },
   )
-  return assertValidNovelCreativeOutput(outline, 'outline', undefined, { totalChapters })
+  return assertValidNovelCreativeOutput(outline, 'outline', undefined, { totalChapters, genre })
 }
 
 export async function buildContinueNovelMessages(args: {
@@ -899,6 +899,7 @@ export async function buildGenerateNovelChapterMessages(args: {
     userTarget: target,
     endpointPending: boundarySuspend,
     prevChapterTail: prevTail,
+    chapterNumber,
   })
   const beatLengthNote = beatBudgets.promptBlock || beatTarget.promptBlock
   const lengthBoundNote = outlineAlign.boundaryBlock
@@ -1249,6 +1250,7 @@ export async function generateNovelChapterFull(
       userTarget,
       endpointPending: outlineAlign.endpointPending,
       prevChapterTail: prevTailForBudget,
+      chapterNumber: args.chapterNumber,
     })
     if (shouldUseBeatSequentialGenerate({
       beatCount: beatBudgets.beatCount,

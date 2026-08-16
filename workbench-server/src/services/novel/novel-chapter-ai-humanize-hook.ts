@@ -17,6 +17,11 @@ import {
   detectAiTextStatisticalFallback,
   detectAiTextWithPerplexity,
 } from '../ai/ai-perplexity-detection.js'
+import {
+  compactSegmentsForStorage,
+  countHighBandSegments,
+  meanSegmentAigc,
+} from '../ai/ai-detect-segments.js'
 import { countNovelChars } from '../../common/novel/novel-char-limit.js'
 import { normalizeNovelTemporalNumerals } from '../../common/novel/novel-temporal-numerals.js'
 import { diversifyNovelProseTells } from '../../common/novel/novel-prose-diversify.js'
@@ -69,6 +74,15 @@ function toHint(detect: AiDetectionResult): HumanizeDetectionHint {
     verdict: detect.verdict,
     perplexity: detect.perplexity,
     signals: detect.signals,
+    high_band_count: detect.high_band_count,
+    segments: detect.segments?.map(s => ({
+      index: s.index,
+      band: s.band,
+      aigc: s.aigc,
+      text: s.text,
+      char_start: s.char_start,
+      char_end: s.char_end,
+    })),
     suggestions: detect.suggestions?.map(s => {
       const advice = s.kind === 'phrase_repetition' && s.match_text
         ? (s.match_text.includes('—')
@@ -128,6 +142,9 @@ function toEpisodeDetection(
     humanize_passed: extra.humanize_passed,
     humanize_target: extra.humanize_target,
     humanize_warning: warnParts.length ? warnParts.join('；') : undefined,
+    segments: compactSegmentsForStorage(detect.segments),
+    high_band_count: detect.high_band_count ?? countHighBandSegments(detect.segments),
+    sampling: detect.sampling,
   }
 }
 
@@ -193,15 +210,31 @@ export function shouldAcceptHumanizePass(
     /** 困惑度：数值越高越不像 AI */
     beforePerplexity?: number
     afterPerplexity?: number
+    beforeHighBand?: number
+    afterHighBand?: number
+    beforeMeanAigc?: number
+    afterMeanAigc?: number
   },
 ): boolean {
   if (afterProb < beforeProb) return true
+  if (
+    opts?.beforeHighBand != null
+    && opts?.afterHighBand != null
+    && opts.afterHighBand < opts.beforeHighBand
+  ) {
+    return true
+  }
+  if (
+    opts?.beforeMeanAigc != null
+    && opts?.afterMeanAigc != null
+    && opts.afterMeanAigc <= opts.beforeMeanAigc - 0.04
+  ) {
+    return true
+  }
   if (afterProb > beforeProb) {
-    // 概率升了仍可因 PPL 明显变好而采纳（极少见：统计维抖高、PPL 变好）
     if (isPerplexityImproved(opts?.beforePerplexity, opts?.afterPerplexity)) return true
     return false
   }
-  // 概率持平（含双双顶在 97%）：看最高维或原始 PPL
   if (isPerplexityImproved(opts?.beforePerplexity, opts?.afterPerplexity)) return true
   const beforeTop = opts?.beforeTopSignal
   const afterTop = opts?.afterTopSignal
@@ -327,6 +360,10 @@ export async function runNovelChapterAiHumanizeHook(args: {
           afterTopSignal: afterTop,
           beforePerplexity: detect.perplexity,
           afterPerplexity: afterDetect.perplexity,
+          beforeHighBand: detect.high_band_count ?? countHighBandSegments(detect.segments),
+          afterHighBand: afterDetect.high_band_count ?? countHighBandSegments(afterDetect.segments),
+          beforeMeanAigc: meanSegmentAigc(detect.segments),
+          afterMeanAigc: meanSegmentAigc(afterDetect.segments),
         })) {
           rejected += 1
           logTaskWarn('Novel', 'ai-humanize-pass-rejected', {

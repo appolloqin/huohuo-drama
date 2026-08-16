@@ -64,6 +64,12 @@ export const enMessages: ConsoleMessages = {
     humanizeCompare: 'Before {before}% (PPL {pplBefore}) → after {after}% (PPL {pplAfter})',
     humanizeCompareNoChange: 'AI score barely changed. Perplexity measures predictability to the same LLM family, not just naturalness. Try another pass or write with human-like rules from the start.',
     humanizePerplexityNote: 'Lower PPL means the configured text model can predict the next tokens easily — often flagged as AI. That is not the same as sounding human.',
+    zhuqueDisclaimer: 'Heuristic on-site check (multi-window PPL + segments). Not Tencent Zhuque official scores.',
+    segmentsTitle: 'High-risk segments',
+    windowsTitle: 'Sampling windows',
+    bandHuman: 'Human-like',
+    bandSuspected: 'Suspected AI',
+    bandAi: 'AI-like',
   },
   templates: {
     title: 'Template library',

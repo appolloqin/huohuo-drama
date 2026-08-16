@@ -161,6 +161,32 @@ export type NovelAiDetection = {
     count?: number
     bigram?: string
   }>
+  ai_detect_warning?: string
+  same_family_detect?: boolean
+  high_band_count?: number
+  segments?: Array<{
+    index: number
+    char_start: number
+    char_end: number
+    text?: string
+    aigc: number
+    band: 'human' | 'suspected' | 'ai'
+    probability: number
+    perplexity?: number
+  }>
+  sampling?: {
+    windows: Array<{
+      label: string
+      char_start: number
+      char_end: number
+      perplexity?: number
+      probability?: number
+    }>
+  }
+  humanize_attempts?: number
+  humanize_passed?: boolean
+  humanize_target?: number
+  humanize_warning?: string
 }
 
 export type ContinuityBlockingItem = {

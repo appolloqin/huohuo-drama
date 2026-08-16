@@ -1,5 +1,6 @@
 /**
- * P1：按大纲拍点顺序多次生成并拼接；每拍独立 token 预算，超长截到句号。
+ * P1：按拍顺序多次生成并拼接；第1～8章分拍节点绑定恨→爽→急→盼。
+ * 每拍独立 token 预算，超长截到句号。
  */
 import {
   WEBNOVEL_CHAPTER_PROSE_GUIDE,
@@ -30,6 +31,11 @@ import {
   truncateProseToCharBudget,
   type ChapterBeatBudgetItem,
 } from './novel-chapter-beat-budget.js'
+import {
+  buildEmotionBeatHardRule,
+  isEmotionBeatPhase,
+  shouldBindEmotionBeats,
+} from './novel-chapter-emotion-beats.js'
 import { loadPrevChapterEndSnapshot } from './novel-chapter-end-snapshot.js'
 import {
   buildChapterSeamWriteBlock,
@@ -173,13 +179,13 @@ export function buildBeatOpeningRule(args: {
     return `【已写正文（已冻结，禁止重写/删改/回放）】\n…${priorTail}`
   }
   return [
-    '【开篇硬性 — 冲突/对白切入】',
-    '优先压力方对白或对峙动作开场；环境最多一句锚。',
-    '约前300字内必须出现压力方（催债/夺产/点名等）对白或动作；约前500字内须亮出卖点冲突物（债额/夺产/骂名等）。',
-    '压力落地后约前200～400字内主角须反制（撕契/拒签/嘴炮）；约前800字内须亮翻身手段或对赌/识破；同章禁重复盘点家底/骂名/契纸。',
+    '【开篇硬性 — 冲突前置·对峙高潮】',
+    '首句即压力方对白或拍桌/踹门类动作；环境最多一句锚。',
+    '家底/困境只从对白与动作带出，禁止先苏醒盘点再冲突。',
+    '本拍若标【恨】：只演极限压迫（规则压迫+恶语可细）；金手指露尖与立约反杀留给【爽】拍，勿在恨拍提前翻盘。',
+    '约前300字内必须出现压力方对白或动作；约前500字内须亮出卖点冲突物。',
     '禁止开篇大段设定/家底盘点/元说明（如「没有系统」）。',
     '禁止开篇长段冻醒/感官苏醒/记忆灌入；穿越身份最多嵌一句。',
-    '短平快进入本章欲望与阻碍。',
   ].join('\n')
 }
 
@@ -189,7 +195,7 @@ export function buildBeatEndingRule(args: {
   seamRetryHint?: string
 }): string {
   const hookLine =
-    '【章尾挖坑】必须落到大纲【章末问题】所指未决事件；禁止「心里松了」「那是家」等纯感慨收束代替钩子。'
+    '【章尾挖坑】必须落到大纲【章末问题】所指未决事件；停在急/盼钩；章尾禁工序/缺件/温情泄压与「没准谱/心里没底/走着瞧」（看最后200字）；禁止「心里松了」「那是家」等纯感慨收束代替钩子。'
   if (args.hasNextHead) {
     return [
       '【末拍双目标】',
@@ -260,6 +266,10 @@ async function generateOneBeat(args: {
     ? buildFrozenPresencePhaseBlock(frozenProse)
     : ''
 
+  const emotionHard = isEmotionBeatPhase(item.phase)
+    ? buildEmotionBeatHardRule(item.phase)
+    : ''
+
   const beatUser = joinBlocks([
     args.sharedUserPrefix,
     openingRule,
@@ -269,11 +279,15 @@ async function generateOneBeat(args: {
     frozenNoReplay,
     frozenPresence,
     `【本拍任务 — 第 ${item.index}/${beatTotal} 拍 · ${item.phase}】\n${item.beat}`,
+    emotionHard,
     item.tag === '本章起因' || item.phase === '起因'
       ? '【本拍】写清该起因由【本章人物】完成；禁止续写上章末悬念正文。'
       : '',
+    item.phase === '恨' && args.chapterNumber >= 2
+      ? '【本拍】若有待落地【本章起因】，须在恨场压迫中由本章人物完成；禁止续写上章末悬念正文。'
+      : '',
     !isFirst
-      ? '【本拍】只推进尚未完成的新冲突；已完成态过程勿无交代完整再演（一句承接即可）。'
+      ? '【本拍】只推进本情绪职尚未完成的部分；已完成态过程勿无交代完整再演（一句承接即可）。'
       : '',
     `【本拍篇幅】须写约 ${item.minChars}～${item.maxChars} 字（目标 ${item.targetChars}）；写完本拍即停。`,
     lastBeatRule,
@@ -445,6 +459,7 @@ export async function generateNovelChapterByBeats(
     userTarget,
     endpointPending: outlineAlign.endpointPending,
     prevChapterTail: prevTail,
+    chapterNumber,
   })
   const items = beatBudgets.items
   if (!shouldUseBeatSequentialGenerate({
@@ -453,6 +468,7 @@ export async function generateNovelChapterByBeats(
   })) {
     throw new Error('generateNovelChapterByBeats: beat sequential not eligible')
   }
+  const emotionBound = shouldBindEmotionBeats(chapterNumber)
 
   const minLen = outlineAlign.endpointPending
     ? Math.round(userTarget * 0.82)
@@ -493,7 +509,9 @@ export async function generateNovelChapterByBeats(
     '',
     '【情节优先序】本章大纲（含【本章起因】）> 上章已发生事实 > 写作说明。写作说明不得另起出门/进山等与大纲或上章事实冲突的起势。',
     '',
-    '当前任务：**按拍点分段写作**——每次只写用户指定的「本拍」；已写正文已冻结。',
+    emotionBound
+      ? '当前任务：**按恨→爽→急→盼分拍写作**——每次只写用户指定的本情绪拍；已写正文已冻结；禁止把四拍揉进一拍。'
+      : '当前任务：**按拍点分段写作**——每次只写用户指定的「本拍」；已写正文已冻结。',
     '章内进度：后拍勿把已写到完成态的过程无交代再完整演一遍（可一句承接；同主题加深/余波可以）。',
     '结构与章末止点服从【本章大纲边界】；禁止为凑字越过末拍。',
     `整章目标合计约 ${userTarget} 字（${minLen}～${maxLen}）；各拍自有预算，勿把字数挪到未写拍点。`,
@@ -617,7 +635,9 @@ export async function generateNovelChapterByBeats(
     onBeatProgress?.({
       beatIndex: i,
       beatTotal: items.length,
-      status: `按大纲拍点 ${i + 1}/${items.length}…`,
+      status: emotionBound
+        ? `恨爽急盼 ${i + 1}/${items.length}（${items[i]?.phase || ''}）…`
+        : `按大纲拍点 ${i + 1}/${items.length}…`,
       textDelta,
     })
     logTaskWarn('Novel', 'novel-beat-done', {

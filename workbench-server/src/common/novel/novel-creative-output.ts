@@ -4,6 +4,7 @@
 import { looksLikeModelThinkingLeak, sanitizeModelCreativeOutput } from '../../services/ai/ai.js'
 import { countNovelChars } from './novel-char-limit.js'
 import { getMaxParsedChapterNumber, validateOutlineChapterCoverage } from './novel-outline.js'
+import { detectOutlineCultivationBleed } from '../../agents/novel-defaults.js'
 
 export type NovelCreativeOutputKind = 'premise' | 'outline' | 'outline_skeleton' | 'writing_brief' | 'chapter_prose'
 
@@ -40,6 +41,8 @@ const LABEL: Record<NovelCreativeOutputKind, string> = {
 export type NovelCreativeOutputOptions = {
   /** 全书大纲：要求分章概要覆盖到的章数 */
   totalChapters?: number
+  /** 题材：用于非修真大纲禁淬体/筑基串味校验 */
+  genre?: string
 }
 
 function validateOutlineStructure(trimmed: string, kind: 'outline' | 'outline_skeleton'): void {
@@ -49,8 +52,8 @@ function validateOutlineStructure(trimmed: string, kind: 'outline' | 'outline_sk
   if (kind === 'outline_skeleton' && !/总纲/.test(trimmed)) {
     throw new Error(`${LABEL[kind]}格式异常（缺少总纲），请重试`)
   }
-  if (!/世界观|修炼体系/.test(trimmed)) {
-    throw new Error(`${LABEL[kind]}格式异常（缺少【世界观设定】或修炼体系），请重试生成大纲`)
+  if (!/世界观|修炼体系|时代背景|组织\/规则|组织／规则/.test(trimmed)) {
+    throw new Error(`${LABEL[kind]}格式异常（缺少【世界观设定】或时代/修炼体系），请重试生成大纲`)
   }
   if (!/分卷|第\s*[一二三四五六七八九十\d]+\s*卷/.test(trimmed)) {
     throw new Error(`${LABEL[kind]}格式异常（缺少【分卷设计】或分卷条目），请重试生成大纲`)
@@ -76,7 +79,7 @@ export function isUsableNovelCreativeOutput(text: string, kind: NovelCreativeOut
   const qMarks = (trimmed.match(/[?？]/g) || []).length
   if (qMarks >= 12 && qMarks / Math.max(trimmed.length, 1) > 0.02) return false
   if (kind === 'outline' && !/总纲|分章|第\s*\d+\s*章/.test(trimmed)) return false
-  if (kind === 'outline' && !/世界观|修炼体系/.test(trimmed)) return false
+  if (kind === 'outline' && !/世界观|修炼体系|时代背景|组织\/规则|组织／规则/.test(trimmed)) return false
   if (kind === 'outline' && !/分卷|第\s*[一二三四五六七八九十\d]+\s*卷/.test(trimmed)) return false
   return true
 }
@@ -102,6 +105,8 @@ export function assertValidNovelCreativeOutput(
   }
   if (kind === 'outline' || kind === 'outline_skeleton') {
     validateOutlineStructure(trimmed, kind)
+    const bleed = detectOutlineCultivationBleed(trimmed, options?.genre)
+    if (bleed) throw new Error(`${name}${bleed}，请重试生成大纲`)
   }
   if (kind === 'outline' && options?.totalChapters && options.totalChapters > 0) {
     validateOutlineChapterCount(trimmed, options.totalChapters)

@@ -64,6 +64,12 @@ export const zhCNMessages = {
     humanizeCompare: '改写前 AI 率 {before}%（PPL {pplBefore}）→ 改写后 {after}%（PPL {pplAfter}）',
     humanizeCompareNoChange: '改写后 AI 率变化不大。困惑度检测衡量的是「模型能否轻松续写」，LLM 互改往往仍很可预测；可多次改写或从生成阶段遵守拟人化要点。',
     humanizePerplexityNote: '困惑度 PPL 越低，表示当前配置的文本模型越能「猜中」下文，越倾向判为 AI。这与读起来是否自然不是同一回事。',
+    zhuqueDisclaimer: '本站启发式检测（多窗困惑度 + 分段），非腾讯朱雀官方分数。',
+    segmentsTitle: '高危段落',
+    windowsTitle: '采样窗口',
+    bandHuman: '人工特征',
+    bandSuspected: '疑似 AI',
+    bandAi: 'AI 特征',
   },
   templates: {
     title: '模板库',

@@ -1,7 +1,14 @@
 /**
  * 小说大纲戏剧要素：总纲 + 分章标签解析与校验（题材无关）
  */
+import { SHUANG_TYPE_SET } from './novel-commercial-appeal-isomorph.js'
+import { detectStakesMismatchText } from './novel-commercial-appeal-audit.js'
+import { OUTLINE_DRAMA_PRIORITY_LINE_SSOT } from './novel-emotion-core-contract.js'
+
 export type ConflictLayer = '外部' | '人际' | '自我'
+
+/** 第1～8章【爽型】闭集（与正文同构簇一致） */
+export const OUTLINE_SHUANG_TYPE_SET = SHUANG_TYPE_SET
 
 export type OutlineBookFields = {
   theme: string
@@ -29,6 +36,11 @@ export type OutlineChapterDramaFields = {
   endingQuestion: string
   infoDelta: string
   themeEcho: string
+  /** 第1～8章显式情绪四拍（章9+可空） */
+  hate?: string
+  shuang?: string
+  ji?: string
+  pan?: string
 }
 
 export const OUTLINE_CHAPTER_FIELD_LABELS = [
@@ -46,6 +58,45 @@ export const OUTLINE_CHAPTER_FIELD_LABELS = [
   '信息增量',
   '主题回响',
 ] as const
+
+/** 第1～8章须显式写出的情绪四拍标签（与正文分拍节点同名） */
+export const OUTLINE_EMOTION_BEAT_LABELS = ['恨', '爽', '急', '盼'] as const
+
+export type OutlineEmotionBeatTexts = {
+  hate: string
+  shuang: string
+  ji: string
+  pan: string
+}
+
+/** 从大纲抽取显式【恨】【爽】【急】【盼】正文（可为空串） */
+export function extractOutlineEmotionBeatTexts(outline: string): OutlineEmotionBeatTexts {
+  const o = outline || ''
+  const one = (label: string) => (extractTagBlock(o, label) || '').trim().replace(/\s+/g, ' ')
+  return {
+    hate: one('恨'),
+    shuang: one('爽'),
+    ji: one('急'),
+    pan: one('盼'),
+  }
+}
+
+/** 是否具备可对齐的情绪四拍（至少恨+爽+急+盼各有实质句） */
+export function outlineHasExplicitEmotionBeats(outline: string): boolean {
+  const e = extractOutlineEmotionBeatTexts(outline)
+  return [e.hate, e.shuang, e.ji, e.pan].every(s => [...s].length >= 4)
+}
+
+/**
+ * 情绪章硬止点：以【盼】为准（无盼则【急】）。
+ * 禁止再用【局面变化】当章终点，否则会把合法急/盼后文当毒尾砍掉。
+ */
+export function extractEmotionBoundaryActionBeat(outline: string): string {
+  const e = extractOutlineEmotionBeatTexts(outline)
+  if ([...e.pan].length >= 4) return e.pan
+  if ([...e.ji].length >= 4) return e.ji
+  return ''
+}
 
 const CONFLICT_SET = new Set<string>(['外部', '人际', '自我'])
 
@@ -155,6 +206,10 @@ export function parseOutlineChapterFields(
     endingQuestion: extractTagBlock(section, '章末问题') || undefined,
     infoDelta: extractTagBlock(section, '信息增量') || undefined,
     themeEcho: extractTagBlock(section, '主题回响') || undefined,
+    hate: extractTagBlock(section, '恨') || undefined,
+    shuang: extractTagBlock(section, '爽') || undefined,
+    ji: extractTagBlock(section, '急') || undefined,
+    pan: extractTagBlock(section, '盼') || undefined,
   }
 }
 
@@ -221,9 +276,46 @@ export function assertOutlineChapterFields(outline: string, chapterNumber: numbe
     if (typeof v !== 'string' || !nonEmpty(v)) missing.push(label)
   }
   if (!p.conflictLayers?.length) missing.push('冲突层')
+  // 第1～8章须【恨】【爽】【急】【盼】+【爽型】；不并入 OUTLINE_CHAPTER_FIELD_LABELS，避免 ch9+ 契约膨胀
+  if (chapterNumber >= 1 && chapterNumber <= 8) {
+    const section = sliceOutlineChapterSection(outline, chapterNumber)
+    for (const label of OUTLINE_EMOTION_BEAT_LABELS) {
+      const raw = (extractTagBlock(section, label) || '').trim()
+      if (!nonEmpty(raw, 4)) missing.push(label)
+    }
+    const shuangRaw = (extractTagBlock(section, '爽型') || '').trim()
+    if (!nonEmpty(shuangRaw, 1)) {
+      missing.push('爽型')
+    } else {
+      const head = shuangRaw.split(/[|｜、，,\s]/)[0]?.trim() || ''
+      if (!OUTLINE_SHUANG_TYPE_SET.has(head)) {
+        invalid.push(`爽型:${shuangRaw}`)
+      }
+    }
+    const stakeBlob = [
+      extractTagBlock(outline, '常识锚'),
+      extractTagBlock(section, '常识锚'),
+      extractTagBlock(section, '本章起因'),
+      extractTagBlock(section, '恨'),
+      extractTagBlock(section, '急'),
+      extractTagBlock(section, '局面变化'),
+      extractTagBlock(section, '阻碍'),
+    ].filter(Boolean).join('\n')
+    const stakeBad = detectStakesMismatchText(stakeBlob)
+    if (stakeBad) invalid.push(`赌注错位:${stakeBad}`)
+  }
   if (missing.length || invalid.length) {
     return { ok: false, missing, invalid, fields: null }
   }
+  const emotion =
+    chapterNumber >= 1 && chapterNumber <= 8
+      ? {
+        hate: p.hate!.trim(),
+        shuang: p.shuang!.trim(),
+        ji: p.ji!.trim(),
+        pan: p.pan!.trim(),
+      }
+      : {}
   return {
     ok: true,
     missing: [],
@@ -243,11 +335,21 @@ export function assertOutlineChapterFields(outline: string, chapterNumber: numbe
       endingQuestion: p.endingQuestion!.trim(),
       infoDelta: p.infoDelta!.trim(),
       themeEcho: p.themeEcho!.trim(),
+      ...emotion,
     },
   }
 }
 
 export function buildChapterOutlineDramaPromptBlock(fields: OutlineChapterDramaFields): string {
+  const emotionLines =
+    fields.hate || fields.shuang || fields.ji || fields.pan
+      ? [
+        fields.hate ? `恨：${fields.hate}` : '',
+        fields.shuang ? `爽：${fields.shuang}` : '',
+        fields.ji ? `急：${fields.ji}` : '',
+        fields.pan ? `盼：${fields.pan}` : '',
+      ].filter(Boolean)
+      : []
   return [
     '【本章大纲·戏剧要素 — 须在正文落地】',
     `时间：${fields.time}`,
@@ -263,7 +365,10 @@ export function buildChapterOutlineDramaPromptBlock(fields: OutlineChapterDramaF
     `章末问题：${fields.endingQuestion}`,
     `信息增量：${fields.infoDelta}`,
     `主题回响：${fields.themeEcho}`,
-    '落地顺序：承接上章末 → 若【起因】前序未写到则先写清其过程（冲突可见） → 再写欲望/阻碍/局面变化（须有局势推进）/人物选择 → 章末落到【章末问题】未决事件；信息增量服务书名/梗概卖点可见。禁止跳过未完成的起因直接写结果态；禁止开篇纯盘点、章尾纯感慨。',
+    ...emotionLines,
+    emotionLines.length
+      ? '落地顺序：恨→爽→急→盼（正文分拍硬绑定；同源 EmotionCoreContract SSOT）。爽=动作震慑+本事露尖；急=拢共天数；盼=一句缺一环。禁止开篇纯盘点、章尾纯感慨。'
+      : '落地顺序：承接上章末 → 若【起因】前序未写到则先写清其过程（冲突可见） → 再写欲望/阻碍/局面变化（须有局势推进）/人物选择 → 章末落到【章末问题】未决事件；信息增量服务书名/梗概卖点可见。禁止跳过未完成的起因直接写结果态；禁止开篇纯盘点、章尾纯感慨。',
   ].join('\n')
 }
 
@@ -281,8 +386,7 @@ export function buildOutlineBookPromptBlock(fields: OutlineBookFields): string {
   ].join('\n')
 }
 
-export const OUTLINE_DRAMA_PRIORITY_LINE =
-  '优先级：章缝与大纲边界（勿吃书勿越界）> 开篇压力对峙与卖点首屏（约前300/500字）与章末未决钩 > 大纲戏剧要素落地 > 字数厚度（预算内写厚，禁止灌水盘点）。'
+export const OUTLINE_DRAMA_PRIORITY_LINE = OUTLINE_DRAMA_PRIORITY_LINE_SSOT
 
 /**
  * 写作用本章大纲：优先全书大纲中已带齐戏剧标签的第 N 章块；

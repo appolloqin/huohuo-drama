@@ -138,6 +138,7 @@
           </div>
         </div>
         <textarea v-model="novelOutlineText" class="input outline-textarea" rows="6" :placeholder="tm.novel.outlinePlaceholder" />
+        <p v-if="outlineGenError" class="outline-gen-error" role="alert">{{ outlineGenError }}</p>
         <p class="outline-hint">{{ tm.novel.outlineHint }}</p>
       </div>
     </div>
@@ -749,6 +750,7 @@ const premiseGenBusy = ref(false)
 const novelOutlineText = ref('')
 const outlineSaveBusy = ref(false)
 const outlineGenBusy = ref(false)
+const outlineGenError = ref('')
 
 const outlineVolumes = computed(() => {
   if (!isNovel.value || !novelOutlineText.value.trim()) return []
@@ -1177,6 +1179,7 @@ async function generateOutlineDraft() {
     toast.error(tm.value.novel.premiseRequiredForOutline)
     return
   }
+  outlineGenError.value = ''
   try {
     if (novelPremiseText.value.trim()) {
       await novelAPI.saveMeta(dramaId, { premise: novelPremiseText.value })
@@ -1187,7 +1190,9 @@ async function generateOutlineDraft() {
     await alignChapterTitlesToOutline()
     toast.success(tm.value.novel.toastOutlineGenerated)
   } catch (e) {
-    toast.error(e.message)
+    const msg = (String(e?.message || '')).trim() || '生成大纲失败，请重试'
+    outlineGenError.value = msg
+    toast.error(msg, { duration: 12000 })
   } finally {
     outlineGenBusy.value = false
   }
@@ -1874,6 +1879,18 @@ onUnmounted(() => {
   font-family: inherit;
 }
 .outline-hint { font-size: 12px; color: var(--text-3); margin: 0; }
+.outline-gen-error {
+  margin: 8px 0 0;
+  padding: 8px 10px;
+  font-size: 13px;
+  line-height: 1.45;
+  color: #b42318;
+  background: #fef3f2;
+  border: 1px solid #fecdca;
+  border-radius: 6px;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
 .chapter-dialog { max-width: 480px; width: 100%; padding: 22px; gap: 16px; }
 .btn-sm { height: 32px; padding: 0 12px; font-size: 12px; }
 .btn-batch {

@@ -306,9 +306,9 @@ export async function postProcessNovelChapterContent(args: {
     await saveContinuityCheck(episodeId, check)
   }
 
-  // ?????? Craft?????????????/????
+  // Craft / 章缝 / 爽型同构：上章取更长尾（同构需覆盖中段撕契等，不只章末）
   const prevTail = chapterNumber >= 2
-    ? await loadPrevChapterContentTail(dramaId, chapterNumber, 1600)
+    ? await loadPrevChapterContentTail(dramaId, chapterNumber, 4000)
     : ''
   {
     const gate = await runOutlineComplianceGate({
@@ -892,9 +892,9 @@ export async function runNovelChapterPipeline(args: {
     check = checkResult
   }
 
-  // ?????? Craft???? postProcess ???
+  // Craft / 爽型同构：上章取更长尾
   const prevTailBatch = chapterNumber >= 2
-    ? await loadPrevChapterContentTail(dramaId, chapterNumber, 1600)
+    ? await loadPrevChapterContentTail(dramaId, chapterNumber, 4000)
     : ''
   let outlineCompliance: import('./novel-outline-compliance-fix.js').OutlineComplianceReport | null = null
   {

@@ -41,6 +41,11 @@ const ch1 = `第1章：开局
 【章末问题】明天进山能否活着回来？
 【信息增量】猎刀还在、仇人未至
 【主题回响】改命从一口饭开始
+【恨】邻里冷眼压在断粮土屋上，苏婉饿得发颤（对峙代价带出）
+【爽】把最后糠饼塞给媳妇并撂一句「进山有路子」让邻里一愣
+【急】明天进山能否活着回来？
+【盼】猎刀还在；刀鞘内侧有人刻过记号留隐患
+【爽型】硬撕
 `
 
 const ch2 = `第2章：闲话
@@ -57,6 +62,11 @@ const ch2 = `第2章：闲话
 【章末问题】明日如何破局？
 【信息增量】邻里已定调羞辱
 【主题回响】尊严被闲话撕开
+【恨】墙外当众羞辱资本家小姐身份
+【爽】按住怒火不冲出去，丢一句「闲话也有账」压成明日破局计划让邻里一顿
+【急】明日如何破局尚无答案
+【盼】已听清邻里定调；墙缝外还有第三个人脚步未现
+【爽型】拒签
 `
 
 const full = `${book}\n${ch1}\n${ch2}`
@@ -69,6 +79,13 @@ if (noTheme.ok || !noTheme.missing.includes('主题')) throw new Error('missing 
 
 const ch2ok = assertOutlineChapterFields(full, 2)
 if (!ch2ok.ok || !ch2ok.fields) throw new Error(`ch2 should pass: ${ch2ok.missing}`)
+if (!ch2ok.fields.hate || !ch2ok.fields.shuang || !ch2ok.fields.ji || !ch2ok.fields.pan) {
+  throw new Error('ch2 emotion beats missing on fields')
+}
+
+const noHate = full.replace('【恨】墙外当众羞辱资本家小姐身份\n', '')
+const ch2noHate = assertOutlineChapterFields(noHate, 2)
+if (ch2noHate.ok || !ch2noHate.missing.includes('恨')) throw new Error('missing 恨')
 
 const noDesire = full.replace('【欲望】按住怒火听清流言', '')
 const ch2bad = assertOutlineChapterFields(noDesire, 2)

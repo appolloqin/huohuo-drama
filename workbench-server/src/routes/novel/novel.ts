@@ -1132,6 +1132,7 @@ app.post('/chapters/:id/generate/stream', async (c) => {
     userTarget: targetLength,
     endpointPending: outlineAlignForBeats.endpointPending,
     prevChapterTail: prevTailForBeats,
+    chapterNumber: pack.episode.episodeNumber,
   })
   const useBeatSequential = shouldUseBeatSequentialGenerate({
     beatCount: beatBudgets.beatCount,

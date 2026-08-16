@@ -11,7 +11,17 @@ import {
   sliceOutlineChapterSection,
   type OutlineChapterDramaFields,
 } from './novel-outline-drama-fields.js'
+import {
+  assertOutlineAppealNoveltyTags,
+  detectDefaultFarmRebirthCliché,
+} from './novel-outline-appeal-novelty.js'
 import { isOutlineDramaGateEnabled, type NovelMetadata } from '../../common/novel/novel-meta.js'
+import {
+  buildEmotionCoreOutlineTagLines,
+  EMOTION_CORE_CONTRACT_VERSION,
+  EMOTION_CORE_STAKES,
+} from './novel-emotion-core-contract.js'
+import { buildStakesCommonSensePromptBlock } from './novel-stakes-common-sense.js'
 
 export class OutlineDramaFieldsError extends Error {
   code: 'outline_book_fields_incomplete' | 'outline_chapter_fields_incomplete'
@@ -32,19 +42,40 @@ export class OutlineDramaFieldsError extends Error {
   }
 }
 
+function collectBookDramaGaps(outline: string): {
+  missing: string[]
+  cliche: string | null
+  ok: boolean
+} {
+  const book = assertOutlineBookFields(outline)
+  const novelty = assertOutlineAppealNoveltyTags(outline)
+  const cliche = detectDefaultFarmRebirthCliché(outline)
+  const missing = [
+    ...(book.ok ? [] : book.missing),
+    ...(novelty.ok ? [] : novelty.missing),
+  ]
+  if (cliche) missing.push('卖点偏转(第三条偏转轴)')
+  return { missing, cliche, ok: book.ok && novelty.ok && !cliche }
+}
+
 export async function fillMissingOutlineBookFields(args: {
   outline: string
   title?: string
   premise?: string
   missing: string[]
+  clicheHint?: string | null
   billing?: TextBillingContext
 }): Promise<string> {
   const system = [
     await buildNovelAgentSystem('novel_outline'),
     '任务：只补全全书大纲中缺失的总纲戏剧标签，保留原文其余部分。',
     '必须输出**完整大纲全文**（在原文基础上插入/补齐标签），不要只输出补丁。',
+    '若缺【卖点偏转】【非常规压力源】【能力非常规用法】须补齐；偏转须写「常见预期→本书偏转」，并点出第三轴（如假账/掉包/派系/专利/配方等），禁止空喊「不一样」。',
+    args.clicheHint
+      ? `当前拼盘检测失败：${args.clicheHint}。须改写【卖点偏转】点出第三条偏转轴，勿删既有主线。`
+      : '',
     NO_THINKING_OUTPUT_RULE,
-  ].join('\n')
+  ].filter(Boolean).join('\n')
   const options = await novelAgentCompletionOptions('novel_outline', {
     maxTokens: 8192,
     temperature: 0.5,
@@ -78,14 +109,24 @@ export async function fillMissingOutlineChapterFields(args: {
   billing?: TextBillingContext
 }): Promise<string> {
   const section = sliceOutlineChapterSection(args.outline, args.chapterNumber)
+  const needEmotion = args.chapterNumber >= 1 && args.chapterNumber <= 8
   const system = [
     await buildNovelAgentSystem('novel_outline'),
     `任务：只补全第 ${args.chapterNumber} 章分章概要中缺失的戏剧标签。`,
-    `须输出该章完整块：以「第${args.chapterNumber}章」开头，含标题与全部标签：${OUTLINE_CHAPTER_FIELD_LABELS.join('、')}。`,
+    `须输出该章完整块：以「第${args.chapterNumber}章」开头，含标题与全部标签：${OUTLINE_CHAPTER_FIELD_LABELS.join('、')}${needEmotion ? '、恨、爽、急、盼、爽型' : ''}。`,
     '【冲突层】只能用：外部、人际、自我。',
+    needEmotion
+      ? [
+        `情绪四拍同源 ${EMOTION_CORE_CONTRACT_VERSION}：`,
+        buildEmotionCoreOutlineTagLines(),
+        EMOTION_CORE_STAKES,
+        buildStakesCommonSensePromptBlock(),
+        '【爽型】闭集：硬撕|拒签|揭穿假账|示弱钓鱼|当众对赌|借力第三方；须与【爽】动作一致。',
+      ].join('\n')
+      : '',
     '不要输出其他章，不要输出全书总纲。',
     NO_THINKING_OUTPUT_RULE,
-  ].join('\n')
+  ].filter(Boolean).join('\n')
   const options = await novelAgentCompletionOptions('novel_outline', {
     maxTokens: 2048,
     temperature: 0.5,
@@ -93,7 +134,7 @@ export async function fillMissingOutlineChapterFields(args: {
   const user = [
     args.title ? `【书名】${args.title}` : '',
     `【缺失】${args.missing.join('、') || '（无）'}`,
-    args.invalid?.length ? `【非法冲突层】${args.invalid.join('、')}` : '',
+    args.invalid?.length ? `【须改正】${args.invalid.join('、')}` : '',
     '【该章原文】',
     section || `（大纲中尚无第${args.chapterNumber}章，请新建完整章块）`,
     '【前后文摘录】',
@@ -121,7 +162,7 @@ export async function fillMissingOutlineChapterFields(args: {
   return args.outline.replace(section, filled)
 }
 
-/** 生成大纲后：总纲缺则补 1 次；仍缺则抛错 */
+/** 生成大纲后：总纲缺则补 1 次；仍缺则抛错（含新意三标签与 allowlist 拼盘） */
 export async function ensureOutlineBookDramaFields(args: {
   outline: string
   title?: string
@@ -129,21 +170,25 @@ export async function ensureOutlineBookDramaFields(args: {
   billing?: TextBillingContext
 }): Promise<string> {
   let outline = args.outline
-  let check = assertOutlineBookFields(outline)
-  if (check.ok) return outline
+  let gaps = collectBookDramaGaps(outline)
+  if (gaps.ok) return outline
   outline = await fillMissingOutlineBookFields({
     outline,
     title: args.title,
     premise: args.premise,
-    missing: check.missing,
+    missing: gaps.missing,
+    clicheHint: gaps.cliche,
     billing: args.billing,
   })
-  check = assertOutlineBookFields(outline)
-  if (!check.ok) {
+  gaps = collectBookDramaGaps(outline)
+  if (!gaps.ok) {
+    const detail = gaps.cliche
+      ? `${gaps.missing.join('、')}；${gaps.cliche}`
+      : gaps.missing.join('、')
     throw new OutlineDramaFieldsError(
       'outline_book_fields_incomplete',
-      `请先完善小说大纲总纲：缺少 ${check.missing.join('、')}`,
-      check.missing,
+      `请先完善小说大纲总纲：缺少 ${detail}`,
+      gaps.missing,
     )
   }
   return outline
@@ -172,7 +217,14 @@ export async function ensureOutlineChapterDramaFields(args: {
   if (!check.ok || !check.fields) {
     throw new OutlineDramaFieldsError(
       'outline_chapter_fields_incomplete',
-      `请先完善小说大纲第${args.chapterNumber}章分章概要：缺少 ${[...check.missing, ...check.invalid.map(i => `冲突层:${i}`)].join('、')}`,
+      `请先完善小说大纲第${args.chapterNumber}章分章概要：缺少或须改正 ${[
+        ...check.missing,
+        ...check.invalid.map((i) => {
+          if (i.startsWith('爽型')) return i
+          if (i.startsWith('赌注错位')) return i
+          return `冲突层:${i}`
+        }),
+      ].join('、')}`,
       check.missing,
       check.invalid,
     )

@@ -53,9 +53,9 @@ environment, realm, resources, appearance, personality, injuries, timeline, rela
 - reminder：下一章**禁止改写**的人名/事件/地点（一条写清，如「推下断魂崖者是楚天绝，下章回忆不得换成他人」）
 - delta：本章相对上章主要变化
 
-其余：environment=环境场景；realm=修为境界（须与正文表述完全一致，如「淬体境圆满」或「淬体九层」，禁止混用「圆满/巅峰」与「X层」）；resources=资源道具；appearance=神态衣着；personality=人设口吻；injuries=身体伤势；timeline=时间节奏；foreshadowing=伏笔；abilities=功法能力；emotion=情绪递进。
+其余：environment=环境场景；realm=能力/地位阶段（**仅摘录正文已有表述**；无修炼体系则填「无」或社会身份/职级等，**禁止臆造淬体/凝气/筑基/炼气等修真境界**）；resources=资源道具；appearance=神态衣着；personality=人设口吻；injuries=身体伤势；timeline=时间节奏；foreshadowing=伏笔；abilities=本事/手艺/能力（按正文，非默认「功法」）；emotion=情绪递进。
 
-要求：具体数字与名词；不得模糊；状态只进不退（除非正文有合规降级原因）。`
+要求：具体数字与名词；不得模糊；状态只进不退（除非正文有合规降级原因）；**账本用词不得把非修真题材写成修真。**`
 
 function trunc(s: string, max: number) {
   const t = s.replace(/\s+/g, ' ').trim()
@@ -373,7 +373,11 @@ export async function buildNovelWriteContext(args: {
   }
 
   const worldbuildingBlock = chapterNumber === 1
-    ? buildChapter1WorldIntroBlock({ outline: bookOutline || meta.outline, dramaId })
+    ? buildChapter1WorldIntroBlock({
+      outline: bookOutline || meta.outline,
+      dramaId,
+      genre: meta.novel_genre,
+    })
     : ''
 
   const prevSnap = chapterNumber >= 2

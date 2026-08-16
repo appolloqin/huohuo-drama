@@ -131,6 +131,38 @@
               · {{ tx(tm.novel.aiDetectElapsed, { ms: scanResult.elapsed_ms }) }}
             </template>
           </p>
+          <p v-if="scanResult.ai_detect_warning" class="hub-disclaimer">{{ scanResult.ai_detect_warning }}</p>
+          <p v-else class="hub-disclaimer">{{ tm.aiDetectHub.zhuqueDisclaimer }}</p>
+          <div v-if="hotSegments.length" class="ai-detect-segments">
+            <p class="ai-detect-signals-title">
+              {{ tm.aiDetectHub.segmentsTitle }}
+              <span class="dim">（{{ scanResult.high_band_count ?? hotSegments.length }}）</span>
+            </p>
+            <ul class="ai-segment-list">
+              <li
+                v-for="seg in hotSegments"
+                :key="seg.index"
+                class="ai-segment-item"
+                :class="`band-${seg.band}`"
+              >
+                <div class="ai-segment-head">
+                  <span>#{{ seg.index + 1 }} · {{ segmentBandLabel(seg.band) }}</span>
+                  <span>{{ Math.round((seg.aigc ?? 0) * 100) }}%</span>
+                </div>
+                <p v-if="seg.text" class="ai-segment-text">{{ seg.text }}</p>
+              </li>
+            </ul>
+          </div>
+          <div v-if="scanResult.sampling?.windows?.length" class="ai-detect-windows dim">
+            <p class="ai-detect-signals-title">{{ tm.aiDetectHub.windowsTitle }}</p>
+            <ul>
+              <li v-for="w in scanResult.sampling.windows" :key="w.label">
+                {{ w.label }}
+                <template v-if="w.probability != null"> · {{ w.probability }}%</template>
+                <template v-if="w.perplexity != null"> · PPL {{ w.perplexity }}</template>
+              </li>
+            </ul>
+          </div>
           <div v-if="scanResult.signals?.length" class="ai-detect-signals">
             <p class="ai-detect-signals-title">{{ tm.novel.aiDetectSignals }}</p>
             <ul class="ai-signal-list">
@@ -279,6 +311,18 @@ const confidenceLabel = computed(() => {
   if (c === 'high') return tm.value.novel.aiDetectConfidenceHigh
   return tm.value.novel.aiDetectConfidenceMedium
 })
+
+const hotSegments = computed(() => {
+  const segs = scanResult.value?.segments
+  if (!Array.isArray(segs)) return []
+  return segs.filter((s: any) => s?.band === 'suspected' || s?.band === 'ai')
+})
+
+function segmentBandLabel(band: string) {
+  if (band === 'ai') return tm.value.aiDetectHub.bandAi
+  if (band === 'suspected') return tm.value.aiDetectHub.bandSuspected
+  return tm.value.aiDetectHub.bandHuman
+}
 
 function formatNovelWords(n: number) {
   return formatNovelCharCount(n, lang.value)
@@ -759,6 +803,44 @@ onMounted(() => init())
 .ai-detect-verdict { margin: 4px 0 0; font-size: 14px; font-weight: 700; }
 .ai-detect-confidence { margin: 2px 0 0; font-size: 12px; color: var(--text-3); }
 .ai-detect-time { margin: 0; font-size: 11px; color: var(--text-3); }
+.hub-disclaimer, .ai-detect-disclaimer {
+  margin: 0 0 10px;
+  font-size: 12px;
+  color: var(--text-3);
+  line-height: 1.45;
+}
+.ai-detect-segments { margin: 12px 0; }
+.ai-segment-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.ai-segment-item {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 8px 10px;
+  background: var(--bg-1);
+}
+.ai-segment-item.band-ai { border-color: rgba(198, 40, 40, 0.35); background: rgba(198, 40, 40, 0.06); }
+.ai-segment-item.band-suspected { border-color: rgba(245, 124, 0, 0.35); background: rgba(245, 124, 0, 0.06); }
+.ai-segment-head {
+  display: flex;
+  justify-content: space-between;
+  font-size: 12px;
+  font-weight: 700;
+  margin-bottom: 4px;
+}
+.ai-segment-text {
+  margin: 0;
+  font-size: 12px;
+  color: var(--text-2);
+  line-height: 1.5;
+}
+.ai-detect-windows { margin: 8px 0 12px; font-size: 12px; }
+.ai-detect-windows ul { margin: 4px 0 0; padding-left: 1.2em; }
 .ai-detect-signals-title, .ai-detect-suggestions-title {
   margin: 0 0 8px;
   font-size: 13px;

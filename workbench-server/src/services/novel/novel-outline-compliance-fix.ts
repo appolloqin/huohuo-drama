@@ -31,6 +31,7 @@ import { parseNovelMetadata } from '../../common/novel/novel-meta.js'
 import { extractOutlineBeatPhrases } from './novel-chapter-seam.js'
 import { filterDraftByChapterOutline } from './novel-draft-outline-filter.js'
 import { stripOutlinePoisonProse } from './novel-outline-poison-strip.js'
+import { outlineHasExplicitEmotionBeats } from './novel-outline-drama-fields.js'
 
 /** ??????????????????????? */
 export const OUTLINE_COMPLIANCE_MAX_ROUNDS = 3
@@ -434,14 +435,17 @@ export async function maybeFixOutlineCompliance(args: {
   }
 
   /** 正文级删毒：去掉大纲无关句；末行动拍之后一律丢弃，再进入 LLM 修写 */
+  const emotionOutline = outlineHasExplicitEmotionBeats(chapterOutline || '')
   const shouldStripPoison = (reasons: OutlineComplianceReason[]) =>
-    reasons.some(r =>
-      r.code === 'outline_endpoint_overshoot'
-      || r.code === 'outline_boundary_model'
-      || r.code === 'next_chapter_beat_leak'
-      || r.code === 'draft_orphan_replay'
-      || r.code === 'head_orphan_span',
-    )
+    reasons.some(r => {
+      // 情绪四拍章：勿因旧「戏剧末拍越界」去砍急/盼（该码对情绪章已禁用，双保险）
+      if (emotionOutline && r.code === 'outline_endpoint_overshoot') return false
+      return r.code === 'outline_endpoint_overshoot'
+        || r.code === 'outline_boundary_model'
+        || r.code === 'next_chapter_beat_leak'
+        || r.code === 'draft_orphan_replay'
+        || r.code === 'head_orphan_span'
+    })
 
   const applyPoisonStrip = (text: string): string => {
     if (!chapterOutline?.trim()) return text

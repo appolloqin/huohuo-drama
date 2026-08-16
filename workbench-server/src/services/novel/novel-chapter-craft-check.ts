@@ -18,6 +18,7 @@ import {
   listOpeningAppealHardFails,
   type CommercialAppealAudit,
 } from './novel-commercial-appeal-audit.js'
+import { buildAppealSingleCodeFixBlock } from './novel-emotion-core-contract.js'
 import {
   applyAppealFeelVeto,
   runAppealFeelAudit,
@@ -130,6 +131,7 @@ emotion_shown, theme_echo, conflict_layer, stakes_shift, opening_promise。
 「弱」=有痕迹但不饱满；「无」=正文未落地。opening_promise=开篇约前300～800字有本章看点/赌注。
 opening_promise 与 hook_on_page 同时供「吸引力审」使用（与连贯性审解耦，勿混写）。
 opening_promise=「无」若开篇主要是冻醒/感官苏醒/记忆灌入+家底盘点，而缺少催债/夺产/点名等外部对峙。
+第1～8章另看情绪四拍是否语义落地（非词表凑数）：恨冲突前置；爽须动作震慑+本事露尖（立约可留但不得单独当爽）；急期限+拢共天数；盼短缺一环且本事非本段首亮。仅立约无动作无露尖、或本事拖到章末才首次说「我能X」→ opening_promise 宜「弱」或「无」。
 
 只输出 JSON：
 {
@@ -168,6 +170,8 @@ export async function checkNovelChapterCraft(args: {
   meta: NovelMetadata
   writingBrief?: string
   chapterOutline?: string
+  /** 上章正文（或尾部），供爽型同构对比 */
+  priorChapterContent?: string
   billing?: TextBillingContext
 }): Promise<ChapterCraftResult> {
   const prose = stripNovelChangeRecord(args.content)
@@ -271,7 +275,7 @@ export async function checkNovelChapterCraft(args: {
   // 模型不可用时跳过 L1 硬拦与 L2，避免空转
   let feel: AppealFeelResult | null = null
   if (!skipAppealGates) {
-    const hardOpens = listOpeningAppealHardFails(prose, args.chapterNumber)
+    const hardOpens = listOpeningAppealHardFails(prose, args.chapterNumber, args.priorChapterContent)
     if (hardOpens.length) {
       drama_gates.opening_promise = {
         level: '无',
@@ -315,6 +319,7 @@ export async function checkNovelChapterCraft(args: {
     craft: { drama_gates, checked_at: checkedAt },
     content: prose,
     chapterNumber: args.chapterNumber,
+    priorChapterContent: args.priorChapterContent,
     feel: feel && !feel.unavailable ? feel : null,
   })
   for (const d of appeal.dimensions) {
@@ -353,14 +358,19 @@ export function buildChapterCraftFixPrompt(basePrompt: string, craft: ChapterCra
   ]
   const restCodes = DRAMA_GATE_CODES.filter(c => !priorityCodes.includes(c))
   const ordered = [...priorityCodes, ...restCodes].filter(missing)
+  // 语义四拍（恨爽急盼字距/词表）不进硬修；仅字面可验结构 + 观感 flat
   const appealHard = (craft.appeal?.dimensions || []).filter(d =>
     !d.passed && (
       d.code === 'wake_inventory_opening'
       || d.code === 'opening_pressure_window'
       || d.code === 'opening_sell_point'
+      || d.code === 'hate_thin_decompress'
       || d.code === 'opening_soft_collapse'
-      || d.code === 'capability_sell_late'
-      || d.code === 'repeat_inventory'
+      || d.code === 'post_climax_decompress'
+      || d.code === 'post_hook_dump'
+      || d.code === 'stakes_mismatch'
+      || d.code === 'soft_ending_dump'
+      || d.code === 'shuang_isomorph'
       || d.code === 'llm_feel_flat'
     ),
   )
@@ -368,27 +378,25 @@ export function buildChapterCraftFixPrompt(basePrompt: string, craft: ChapterCra
     const tip = code === 'opening_promise'
       ? (
         appealHard.length
-          ? `开篇吸引力未过：${appealHard.map(d => d.message).join('；')}。须前200～400字内主角反制（撕契/拒签/嘴炮），前800字亮翻身手段/对赌/识破；禁止重复盘点与长段重生糊糊`
+          ? `开篇吸引力未过：${appealHard.map(d => d.message).join('；')}。须冲突前置开篇；爽须动作震慑+本事露尖；急须天数；盼短缺一环；禁醒炕盘点`
           : /醒炕|苏醒|压力方|卖点|糊糊|翻身|重复盘点|观感审/.test(craft.drama_gates?.opening_promise?.note || '')
-            ? '开篇约前300字须先落压力方对白/对峙，并亮出卖点冲突物；前800字亮能力/对赌；穿越最多嵌一句；禁止冻醒盘点与重复家底'
+            ? '开篇约前300字须先落压力方对白/对峙，并亮出卖点冲突物；穿越最多嵌一句；禁止冻醒盘点与重复家底'
             : '开篇约前300～800字须有本章看点/冲突或对白承诺，禁止纯盘点开场'
       )
       : code === 'hook_on_page'
-        ? '章尾须落到未决具体事件钩，禁止纯感慨收束'
+        ? '章尾须落到未决具体事件钩（急/盼），禁止纯感慨或工序/温情泄压收束'
         : (craft.drama_gates[code]?.note || '请对照本章大纲该字段用行动写出来')
     return `${i + 1}. 大纲戏剧未落地【${code}】：${tip}`
   })
   const feelFix = appealHard.find(d => d.code === 'llm_feel_flat')?.message
   const appealHardBlock = appealHard.length
     ? [
-      '【吸引力硬修（必须执行，勿只润色）】',
-      '1. 删：穿越/车间回忆最多嵌一句；「爹瘫娘瞎/让房契/80工分/懒汉骂名/怯弟妹」每簇全章只落地一次，后文用动作推进勿复读。',
-      '2. 压：压力方亮出卖点后约200字内完成主角反制（撕契/拒签/嘴炮），随即亮翻身手段或对赌；禁止中段浆糊降温。',
-      '3. 禁说明书：修机/手艺用1～3句动作+一句结论打脸，爽点在对峙/对赌，不在零件科普。',
-      '4. 字辈：父与叔伯等同辈姓名须与大纲一致且同辈字辈相同；发现混辈须按大纲改正。',
-      feelFix ? `5. 观感指令：${feelFix}` : '',
-      ...appealHard.filter(d => d.code !== 'llm_feel_flat').slice(0, 4).map((d) =>
-        `- 硬拦【${d.code}】：${d.message}`),
+      buildAppealSingleCodeFixBlock({
+        hardFails: appealHard
+          .filter(d => d.code !== 'llm_feel_flat')
+          .map((d) => ({ code: d.code, message: d.message })),
+      }),
+      feelFix ? `观感指令：${feelFix}` : '',
     ].filter(Boolean)
     : []
   const lines = [
