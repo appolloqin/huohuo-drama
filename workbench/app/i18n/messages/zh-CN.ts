@@ -432,6 +432,7 @@ export const zhCNMessages = {
     toastOutlineSaved: '大纲已保存',
     toastOutlineGenerated: '大纲已生成',
     savePremise: '保存梗概',
+    fullscreen: '全屏查看',
     toastPremiseSaved: '梗概已保存',
     premiseHint: '创建项目时生成的梗概会显示在此，可编辑或用关键词重新 AI 生成；生成大纲时会引用此处内容',
     outlineHint: '基于上方梗概生成全书大纲（含世界观、分卷设计与各卷大纲、分章概要），也可手写修改',

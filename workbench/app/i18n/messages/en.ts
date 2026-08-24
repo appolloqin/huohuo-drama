@@ -434,6 +434,7 @@ export const enMessages: ConsoleMessages = {
     toastOutlineSaved: 'Outline saved',
     toastOutlineGenerated: 'Outline generated',
     savePremise: 'Save premise',
+    fullscreen: 'Fullscreen',
     toastPremiseSaved: 'Premise saved',
     premiseHint: 'Premise from project creation appears here; edit or regenerate with keywords. Used when generating the outline.',
     outlineHint: 'Generate the full outline from the premise above (worldbuilding, volume arcs, and per-chapter beats), or edit by hand',

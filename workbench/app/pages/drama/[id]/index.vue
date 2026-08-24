@@ -90,6 +90,9 @@
         <div class="outline-head">
           <span class="section-label inline">{{ tm.index.premise }}</span>
           <div class="outline-actions">
+            <button type="button" class="btn btn-sm btn-icon" :title="tm.novel.fullscreen" @click="openFullscreen('premise')">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M8 3H5a2 2 0 0 0-2 2v3"/><path d="M21 8V5a2 2 0 0 0-2-2h-3"/><path d="M3 16v3a2 2 0 0 0 2 2h3"/><path d="M16 21h3a2 2 0 0 0 2-2v-3"/></svg>
+            </button>
             <HoverTip
               v-if="episodeStats.total > 0"
               :text="tm.novel.digitalWriterHint"
@@ -131,6 +134,9 @@
         <div class="outline-head">
           <span class="section-label inline">{{ tm.novel.outline }}</span>
           <div class="outline-actions">
+            <button type="button" class="btn btn-sm btn-icon" :title="tm.novel.fullscreen" @click="openFullscreen('outline')">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M8 3H5a2 2 0 0 0-2 2v3"/><path d="M21 8V5a2 2 0 0 0-2-2h-3"/><path d="M3 16v3a2 2 0 0 0 2 2h3"/><path d="M16 21h3a2 2 0 0 0 2-2v-3"/></svg>
+            </button>
             <button type="button" class="btn btn-sm" :disabled="outlineSaveBusy" @click="persistOutlineDraft">{{ outlineSaveBusy ? tm.novel.saving : tm.novel.saveOutline }}</button>
             <button type="button" class="btn btn-sm btn-primary" :disabled="outlineGenBusy || !canGenerate" @click="generateOutlineDraft">
               {{ outlineGenBusy ? tm.novel.generatingOutline : tm.novel.generateOutline }}
@@ -636,6 +642,29 @@
         </div>
       </div>
     </div>
+
+    <div v-if="fullscreenTarget" class="dialog-mask fullscreen-mask" @click.self="closeFullscreen">
+      <div class="card dialog fullscreen-dialog">
+        <div class="dialog-head">
+          <div class="dialog-head-copy">
+            <div class="dialog-title">{{ fullscreenTarget === 'premise' ? tm.index.premise : tm.novel.outline }}</div>
+          </div>
+          <button type="button" class="modal-close-btn" :aria-label="tm.common.closeAria" @click="closeFullscreen">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
+              <line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/>
+            </svg>
+          </button>
+        </div>
+        <div class="dialog-body fullscreen-body">
+          <textarea
+            :value="fullscreenText"
+            class="input fullscreen-textarea"
+            :placeholder="fullscreenPlaceholder"
+            @input="syncFullscreenText($event.target.value)"
+          />
+        </div>
+      </div>
+    </div>
     </div>
   </div>
 </template>
@@ -751,6 +780,23 @@ const novelOutlineText = ref('')
 const outlineSaveBusy = ref(false)
 const outlineGenBusy = ref(false)
 const outlineGenError = ref('')
+const fullscreenTarget = ref(null) // 'premise' | 'outline' | null
+const fullscreenText = computed(() => {
+  if (fullscreenTarget.value === 'premise') return novelPremiseText.value
+  if (fullscreenTarget.value === 'outline') return novelOutlineText.value
+  return ''
+})
+const fullscreenPlaceholder = computed(() => {
+  if (fullscreenTarget.value === 'premise') return tm.value.index?.premisePlaceholder || ''
+  if (fullscreenTarget.value === 'outline') return tm.value.novel?.outlinePlaceholder || ''
+  return ''
+})
+function openFullscreen(target) { fullscreenTarget.value = target }
+function closeFullscreen() { fullscreenTarget.value = null }
+function syncFullscreenText(val) {
+  if (fullscreenTarget.value === 'premise') novelPremiseText.value = val
+  else if (fullscreenTarget.value === 'outline') novelOutlineText.value = val
+}
 
 const outlineVolumes = computed(() => {
   if (!isNovel.value || !novelOutlineText.value.trim()) return []
@@ -2332,5 +2378,45 @@ onUnmounted(() => {
     flex-direction: column;
     align-items: stretch;
   }
+}
+
+/* ── 全屏查看 ─────────────────────────────────── */
+.btn-icon {
+  padding: 0 8px;
+  color: var(--text-2);
+  background: transparent;
+}
+.btn-icon:hover:not(:disabled) {
+  color: var(--accent-text);
+  background: var(--accent-bg);
+}
+.fullscreen-mask {
+  z-index: 130;
+  padding: 0 !important;
+}
+.fullscreen-mask .fullscreen-dialog {
+  width: 100vw !important;
+  height: 100vh !important;
+  max-width: 100vw !important;
+  max-height: 100vh !important;
+  border-radius: 0 !important;
+  padding: 20px 24px 18px !important;
+  background: var(--bg-0, #fff) !important;
+  border: none !important;
+  box-shadow: none !important;
+}
+.fullscreen-body {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+}
+.fullscreen-textarea {
+  width: 100%;
+  flex: 1;
+  min-height: 0;
+  resize: none;
+  line-height: 1.7;
+  font-size: 14px;
+  font-family: inherit;
 }
 </style>
