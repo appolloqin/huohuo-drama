@@ -1,5 +1,5 @@
 /**
- * 章末【变更记录】补全 — 润色/局部 patch 常会丢掉该块，硬审会反复失败
+ * 章末【变更记录】— 正文定稿后专用生成（方案 A：与写章同轮解耦）
  */
 import { chatCompletionTextAudit, type TextBillingContext } from '../../ai/ai.js'
 import { logTaskWarn } from '../../../common/task/task-logger.js'
@@ -21,15 +21,6 @@ const ENSURE_SYSTEM = `你是网文 continuity 编辑。任务：仅根据给定
 
 const PROSE_CHANGED_RE = /(?:来到|到了|前往|离开|突破|晋升|重伤|痊愈|获得|发现|觉醒|灵力|境界|悬崖|坠|死|伤|场景)/
 
-function extractChangeBlockFromModel(raw: string): string | null {
-  const trimmed = raw.trim()
-  const fenced = trimmed.match(/```(?:markdown|md|text)?\s*([\s\S]*?)```/i)
-  const candidate = (fenced?.[1] ?? trimmed).trim()
-  const idx = candidate.search(/^【变更记录】/m)
-  if (idx < 0) return null
-  return candidate.slice(idx).trim()
-}
-
 export function hasValidChangeRecord(fullText: string): boolean {
   const { changeBlock } = splitProseAndChangeRecord(fullText)
   if (!changeBlock) return false
@@ -38,7 +29,26 @@ export function hasValidChangeRecord(fullText: string): boolean {
   return entries.every(e => (e.causal?.trim().length ?? 0) >= 4)
 }
 
-export function buildFallbackChangeRecord(prose: string, chapterNumber: number): string {
+function extractChangeBlockFromModel(raw: string): string | null {
+  const trimmed = raw.trim()
+  const fenced = trimmed.match(/```(?:markdown|md|text)?\s*([\s\S]*?)```/i)
+  const candidate = (fenced?.[1] ?? trimmed).trim()
+  const idx = candidate.search(/^【变更记录】/m)
+  if (idx >= 0) {
+    const block = candidate.slice(idx).trim()
+    if (hasValidChangeRecord(block)) return block
+  }
+  // 偶发省略标题但输出结构化条目
+  const normalized = normalizeChangeRecordArtifacts(
+    /【变更记录】/.test(candidate) ? candidate : `【变更记录】\n${candidate}`,
+  )
+  if (normalized.changeBlock && hasValidChangeRecord(normalized.changeBlock)) {
+    return normalized.changeBlock
+  }
+  return null
+}
+
+export function buildFallbackChangeRecord(prose: string, _chapterNumber: number): string {
   if (PROSE_CHANGED_RE.test(prose)) {
     return [
       CAUSAL_CHANGE_RECORD_HEADER,
@@ -50,7 +60,6 @@ export function buildFallbackChangeRecord(prose: string, chapterNumber: number):
       '  因果: 人物心理或处境变化随正文事件推进，与上章因果起点衔接',
     ].join('\n')
   }
-  // 须为「维度: 变化」+ 独立「因果:」行，否则 parseChangeRecord 抽不出条目、硬审仍报 missing_record
   return [
     CAUSAL_CHANGE_RECORD_HEADER,
     '- 状态: 无状态变化（因果起点延续）',
@@ -88,29 +97,33 @@ async function generateChangeRecordBlock(args: {
   return extractChangeBlockFromModel(raw)
 }
 
-/** @returns 是否新补全或修复了变更记录 */
+/**
+ * 将正文与【变更记录】合并（先剥离误混入正文的条目）。
+ * @param force 为 true 时忽略已有块，按正文强制重生成（方案 A 定稿路径）
+ */
 export async function ensureCausalChangeRecordAppended(args: {
   content: string
   chapterNumber: number
   billing?: TextBillingContext
+  force?: boolean
 }): Promise<{ content: string; fixed: boolean }> {
   const trimmed = args.content.trim()
   if (!trimmed) return { content: trimmed, fixed: false }
 
-  // 先回收模型把【变更记录】当小标题写下的散文，再判断是否已有合法结构化块
   const normalized = normalizeChangeRecordArtifacts(trimmed)
-  const base = normalized.changeBlock
-    ? `${normalized.prose}\n\n${normalized.changeBlock}`.trim()
-    : normalized.prose
-  if (hasValidChangeRecord(base)) {
-    return {
-      content: base,
-      fixed: normalized.reclaimedFakeBlocks > 0 || base !== trimmed,
+  const body = (normalized.prose || '').trim()
+    || splitProseAndChangeRecord(trimmed).prose.trim()
+    || trimmed
+
+  if (!args.force && normalized.changeBlock) {
+    const mergedExisting = mergeProseAndBlock(body, normalized.changeBlock)
+    if (hasValidChangeRecord(mergedExisting)) {
+      return {
+        content: mergedExisting,
+        fixed: normalized.reclaimedFakeBlocks > 0 || mergedExisting !== trimmed,
+      }
     }
   }
-
-  const { prose } = splitProseAndChangeRecord(base)
-  const body = prose || base
 
   try {
     let block = await generateChangeRecordBlock({
@@ -141,7 +154,7 @@ export async function ensureCausalChangeRecordAppended(args: {
     logTaskWarn('Novel', 'ensure-change-record-fallback', { chapterNumber: args.chapterNumber })
     return { content: merged, fixed: true }
   }
-  return { content: trimmed, fixed: false }
+  return { content: body, fixed: normalized.reclaimedFakeBlocks > 0 }
 }
 
 export function needsCausalChangeRecordFix(check: {

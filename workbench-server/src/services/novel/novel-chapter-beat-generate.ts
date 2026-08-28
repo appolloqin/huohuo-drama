@@ -12,6 +12,7 @@ import { countNovelChars, assertNovelChapterLengthBand } from '../../common/nove
 import {
   isBeatSequentialGenerateEnabled,
   parseNovelMetadata,
+  resolveNovelGenreSkillKey,
   type NovelMetadata,
 } from '../../common/novel/novel-meta.js'
 import { extractChapterOutline } from '../../common/novel/novel-outline.js'
@@ -24,7 +25,7 @@ import {
 } from '../ai/ai.js'
 import * as dramasRepo from '../../db/repos/dramas/index.js'
 import * as episodesRepo from '../../db/repos/episodes/index.js'
-import { buildNovelAgentSystem, novelAgentCompletionOptions } from './novel-agent-prompt.js'
+import { buildNovelAgentSystem, buildNovelAgentSystemForDrama, novelAgentCompletionOptions } from './novel-agent-prompt.js'
 import {
   resolveChapterBeatBudgets,
   shouldUseBeatSequentialGenerate,
@@ -495,7 +496,7 @@ export async function generateNovelChapterByBeats(
     : ''
 
   const sharedSystem = [
-    await buildNovelAgentSystem('novel_chapter_writer'),
+    await buildNovelAgentSystemForDrama('novel_chapter_writer', meta),
     '',
     WEBNOVEL_CHAPTER_PROSE_GUIDE,
     '',
@@ -766,6 +767,7 @@ export async function generateNovelChapterByBeats(
       mode: 'chapter',
       colloquialBoost: true,
       layoutReference: draft,
+      novelGenreSkillKey: resolveNovelGenreSkillKey(meta),
     }),
   )
 

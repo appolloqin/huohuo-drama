@@ -5,6 +5,8 @@ import { NOVEL_DEFAULT_PROMPTS, type NovelAgentType } from '../../agents/novel-d
 import { getAgentConfig } from '../../common/agent/agent-config.js'
 import { appendLessonsToPrompt } from '../lesson/generation-lessons.js'
 import type { ChatCompletionOptions } from '../ai/ai.js'
+import type { NovelMetadata } from '../../common/novel/novel-meta.js'
+import { resolveNovelGenreSkillKey } from '../../common/novel/novel-meta.js'
 
 /** Agent 配置 maxTokens 建议下限（避免 DB 误设过低）；调用方可再按目标字数收紧上限 */
 const AGENT_MIN_MAX_TOKENS: Partial<Record<NovelAgentType, number>> = {
@@ -14,11 +16,23 @@ const AGENT_MIN_MAX_TOKENS: Partial<Record<NovelAgentType, number>> = {
   novel_premise: 2048,
 }
 
-export async function buildNovelAgentSystem(agentType: NovelAgentType, fallbackSystem?: string): Promise<string> {
+export type BuildNovelAgentSystemOptions = {
+  novelGenreSkillKey?: string | null
+  fallbackSystem?: string
+}
+
+export async function buildNovelAgentSystem(
+  agentType: NovelAgentType,
+  opts?: BuildNovelAgentSystemOptions | string,
+): Promise<string> {
+  const normalized: BuildNovelAgentSystemOptions =
+    typeof opts === 'string' ? { fallbackSystem: opts } : (opts ?? {})
+
   const defaults = NOVEL_DEFAULT_PROMPTS[agentType]
   const cfg = await getAgentConfig(agentType)
-  const base = cfg?.systemPrompt?.trim() || fallbackSystem || defaults.instructions
-  const skills = loadAgentSkills(agentType)
+  const base = cfg?.systemPrompt?.trim() || normalized.fallbackSystem || defaults.instructions
+  const skillKey = (normalized.novelGenreSkillKey || '').trim() || undefined
+  const skills = loadAgentSkills(agentType, { skillKey: skillKey ?? null })
   const antiAi = novelAntiAiCoreFor(agentType)
   const parts = [base]
   if (skills) parts.push('', skills)
@@ -27,6 +41,17 @@ export async function buildNovelAgentSystem(agentType: NovelAgentType, fallbackS
     parts.push('', WEBNOVEL_CHAPTER_PROSE_GUIDE, '', WEBNOVEL_STAT_FINGERPRINT_GUIDE)
   }
   return await appendLessonsToPrompt(parts.join('\n'), agentType)
+}
+
+export async function buildNovelAgentSystemForDrama(
+  agentType: NovelAgentType,
+  meta: NovelMetadata,
+  fallbackSystem?: string,
+): Promise<string> {
+  return buildNovelAgentSystem(agentType, {
+    novelGenreSkillKey: resolveNovelGenreSkillKey(meta),
+    fallbackSystem,
+  })
 }
 
 export async function novelAgentCompletionOptions(

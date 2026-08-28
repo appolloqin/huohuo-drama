@@ -69,6 +69,7 @@ export async function polishNovelChapterProse(
     colloquialBoost?: boolean
     /** 重写时传入原稿，仅作排版参考；过长时勿用于撑篇幅 */
     layoutReference?: string
+    novelGenreSkillKey?: string
   },
 ): Promise<string> {
   const trimmed = draft.trim()
@@ -96,7 +97,9 @@ export async function polishNovelChapterProse(
   }
 
   const system = [
-    await buildNovelAgentSystem('novel_chapter_writer'),
+    await buildNovelAgentSystem('novel_chapter_writer', {
+      novelGenreSkillKey: opts?.novelGenreSkillKey,
+    }),
     '',
     '当前任务：**润色收口**（对齐去AI味改写第2轮），让正文更接近人写网文，保留全部情节。',
     opts?.colloquialBoost
@@ -111,13 +114,14 @@ export async function polishNovelChapterProse(
     WEBNOVEL_STAT_FINGERPRINT_GUIDE,
     opts?.colloquialBoost ? WEBNOVEL_POLISH_COLLOQUIAL_BOOST : '',
     '- **段落**：叙述每段 1～3 句（硬上限 3），满 3 句必须空行换段；对话/惊觉可一句成段；**严禁**一段塞四五句；极短句勿独占一行',
+    '- **引号**：同一对 “……” 内对白勿跨段；收引号前禁止换段；勿把 ” 落到下一段段首；收引号后接新叙述须换段（。”他说 可同段）',
     '- **时间与金钱数字**：年、月、日、钟点用阿拉伯数字（如 1990年、3月、15日、凌晨3点）；金额用 800元、2000元；「一点/一些」少量义保持汉字；删掉 \`***\` / \`* * *\` 分节符，换场只用空行',
     '- **口语化**：对话用 “……” 补语气词（勿用「」）；压书面腔；删改 AI 套话与「最后/只见/不禁/心中暗道」连用',
     '- **情节与数额**：人物、地名、桥段、因果与已给出的钱数/物件一律保留；禁止加造更大违约金等新代价；' + lengthNote,
     '- **开篇时空**：禁止把开篇改写到早于待润色稿/上章末已发生事实的时空点；情节顺序须保持；补字只加厚已有场面，只改文风与口语',
     changeBlock
-      ? '- **章末【变更记录】**：润色时勿输出；系统会原样保留，勿删改'
-      : '',
+      ? '- **章末【变更记录】**：润色时勿输出；系统会在正文定稿后单独生成/保留，勿删改或仿写条目'
+      : '- **禁止**输出【变更记录】或「- 场景:」「因果:」等元数据条目',
     '- 只输出润色后正文，不要任何说明、分析、英文或思考过程',
     '',
     '【待润色正文】',
@@ -138,7 +142,7 @@ export async function polishNovelChapterProse(
     let out = finalizePolishedProse(bodyToPolish, polished, layoutRef)
       + (changeBlock ? `\n\n${changeBlock}` : '')
     if (opts?.mode !== 'segment' && opts?.minLen != null && opts?.maxLen != null) {
-      out = await ensureNovelChapterWithinLength(out, opts.minLen, opts.maxLen, billing)
+      out = await ensureNovelChapterWithinLength(out, opts.minLen, opts.maxLen, billing, opts.novelGenreSkillKey)
     }
     return out
   } catch (err: any) {
@@ -148,7 +152,7 @@ export async function polishNovelChapterProse(
     // 润色失败也必须打散套话/开篇骨架，否则 DeepSeek 空正文时「痛。像…」会原样交付
     let out = diversifyNovelProseTells(normalizeNovelTemporalNumerals(laidOut))
     if (opts?.mode !== 'segment' && opts?.minLen != null && opts?.maxLen != null) {
-      out = await ensureNovelChapterWithinLength(out, opts.minLen, opts.maxLen, billing)
+      out = await ensureNovelChapterWithinLength(out, opts.minLen, opts.maxLen, billing, opts.novelGenreSkillKey)
     }
     return changeBlock ? `${out.trim()}\n\n${changeBlock}` : out
   }
@@ -162,6 +166,7 @@ export async function ensureNovelChapterWithinLength(
   minLen: number,
   maxLen: number,
   billing?: TextBillingContext,
+  novelGenreSkillKey?: string,
 ): Promise<string> {
   const trimmed = text.trim()
   if (!trimmed || !(maxLen > 0) || !(minLen > 0)) return trimmed
@@ -178,7 +183,9 @@ export async function ensureNovelChapterWithinLength(
 
   const over = n > maxSoft
   const system = [
-    await buildNovelAgentSystem('novel_chapter_writer'),
+    await buildNovelAgentSystem('novel_chapter_writer', {
+      novelGenreSkillKey,
+    }),
     '',
     over
       ? '当前任务：将章节正文**压缩到目标字数区间**，保留全部关键情节与人物关系，删注水与重复描写。'

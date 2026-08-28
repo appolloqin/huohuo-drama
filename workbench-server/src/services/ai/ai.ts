@@ -58,7 +58,7 @@ export interface AIConfig {
   baseUrl: string
   apiKey: string
   model: string
-  settings?: string | null
+  settings?: string | Record<string, unknown> | null
 }
 
 export function getTextProviderBaseUrl(config: AIConfig) {

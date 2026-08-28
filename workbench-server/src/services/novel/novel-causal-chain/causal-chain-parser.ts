@@ -1,8 +1,5 @@
 /** 解析章末【变更记录】与 causal_chain.md */
-import {
-  normalizeChangeRecordArtifacts,
-  splitProseAndChangeRecord as splitProseAndChangeRecordRaw,
-} from '../../../common/novel/novel-change-record.js'
+import { splitProseAndChangeRecord as splitProseAndChangeRecordRaw } from '../../../common/novel/novel-change-record.js'
 
 export type CausalChangeEntry = {
   dimension: string
@@ -22,10 +19,7 @@ export function splitProseAndChangeRecord(fullText: string): {
   prose: string
   changeBlock: string | null
 } {
-  const normalized = normalizeChangeRecordArtifacts(fullText)
-  if (normalized.reclaimedFakeBlocks > 0 || normalized.changeBlock) {
-    return { prose: normalized.prose, changeBlock: normalized.changeBlock }
-  }
+  // novel-change-record.splitProseAndChangeRecord 已含 normalize（加粗标题 / 夹心散文）
   return splitProseAndChangeRecordRaw(fullText)
 }
 

@@ -265,9 +265,7 @@
                 <BaseSelect
                   v-model="createFormDraft.novel_genre"
                   :options="novelGenreOptions"
-                  :placeholder="tm.index.novelGenrePlaceholder"
                   searchable
-                  creatable
                   @update:model-value="onNovelGenreChange"
                 />
               </label>
@@ -405,6 +403,7 @@ const createFormDraft = ref({
   style: 'realistic',
   screen_orientation: 'portrait',
   novel_genre: '',
+  novel_genre_skill_key: '',
   premise: '',
   description: '',
 })
@@ -529,9 +528,11 @@ function onNovelGenreChange(value) {
   if (applied) {
     premiseKeywordLine.value = applied.keywords
     createFormDraft.value.premise = applied.premise
+    createFormDraft.value.novel_genre_skill_key = applied.skillKey
   } else {
     premiseKeywordLine.value = ''
     createFormDraft.value.premise = ''
+    createFormDraft.value.novel_genre_skill_key = ''
   }
 }
 
@@ -658,6 +659,7 @@ async function submitCreateForm() {
           project_type: 'novel',
           total_chapters: createFormDraft.value.total_chapters || 10,
           novel_genre: createFormDraft.value.novel_genre || undefined,
+          novel_genre_skill_key: createFormDraft.value.novel_genre_skill_key || undefined,
           premise: createFormDraft.value.premise || undefined,
         }
       : {
@@ -677,6 +679,7 @@ async function submitCreateForm() {
       style: 'realistic',
       screen_orientation: 'portrait',
       novel_genre: '',
+      novel_genre_skill_key: '',
       premise: '',
       description: '',
     }

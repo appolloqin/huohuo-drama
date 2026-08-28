@@ -10,7 +10,8 @@ import {
   mergeDramaMetadata,
   normalizeScreenOrientation,
 } from '../../common/drama/drama-meta.js'
-import { isNovelProject, mergeNovelMetadata, parseNovelMetadata } from '../../common/novel/novel-meta.js'
+import { isNovelProject, mergeNovelMetadata, parseNovelMetadata, resolveNovelGenreSkillKey } from '../../common/novel/novel-meta.js'
+import { getNovelGenreEntryByValue, isActiveNovelGenreSkillKey } from '../../common/novel/novel-genre-registry.js'
 import { dramaOwnedByUser } from './drama-access-service.js'
 
 const SUPPORTED_PROJECT_KINDS = ['drama', 'novel'] as const
@@ -111,9 +112,22 @@ export async function createUserProject(userId: number, body: Record<string, any
   const style = creatingNovel ? null : (normalizeDramaStyle(body.style) || 'realistic')
   let metadata = body.metadata ?? null
   if (creatingNovel) {
+    const genreLabel = typeof body.novel_genre === 'string'
+      ? body.novel_genre.trim()
+      : (typeof body.genre === 'string' ? body.genre.trim() : '')
+    const skillKeyFromBody = typeof body.novel_genre_skill_key === 'string'
+      ? body.novel_genre_skill_key.trim()
+      : ''
+    const skillKey = skillKeyFromBody
+      || getNovelGenreEntryByValue(genreLabel)?.skillKey
+      || undefined
+    if (skillKey && !isActiveNovelGenreSkillKey(skillKey)) {
+      throw new Error(`无效的小说题材类型：${skillKey}`)
+    }
     metadata = mergeNovelMetadata(null, {
       premise: typeof body.premise === 'string' ? body.premise : undefined,
-      novel_genre: typeof body.novel_genre === 'string' ? body.novel_genre : (body.genre || undefined),
+      novel_genre: genreLabel || undefined,
+      novel_genre_skill_key: skillKey || undefined,
       outline: typeof body.outline === 'string' ? body.outline : undefined,
     })
   } else {

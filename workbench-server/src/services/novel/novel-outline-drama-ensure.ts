@@ -3,6 +3,7 @@
  */
 import { chatCompletionText, type TextBillingContext } from '../ai/ai.js'
 import { buildNovelAgentSystem, novelAgentCompletionOptions } from './novel-agent-prompt.js'
+import { resolveNovelGenreSkillKey, isOutlineDramaGateEnabled, type NovelMetadata } from '../../common/novel/novel-meta.js'
 import { NO_THINKING_OUTPUT_RULE } from '../../common/novel/novel-creative-output.js'
 import {
   assertOutlineBookFields,
@@ -15,7 +16,6 @@ import {
   assertOutlineAppealNoveltyTags,
   detectDefaultFarmRebirthCliché,
 } from './novel-outline-appeal-novelty.js'
-import { isOutlineDramaGateEnabled, type NovelMetadata } from '../../common/novel/novel-meta.js'
 import {
   buildEmotionCoreOutlineTagLines,
   EMOTION_CORE_CONTRACT_VERSION,
@@ -65,9 +65,12 @@ export async function fillMissingOutlineBookFields(args: {
   missing: string[]
   clicheHint?: string | null
   billing?: TextBillingContext
+  novelGenreSkillKey?: string
 }): Promise<string> {
   const system = [
-    await buildNovelAgentSystem('novel_outline'),
+    await buildNovelAgentSystem('novel_outline', {
+      novelGenreSkillKey: args.novelGenreSkillKey,
+    }),
     '任务：只补全全书大纲中缺失的总纲戏剧标签，保留原文其余部分。',
     '必须输出**完整大纲全文**（在原文基础上插入/补齐标签），不要只输出补丁。',
     '若缺【卖点偏转】【非常规压力源】【能力非常规用法】须补齐；偏转须写「常见预期→本书偏转」，并点出第三轴（如假账/掉包/派系/专利/配方等），禁止空喊「不一样」。',
@@ -107,11 +110,14 @@ export async function fillMissingOutlineChapterFields(args: {
   invalid?: string[]
   title?: string
   billing?: TextBillingContext
+  novelGenreSkillKey?: string
 }): Promise<string> {
   const section = sliceOutlineChapterSection(args.outline, args.chapterNumber)
   const needEmotion = args.chapterNumber >= 1 && args.chapterNumber <= 8
   const system = [
-    await buildNovelAgentSystem('novel_outline'),
+    await buildNovelAgentSystem('novel_outline', {
+      novelGenreSkillKey: args.novelGenreSkillKey,
+    }),
     `任务：只补全第 ${args.chapterNumber} 章分章概要中缺失的戏剧标签。`,
     `须输出该章完整块：以「第${args.chapterNumber}章」开头，含标题与全部标签：${OUTLINE_CHAPTER_FIELD_LABELS.join('、')}${needEmotion ? '、恨、爽、急、盼、爽型' : ''}。`,
     '【冲突层】只能用：外部、人际、自我。',
@@ -168,6 +174,7 @@ export async function ensureOutlineBookDramaFields(args: {
   title?: string
   premise?: string
   billing?: TextBillingContext
+  novelGenreSkillKey?: string
 }): Promise<string> {
   let outline = args.outline
   let gaps = collectBookDramaGaps(outline)
@@ -179,6 +186,7 @@ export async function ensureOutlineBookDramaFields(args: {
     missing: gaps.missing,
     clicheHint: gaps.cliche,
     billing: args.billing,
+    novelGenreSkillKey: args.novelGenreSkillKey,
   })
   gaps = collectBookDramaGaps(outline)
   if (!gaps.ok) {
@@ -200,6 +208,7 @@ export async function ensureOutlineChapterDramaFields(args: {
   chapterNumber: number
   title?: string
   billing?: TextBillingContext
+  novelGenreSkillKey?: string
 }): Promise<{ outline: string; fields: OutlineChapterDramaFields }> {
   let outline = args.outline
   let check = assertOutlineChapterFields(outline, args.chapterNumber)
@@ -211,6 +220,7 @@ export async function ensureOutlineChapterDramaFields(args: {
       invalid: check.invalid,
       title: args.title,
       billing: args.billing,
+      novelGenreSkillKey: args.novelGenreSkillKey,
     })
     check = assertOutlineChapterFields(outline, args.chapterNumber)
   }
@@ -287,12 +297,14 @@ export async function prepareOutlineDramaForChapterWrite(args: {
     title: args.title,
     premise: args.meta.premise,
     billing: args.billing,
+    novelGenreSkillKey: resolveNovelGenreSkillKey(args.meta),
   })
   const ensured = await ensureOutlineChapterDramaFields({
     outline,
     chapterNumber: args.chapterNumber,
     title: args.title,
     billing: args.billing,
+    novelGenreSkillKey: resolveNovelGenreSkillKey(args.meta),
   })
   const outlineChanged = ensured.outline !== original
   const writingChapterOutline = sliceOutlineChapterSection(ensured.outline, args.chapterNumber).trim()

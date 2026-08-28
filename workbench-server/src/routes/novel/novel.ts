@@ -56,7 +56,8 @@ function novelTextBilling(
     resourceId,
   }
 }
-import { isNovelProject, mergeNovelMetadata, parseNovelMetadata, type NovelMetadata } from '../../common/novel/novel-meta.js'
+import { isNovelProject, mergeNovelMetadata, parseNovelMetadata, resolveNovelGenreSkillKey, type NovelMetadata } from '../../common/novel/novel-meta.js'
+import { getNovelGenreEntryByValue, isActiveNovelGenreSkillKey } from '../../common/novel/novel-genre-registry.js'
 import { extractChapterOutline, resolveChapterDisplayTitle } from '../../common/novel/novel-outline.js'
 import { syncChapterTitlesFromOutline } from '../../common/novel/novel-chapter-titles.js'
 import {
@@ -243,6 +244,7 @@ app.get('/dramas/:id/meta', async (c) => {
     outline: meta.outline || '',
     premise: meta.premise || drama.description || '',
     novel_genre: meta.novel_genre || drama.genre || '',
+    novel_genre_skill_key: resolveNovelGenreSkillKey(meta) || '',
     context_chars: meta.context_chars || 4000,
     target_chapter_chars: meta.target_chapter_chars || 3000,
     continue_segment_chars: meta.continue_segment_chars || 800,
@@ -260,6 +262,16 @@ app.put('/dramas/:id/meta', async (c) => {
   if (typeof body.outline === 'string') patch.outline = body.outline
   if (typeof body.premise === 'string') patch.premise = body.premise
   if (typeof body.novel_genre === 'string') patch.novel_genre = body.novel_genre
+  if (typeof body.novel_genre_skill_key === 'string') {
+    const skillKey = body.novel_genre_skill_key.trim()
+    if (skillKey && !isActiveNovelGenreSkillKey(skillKey)) {
+      return badRequest(c, `无效的小说题材类型：${skillKey}`)
+    }
+    patch.novel_genre_skill_key = skillKey
+  } else if (typeof body.novel_genre === 'string') {
+    const entry = getNovelGenreEntryByValue(body.novel_genre.trim())
+    if (entry?.status === 'active') patch.novel_genre_skill_key = entry.skillKey
+  }
   if (body.context_chars !== undefined) {
     const n = Number(body.context_chars)
     if (Number.isFinite(n) && n >= 512 && n <= 12000) patch.context_chars = n
@@ -277,7 +289,7 @@ app.put('/dramas/:id/meta', async (c) => {
   if (typeof body.novel_genre === 'string') updates.genre = body.novel_genre
   await updateNovelDrama(id, updates)
   if (typeof body.outline === 'string' && body.outline.trim()) {
-    void syncChapterTitlesFromOutline(id, body.outline)
+    await syncChapterTitlesFromOutline(id, body.outline, { force: true })
   }
   return success(c)
 })
@@ -291,7 +303,9 @@ app.post('/dramas/:id/sync-chapter-titles', async (c) => {
   const meta = parseNovelMetadata(drama.metadata)
   const outline = (meta.outline || '').trim()
   if (!outline) return badRequest(c, '请先填写全书大纲')
-  const updated = await syncChapterTitlesFromOutline(id, outline)
+  const body = await c.req.json().catch(() => ({}))
+  const force = body?.force !== false
+  const updated = await syncChapterTitlesFromOutline(id, outline, { force })
   return success(c, { updated })
 })
 
@@ -323,11 +337,12 @@ app.post('/dramas/:id/outline', async (c) => {
       title: drama.title,
       premise,
       genre: meta.novel_genre || drama.genre || undefined,
+      novelGenreSkillKey: resolveNovelGenreSkillKey(meta),
       totalChapters,
     }, novelTextBilling(user, '小说大纲生成', id))
     const metadata = mergeNovelMetadata(drama.metadata, { outline, premise })
     await updateNovelDrama(id, { metadata, updatedAt: now() })
-    const titlesUpdated = await syncChapterTitlesFromOutline(id, outline)
+    const titlesUpdated = await syncChapterTitlesFromOutline(id, outline, { force: true })
     logTaskSuccess('Novel', 'generate-outline', { dramaId: id, len: outline.length, titlesUpdated })
     return success(c, { outline, titles_updated: titlesUpdated })
   } catch (err: any) {

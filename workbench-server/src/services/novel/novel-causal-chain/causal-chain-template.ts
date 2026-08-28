@@ -34,10 +34,27 @@ export function causalChainTemplate(chapter = 0): string {
 
 export const CAUSAL_CHANGE_RECORD_HEADER = '【变更记录】'
 
-export const CAUSAL_CHAPTER_END_FORMAT = `
-章末须另附【变更记录】块（紧接正文之后、单独成段；**不是故事正文**，是系统元数据，落库时会拆出存储）。
+/**
+ * 写章 / 重写 / 润色：只出读者正文。
+ * 【变更记录】由管线在正文定稿后单独生成，禁止同轮输出。
+ */
+export const CAUSAL_PROSE_ONLY_RULE = `
+【输出】只输出小说正文。
+**禁止**输出【变更记录】标题，禁止输出「- 场景:」「- 时间:」「因果:」「触发:」等元数据条目清单。
+状态变化须写进故事场面与人物反应（触发→过程→结果写在叙述里）；系统会在正文定稿后单独生成【变更记录】。
+`.trim()
 
-**严禁**：在故事段落中间插入「【变更记录】」小标题后继续写小说正文；【变更记录】下只能是短条目（含「因果:」），禁止散文。
+/**
+ * 仅供「变更记录专用 LLM」使用的格式说明（写章模型勿注入此块）。
+ */
+export const CAUSAL_CHAPTER_END_FORMAT = `
+根据正文提取【变更记录】元数据块（**不是**故事正文）。
+
+要求：
+- 只输出【变更记录】及其下列短条目，不要续写小说、不要解释
+- 每条须含独立一行「因果:」（触发→过程→结果，至少 8 字）
+- 子字段「触发:」「代价:」「感知:」「耗时:」另起一行缩进
+- 禁止 markdown 加粗/标题变体；标题必须单独一行原样：【变更记录】
 
 格式示例：
 ${CAUSAL_CHANGE_RECORD_HEADER}
@@ -54,7 +71,8 @@ ${CAUSAL_CHANGE_RECORD_HEADER}
 - 人物/某某: …
   因果: …
 
-若无任何状态变化，写一行：${CAUSAL_CHANGE_RECORD_HEADER}
+若无任何状态变化：
+${CAUSAL_CHANGE_RECORD_HEADER}
 - 状态: 无状态变化（因果起点延续）
   因果: 本章未发生场景/时间/人物状态/伤势/物品变更
 `.trim()

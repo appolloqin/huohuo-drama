@@ -2,15 +2,23 @@
  * Agent SKILL.md 加载器
  *
  * - 内置 agent → skill 映射 + 磁盘扫描子目录 reference
+ * - 小说四 Agent 按 novel_genre_skill_key 只加载横切 + 单题材 Skill
  * - 输出拼接为 system prompt 片段，tool id 不变
  */
 import fs from 'fs'
 import path from 'path'
 import { fileURLToPath } from 'url'
+import {
+  assertGenreSkillForAgent,
+  genreSkillRelativeId,
+  isNovelAgentType,
+  listCrossCuttingSkillIds,
+  SKILLS_ROOT,
+} from '../common/novel/novel-genre-skill.js'
+import type { NovelAgentType } from '../common/novel/novel-genre-registry.js'
 
 const __filename = fileURLToPath(import.meta.url)
 const __dirname = path.dirname(__filename)
-const SKILLS_ROOT = path.resolve(__dirname, '../../../agent-skills')
 
 // ── 内置 agent 与 skill 目录映射 ─────────────────────────────
 
@@ -25,6 +33,10 @@ const CANONICAL_AGENT_SKILL_MAP: Record<string, string[]> = {
   novel_writing_brief: ['novel_writing_brief'],
   novel_chapter_writer: ['novel_chapter_writer'],
   ai_dehumanizer: ['ai_dehumanizer'],
+}
+
+export type LoadAgentSkillsOptions = {
+  skillKey?: string | null
 }
 
 // ── 磁盘扫描 ─────────────────────────────────────────────────
@@ -47,20 +59,52 @@ function listSkillIdsOnDisk(): string[] {
   return enumerateSkillSubfolders(SKILLS_ROOT)
 }
 
-/** 合并内置与磁盘 skill，主 skill 优先排序 */
-export function resolveAgentSkillIds(agentType: string): string[] {
-  const builtIn = CANONICAL_AGENT_SKILL_MAP[agentType] || []
-  const fromDisk = listSkillIdsOnDisk().filter(
-    id => id === agentType || id.startsWith(`${agentType}/`),
-  )
-  const merged = [...builtIn, ...fromDisk]
-  const unique = [...new Set(merged)]
+function agentRootSkillExists(agentType: string): boolean {
+  return fs.existsSync(path.join(SKILLS_ROOT, agentType, 'SKILL.md'))
+}
+
+function dedupeSortSkillIds(agentType: string, ids: string[]): string[] {
+  const unique = [...new Set(ids)]
   unique.sort((a, b) => {
     if (a === agentType) return -1
     if (b === agentType) return 1
     return a.localeCompare(b, 'zh-CN')
   })
   return unique
+}
+
+/** 旧行为：扫描 agent 下全部子 skill（调试用 NOVEL_SKILL_LOAD_ALL=1） */
+function legacyResolveAllAgentSkillIds(agentType: string): string[] {
+  const builtIn = CANONICAL_AGENT_SKILL_MAP[agentType] || []
+  const fromDisk = listSkillIdsOnDisk().filter(
+    id => id === agentType || id.startsWith(`${agentType}/`),
+  )
+  return dedupeSortSkillIds(agentType, [...builtIn, ...fromDisk])
+}
+
+function resolveNovelAgentSkillIds(agentType: NovelAgentType, skillKey?: string | null): string[] {
+  const ids: string[] = []
+  if (agentRootSkillExists(agentType)) ids.push(agentType)
+
+  for (const crossCut of listCrossCuttingSkillIds(agentType)) {
+    ids.push(`${agentType}/${crossCut}`)
+  }
+
+  const key = (skillKey || '').trim()
+  if (key) {
+    assertGenreSkillForAgent(agentType, key)
+    ids.push(genreSkillRelativeId(agentType, key))
+  }
+
+  return dedupeSortSkillIds(agentType, ids)
+}
+
+/** 合并内置与磁盘 skill，主 skill 优先排序 */
+export function resolveAgentSkillIds(agentType: string, opts?: LoadAgentSkillsOptions): string[] {
+  if (process.env.NOVEL_SKILL_LOAD_ALL === '1' || !isNovelAgentType(agentType)) {
+    return legacyResolveAllAgentSkillIds(agentType)
+  }
+  return resolveNovelAgentSkillIds(agentType, opts?.skillKey)
 }
 
 // ── Markdown 解析与拼接 ───────────────────────────────────────
@@ -90,8 +134,8 @@ const AGENT_SKILL_PROMPT_HEADER = [
   '',
 ].join('\n')
 
-export function loadAgentSkills(agentType: string): string {
-  const skillIds = resolveAgentSkillIds(agentType)
+export function loadAgentSkills(agentType: string, opts?: LoadAgentSkillsOptions): string {
+  const skillIds = resolveAgentSkillIds(agentType, opts)
   const sections = skillIds.map(readSkillMarkdownSection).filter(Boolean)
   if (!sections.length) return ''
   return [AGENT_SKILL_PROMPT_HEADER, sections.join('\n\n')].join('\n')

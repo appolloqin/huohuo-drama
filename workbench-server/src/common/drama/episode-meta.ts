@@ -286,7 +286,8 @@ function parseAiDetection(ai: unknown): EpisodeAiDetection | undefined {
       ? src.segments
         .filter((s: unknown) => s && typeof s === 'object')
         .map((s: Record<string, unknown>) => {
-          const band = s.band === 'human' || s.band === 'suspected' || s.band === 'ai' ? s.band : 'suspected'
+          const band: 'human' | 'suspected' | 'ai' =
+            s.band === 'human' || s.band === 'suspected' || s.band === 'ai' ? s.band : 'suspected'
           return {
             index: Number.isFinite(Number(s.index)) ? Number(s.index) : 0,
             char_start: Number.isFinite(Number(s.char_start)) ? Number(s.char_start) : 0,
@@ -303,13 +304,15 @@ function parseAiDetection(ai: unknown): EpisodeAiDetection | undefined {
       ? {
           windows: ((src.sampling as { windows: unknown[] }).windows)
             .filter((w) => w && typeof w === 'object')
-            .map((w: Record<string, unknown>) => ({
-              label: typeof w.label === 'string' ? w.label : 'head',
-              char_start: Number.isFinite(Number(w.char_start)) ? Number(w.char_start) : 0,
-              char_end: Number.isFinite(Number(w.char_end)) ? Number(w.char_end) : 0,
-              perplexity: Number.isFinite(Number(w.perplexity)) ? Number(w.perplexity) : undefined,
-              probability: Number.isFinite(Number(w.probability)) ? Number(w.probability) : undefined,
-            })),
+            .map((w) => {
+              const row = w as Record<string, unknown>
+              return {
+              label: typeof row.label === 'string' ? row.label : 'head',
+              char_start: Number.isFinite(Number(row.char_start)) ? Number(row.char_start) : 0,
+              char_end: Number.isFinite(Number(row.char_end)) ? Number(row.char_end) : 0,
+              perplexity: Number.isFinite(Number(row.perplexity)) ? Number(row.perplexity) : undefined,
+              probability: Number.isFinite(Number(row.probability)) ? Number(row.probability) : undefined,
+            }}),
         }
       : undefined,
   }

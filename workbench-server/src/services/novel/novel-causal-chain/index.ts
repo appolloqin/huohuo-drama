@@ -2,6 +2,7 @@ export {
   causalChainTemplate,
   CAUSAL_CHANGE_RECORD_HEADER,
   CAUSAL_CHAPTER_END_FORMAT,
+  CAUSAL_PROSE_ONLY_RULE,
 } from './causal-chain-template.js'
 export {
   splitProseAndChangeRecord,

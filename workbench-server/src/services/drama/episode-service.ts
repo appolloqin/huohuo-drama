@@ -14,7 +14,7 @@ import { mergeEpisodeMetadata, readProductionPipeline, type ProductionPipeline }
 import { isValidAspectRatio, type ImageAspectRatio } from '../../common/media/image-aspect-presets.js'
 import { normalizeVideoGenOptions } from '../../common/media/video-gen-options.js'
 import { dramaOwnedByUser, episodeAndDramaForUser } from './drama-access-service.js'
-import { extractChapterOutline } from '../../common/novel/novel-outline.js'
+import { extractChapterOutline, resolveChapterListDisplayTitle } from '../../common/novel/novel-outline.js'
 import { parseNovelMetadata } from '../../common/novel/novel-meta.js'
 import * as dramasRepo from '../../db/repos/dramas/index.js'
 import * as characterFormsRepo from '../../db/repos/character-forms/index.js'
@@ -111,6 +111,11 @@ function mapEpisodeListItem(
       ? extractChapterOutline(bookOutline, row.episodeNumber)
       : ''
     item.chapter_outline = custom || fromBook || ''
+    item.display_title = resolveChapterListDisplayTitle({
+      episodeTitle: row.title,
+      chapterNumber: row.episodeNumber,
+      bookOutline,
+    })
   }
   return item
 }

@@ -1,15 +1,18 @@
 /** 小说项目 metadata 读写（存于 dramas.metadata JSON） */
 
+import { parseJsonColumnObject, type JsonColumnInput } from '../db/parse-json-column.js'
 import {
   normalizeGlobalContinuityState,
   type NovelGlobalContinuityState,
 } from './novel-continuity-state.js'
-import { parseJsonColumnObject, type JsonColumnInput } from '../db/parse-json-column.js'
+import { resolveSkillKeyFromGenreValue } from './novel-genre-registry.js'
 
 export type NovelMetadata = {
   outline?: string
   premise?: string
   novel_genre?: string
+  /** 题材类型 ID，Skill 路由唯一依据（与 preset skillKey 对应） */
+  novel_genre_skill_key?: string
   /** 续写时参考的上下文字符数，默认 4000 */
   context_chars?: number
   /** 一次生成本章的目标字数，默认 3000 */
@@ -74,6 +77,8 @@ export function parseNovelMetadata(raw: JsonColumnInput): NovelMetadata {
       outline: typeof parsed.outline === 'string' ? parsed.outline : undefined,
       premise: typeof parsed.premise === 'string' ? parsed.premise : undefined,
       novel_genre: typeof parsed.novel_genre === 'string' ? parsed.novel_genre : undefined,
+      novel_genre_skill_key:
+        typeof parsed.novel_genre_skill_key === 'string' ? parsed.novel_genre_skill_key : undefined,
       context_chars: Number.isFinite(Number(parsed.context_chars)) ? Number(parsed.context_chars) : undefined,
       target_chapter_chars: Number.isFinite(Number(parsed.target_chapter_chars))
         ? Number(parsed.target_chapter_chars) : undefined,
@@ -144,7 +149,16 @@ export function mergeNovelMetadata(
   const next: NovelMetadata = { ...base, ...patch }
   if (patch.outline === '') delete next.outline
   if (patch.premise === '') delete next.premise
+  if (patch.novel_genre === '') delete next.novel_genre
+  if (patch.novel_genre_skill_key === '') delete next.novel_genre_skill_key
   return JSON.stringify(next)
+}
+
+/** 路由用 skillKey：优先 metadata；旧数据按 preset.value 精确回填 */
+export function resolveNovelGenreSkillKey(meta: NovelMetadata): string | undefined {
+  const direct = (meta.novel_genre_skill_key || '').trim()
+  if (direct) return direct
+  return resolveSkillKeyFromGenreValue(meta.novel_genre || '') || undefined
 }
 
 export function isNovelProject(drama: { projectType?: string | null; project_type?: string | null }) {

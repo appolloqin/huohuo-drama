@@ -3,7 +3,11 @@
  * - mapTextPreservingLineBreaks：一致性修正时原样保留 \n
  * - normalizeNovelParagraphs / toNaturalNovelParagraphs：长墙拆段、碎行合并为自然短段
  * - 目标：叙述 1～3 句一段（硬上限 3），段间空一行；忌诗化一句一段，也忌多句糊墙
+ * - 引号内句末标点不拆句；跨段未闭合对白须粘回
  */
+
+const QUOTE_OPEN = new Set(['“', '「', '『'])
+const QUOTE_CLOSE = new Set(['”', '」', '』', "'", '"'])
 
 /** 仅在非换行片段上变换，原样保留每一段换行序列 */
 export function mapTextPreservingLineBreaks(text: string, mapBlock: (block: string) => string): string {
@@ -11,14 +15,45 @@ export function mapTextPreservingLineBreaks(text: string, mapBlock: (block: stri
   return text.split(/(\n+)/).map(part => (/^\n+$/.test(part) ? part : mapBlock(part))).join('')
 }
 
-/** 按句末标点拆句；勿在省略号「……」处断开；勿在「句末+收引号」处断开 */
+/** 段内引号净开合（>0 表示未闭合对白） */
+function quoteOpenDepth(text: string): number {
+  let depth = 0
+  for (const ch of text) {
+    if (QUOTE_OPEN.has(ch)) depth += 1
+    else if (QUOTE_CLOSE.has(ch) && depth > 0) depth -= 1
+  }
+  return depth
+}
+
+/**
+ * 按句末标点拆句：
+ * - 勿在「句末+收引号」处断开
+ * - **勿在未闭合引号内的 。！？ 处断开**（否则 “……？……” 会被拆成半截对白）
+ */
 function splitSentences(text: string): string[] {
-  // “十九。” / 「走吧。」 —— 句号后紧跟收引号时必须同属一句，否则会变成：
-  // “十九。\n\n”苏婉…
-  return text
-    .split(/(?<=[。！？!?])(?![」』”'"])/)
-    .map(s => s.trim())
-    .filter(Boolean)
+  if (!text) return []
+  const out: string[] = []
+  let buf = ''
+  let depth = 0
+  for (let i = 0; i < text.length; i++) {
+    const ch = text[i]!
+    buf += ch
+    if (QUOTE_OPEN.has(ch)) depth += 1
+    else if (QUOTE_CLOSE.has(ch) && depth > 0) depth -= 1
+
+    if (!/[。！？!?]/.test(ch)) continue
+    const next = text[i + 1]
+    // “十九。” —— 句号后紧跟收引号，同属一句
+    if (next && QUOTE_CLOSE.has(next)) continue
+    // 引号内多句对白：保持同一句单元，避免拆段后右引号落在下一段
+    if (depth > 0) continue
+    const trimmed = buf.trim()
+    if (trimmed) out.push(trimmed)
+    buf = ''
+  }
+  const tail = buf.trim()
+  if (tail) out.push(tail)
+  return out
 }
 
 function paragraphBlocks(text: string): string[] {
@@ -46,7 +81,6 @@ export function isOverFragmentedLayout(text: string): boolean {
   const avg = lines.reduce((sum, line) => sum + line.length, 0) / lines.length
   const veryShortRatio = lines.filter(line => line.length <= 28).length / lines.length
   const oneSentenceRatio = lines.filter(line => (line.match(/[。！？!?]/g) || []).length === 1).length / lines.length
-  // 几乎每行恰好一句、行均不长 → 诗化碎行
   if (oneSentenceRatio >= 0.75 && avg <= 58) return true
   if (avg <= 42) return true
   if (veryShortRatio >= 0.22 && oneSentenceRatio >= 0.7) return true
@@ -82,8 +116,9 @@ function isUltraShortFragment(sentence: string): boolean {
 
 const MAX_SENTENCES_PER_PARAGRAPH = 3
 
+/** 用引号感知拆句计数，避免引号内多句被当成超限而硬拆 */
 function sentenceCountInBlock(block: string): number {
-  return (block.match(/[。！？!?]/g) || []).length
+  return splitSentences(block).length
 }
 
 /** 句数/字数换段目标轮转：避免规范化后段落字数过匀（检测 paragraph_uniformity） */
@@ -114,7 +149,6 @@ function splitWallIntoParagraphs(text: string): string[] {
       continue
     }
 
-    // 极短碎句并入下一段（按长度，不按具体词）
     if (isUltraShortFragment(sent) && !bucket.length) {
       bucket.push(sent)
       bucketChars += sent.length
@@ -130,11 +164,11 @@ function splitWallIntoParagraphs(text: string): string[] {
 
     const sentTarget = FLUSH_SENTENCE_TARGETS[patternIdx % FLUSH_SENTENCE_TARGETS.length]!
     const charTarget = FLUSH_CHAR_TARGETS[patternIdx % FLUSH_CHAR_TARGETS.length]!
-    // 硬上限 3 句；换段目标在 1～3 句与短/中/长字数间轮转，打散段落均匀度
     const preferFlush = bucket.length >= sentTarget
       || bucket.length >= MAX_SENTENCES_PER_PARAGRAPH
       || bucketChars >= charTarget
-    if (preferFlush && !isUltraShortFragment(sent)) {
+    // 桶内若仍有未闭合引号，禁止换段
+    if (preferFlush && !isUltraShortFragment(sent) && quoteOpenDepth(bucket.join('')) === 0) {
       flush()
     }
   }
@@ -164,7 +198,6 @@ function splitWallAlternatingShortLong(text: string): string[] {
       i += 1
     } else {
       const n = Math.min(3, sentences.length - i)
-      // 优先凑 3 句稍长段；不足则 2
       const take = n >= 3 ? 3 : n
       out.push(sentences.slice(i, i + take).join(''))
       i += take
@@ -176,7 +209,6 @@ function splitWallAlternatingShortLong(text: string): string[] {
 
 /**
  * 已分段正文的段落节奏打散：在 ≤3 句/段前提下重切，短拍/中段/稍长交错。
- * 用于润色规范化或去 AI 味后纠偏「连续八段差不多长」。
  */
 export function varyNovelParagraphRhythm(text: string): string {
   const trimmed = text.replace(/\r\n/g, '\n').trim()
@@ -187,18 +219,16 @@ export function varyNovelParagraphRhythm(text: string): string {
   }
   const flat = blocks.join('')
   let varied = splitWallIntoParagraphs(flat)
-  // 轮转切段后 CV 仍偏低：改用 1↔3 句交替，把均匀度打进检测安全区
   if (paragraphLengthCv(varied) < 0.5 && splitSentences(flat).length >= 4) {
     varied = splitWallAlternatingShortLong(flat)
   }
-  return mergeLeadingCloseQuoteParagraphs(
+  return repairNovelQuoteParagraphs(
     enforceMaxSentencesPerParagraph(varied.length ? varied.join('\n\n') : trimmed),
   )
 }
 
 /**
  * 任一叙述段超过 max 句则按句重切（对话/拟声可 1 句成段，仍受 max 约束）。
- * 生成/润色/去 AI 味收口都可调用，防止「一段塞六七句」。
  */
 export function enforceMaxSentencesPerParagraph(
   text: string,
@@ -215,7 +245,7 @@ export function enforceMaxSentencesPerParagraph(
     }
     out.push(...splitWallIntoParagraphs(block))
   }
-  return mergeLeadingCloseQuoteParagraphs(mergeOrphanShortParagraphs(out.join('\n\n')))
+  return repairNovelQuoteParagraphs(mergeOrphanShortParagraphs(out.join('\n\n')))
 }
 
 function isOrphanShortBeat(block: string): boolean {
@@ -223,7 +253,6 @@ function isOrphanShortBeat(block: string): boolean {
   if (!t || t.length > 12) return false
   if (isDialogueHeavy(t)) return false
   if (isShortOnomatopoeia(t)) return false
-  // 结构判定：极短 + 至多一个句末标点（不绑定具体用词）
   return (t.match(/[。！？!?]/g) || []).length <= 1
 }
 
@@ -247,11 +276,75 @@ export function mergeLeadingCloseQuoteParagraphs(text: string): string {
 }
 
 /**
+ * 上一段对白未闭合（开引号多于收引号）时，与下一段粘回，避免右引号落在下一段开头。
+ */
+export function mergeUnclosedDialogueParagraphs(text: string): string {
+  const blocks = paragraphBlocks(text)
+  if (blocks.length < 2) return text.trim()
+  const merged: string[] = []
+  for (const raw of blocks) {
+    const b = raw.trim()
+    if (!b) continue
+    if (merged.length && quoteOpenDepth(merged[merged.length - 1]!) > 0) {
+      merged[merged.length - 1] = `${merged[merged.length - 1]}${b}`
+      continue
+    }
+    merged.push(b)
+  }
+  return merged.join('\n\n')
+}
+
+/**
+ * 收引号后紧跟「他说/秦霄道」等标注 → 同段保留；
+ * 紧跟新叙述动作（如。”钱虎没理他）→ 换段，避免右引号贴着后文。
+ */
+function isDialogueAttributionTail(s: string): boolean {
+  return /^(?:他|她|它|我|你|咱|您)?[\u4e00-\u9fff]{0,4}(?:说道|说了|问道|喊道|吼道|骂道|笑道|答道|回道|冷哼|冷笑|道|说|问|喊|吼|骂|笑|哼|叹|答|叫)/.test(s)
+}
+
+export function breakNarrationAfterClosingQuote(text: string): string {
+  const src = text.replace(/\r\n/g, '\n')
+  if (!src) return src
+  let depth = 0
+  let out = ''
+  for (let i = 0; i < src.length; i++) {
+    const ch = src[i]!
+    out += ch
+    if (QUOTE_OPEN.has(ch)) {
+      depth += 1
+      continue
+    }
+    if (!QUOTE_CLOSE.has(ch) || depth <= 0) continue
+    depth -= 1
+    if (depth !== 0) continue
+
+    const rest = src.slice(i + 1)
+    if (!rest || /^\s*\n/.test(rest)) continue
+    const trimmed = rest.replace(/^[ \t]+/, '')
+    if (!trimmed) continue
+    if (/^[，。！？、；：…]/.test(trimmed)) continue
+    if (QUOTE_OPEN.has(trimmed[0]!)) continue
+    if (isDialogueAttributionTail(trimmed)) continue
+    if (!/^[\u4e00-\u9fffA-Za-z0-9]/.test(trimmed)) continue
+
+    out += '\n\n'
+    while (i + 1 < src.length && /[ \t]/.test(src[i + 1]!)) i += 1
+  }
+  return out.replace(/\n{3,}/g, '\n\n')
+}
+
+/** 引号相关段落修复：段首收引号 + 跨段未闭合对白 + 收引号后叙述换段 */
+export function repairNovelQuoteParagraphs(text: string): string {
+  return breakNarrationAfterClosingQuote(
+    mergeUnclosedDialogueParagraphs(mergeLeadingCloseQuoteParagraphs(text)),
+  )
+}
+
+/**
  * 极短独占段并入下一段（按长度/结构，不按具体词）。
- * 文末仍无法合并的极短句：句号改为感叹号（短拍语气）。
  */
 export function mergeOrphanShortParagraphs(text: string): string {
-  const blocks = paragraphBlocks(mergeLeadingCloseQuoteParagraphs(text))
+  const blocks = paragraphBlocks(repairNovelQuoteParagraphs(text))
   if (blocks.length < 2) {
     return blocks.length === 1 ? punchStandaloneBeat(blocks[0]!) : text.trim()
   }
@@ -268,11 +361,10 @@ export function mergeOrphanShortParagraphs(text: string): string {
     merged.push(cur)
   }
 
-  // 连续极短段多轮合并
   if (merged.length < blocks.length && merged.some(isOrphanShortBeat)) {
     return mergeOrphanShortParagraphs(merged.join('\n\n'))
   }
-  return mergeLeadingCloseQuoteParagraphs(merged.map(punchStandaloneBeat).join('\n\n'))
+  return repairNovelQuoteParagraphs(merged.map(punchStandaloneBeat).join('\n\n'))
 }
 
 /** 仍独占一行的极短拍：凡以句号收束的，统一改为感叹号（不维护词表） */
@@ -290,7 +382,7 @@ export function toNaturalNovelParagraphs(text: string): string {
   if (!trimmed) return trimmed
   const flat = paragraphBlocks(trimmed).join('')
   const paragraphs = splitWallIntoParagraphs(flat)
-  return mergeLeadingCloseQuoteParagraphs(
+  return repairNovelQuoteParagraphs(
     enforceMaxSentencesPerParagraph(
       mergeOrphanShortParagraphs(paragraphs.length ? paragraphs.join('\n\n') : flat),
     ),
@@ -311,7 +403,7 @@ export function preserveNovelLineLayout(_reference: string, output: string, _for
     const avg = nonEmptyLines(out).reduce((s, l) => s + l.length, 0) / nonEmptyLines(out).length
     if (avg <= 55) out = toNaturalNovelParagraphs(out)
   }
-  return mergeLeadingCloseQuoteParagraphs(
+  return repairNovelQuoteParagraphs(
     enforceMaxSentencesPerParagraph(mergeOrphanShortParagraphs(out)),
   )
 }
@@ -320,7 +412,6 @@ export function needsParagraphSplit(text: string): boolean {
   const blocks = paragraphBlocks(text)
   if (!blocks.length) return false
   if (isOverFragmentedLayout(text)) return true
-  // 任一段超过 3 句必须拆（比纯字数更贴「1～3 句/段」）
   if (blocks.some(b => sentenceCountInBlock(b) > MAX_SENTENCES_PER_PARAGRAPH)) return true
   if (blocks.length === 1) return blocks[0]!.length > 120
   return Math.max(...blocks.map(b => b.length)) > 320

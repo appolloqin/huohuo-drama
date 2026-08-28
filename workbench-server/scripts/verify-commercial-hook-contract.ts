@@ -4,7 +4,7 @@
  */
 import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
-import { NOVEL_OUTLINE_STRUCTURE_HINT, NOVEL_DEFAULT_PROMPTS, isMundaneNonCultivationGenre, isCultivationPowerGenre, detectOutlineCultivationBleed, buildOutlineWorldHardRequirement } from '../src/agents/novel-defaults.js'
+import { NOVEL_OUTLINE_STRUCTURE_HINT, NOVEL_DEFAULT_PROMPTS, isMundaneNonCultivationGenre, isCultivationPowerGenre, detectOutlineCultivationBleed, buildOutlineWorldHardRequirement, sanitizeOutlineWorldMetaLeak } from '../src/agents/novel-defaults.js'
 import { WEBNOVEL_CHAPTER_PROSE_GUIDE } from '../src/agents/webnovel-prose-style.js'
 import {
   buildAppealSingleCodeFixBlock,
@@ -114,6 +114,23 @@ if (!buildOutlineWorldHardRequirement('种田修真').includes('修炼体系') |
 }
 if (!buildOutlineWorldHardRequirement('种田').includes('种田修真')) {
   throw new Error('bare 种田 hard req must mention 种田修真 → A branch')
+}
+if (!isCultivationPowerGenre('驱魔文')) {
+  throw new Error('驱魔文 must be cultivation power genre')
+}
+{
+  const leaked = `【世界观设定】
+- **力量标签优先**：本梗概含「茅山」「雷法」等，走 A。
+
+【世界观设定】
+- **力量标签优先**：本梗概含「正阳雷法」，走 A。
+- **修炼体系**：淬体-凝气-筑基
+【总纲】
+主线一句`
+  const cleaned = sanitizeOutlineWorldMetaLeak(leaked)
+  if (/力量标签优先|走\s*A/.test(cleaned)) throw new Error('sanitize must strip world meta leak')
+  if ((cleaned.match(/【世界观设定】/g) || []).length !== 1) throw new Error('sanitize must collapse duplicate world headers')
+  if (!cleaned.includes('修炼体系')) throw new Error('sanitize must keep real world fields')
 }
 
 {

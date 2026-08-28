@@ -4,6 +4,10 @@ function resolvePublicBasePath(raw?: string): string {
   return `/${trimmed.replace(/^\/+|\/+$/g, '')}/`
 }
 
+import path from 'node:path'
+import { fileURLToPath } from 'node:url'
+
+const rootDir = fileURLToPath(new URL('.', import.meta.url))
 const resolvedPublicBase = resolvePublicBasePath(process.env.NUXT_APP_BASE_URL)
 
 export default defineNuxtConfig({
@@ -42,6 +46,11 @@ export default defineNuxtConfig({
     },
   },
   vite: {
+    resolve: {
+      alias: {
+        '@huohuo-shared': path.resolve(rootDir, '../workbench-server/src/common/novel'),
+      },
+    },
     server: {
       // 使用 127.0.0.1 避免 Node 将 localhost 解析为 ::1，而后端仅监听 IPv4 时出现 ECONNREFUSED
       proxy: {

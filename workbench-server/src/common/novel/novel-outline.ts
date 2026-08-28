@@ -152,6 +152,19 @@ export function resolveChapterDisplayTitle(args: {
   return stored || `第${chapterNumber}章`
 }
 
+/** 章节列表展示：全书大纲分章标题优先（大纲重生成后列表即时对齐） */
+export function resolveChapterListDisplayTitle(args: {
+  episodeTitle: string | null | undefined
+  chapterNumber: number
+  bookOutline?: string | null
+}): string {
+  const { episodeTitle, chapterNumber, bookOutline } = args
+  const parsed = bookOutline ? extractChapterTitle(bookOutline, chapterNumber) : ''
+  if (parsed) return parsed
+  const stored = (episodeTitle || '').trim()
+  return stored || `第${chapterNumber}章`
+}
+
 /** 分章概要中已解析到的最大章号 */
 export function getMaxParsedChapterNumber(fullOutline: string): number {
   const map = parseChapterOutlines(fullOutline)

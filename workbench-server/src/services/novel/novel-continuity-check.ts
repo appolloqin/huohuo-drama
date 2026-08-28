@@ -39,7 +39,7 @@ import {
   formatCausalOriginInjectBlock,
   resolveCausalOriginForChapter,
   runCausalChainAudit,
-  CAUSAL_CHAPTER_END_FORMAT,
+  CAUSAL_PROSE_ONLY_RULE,
 } from './novel-causal-chain/index.js'
 
 import {
@@ -1011,8 +1011,10 @@ export function formatContinuityFixInstructions(check: ContinuityCheckResult, mi
 
   if (plan.blockingItems.some(i => i.rule === 'causal_missing_record' || i.rule === 'causal_missing_chain')) {
     sections.push([
-      '【章末须附 — 变更记录】（元数据块，紧接正文后；每条须含「因果:」≥8字）',
-      CAUSAL_CHAPTER_END_FORMAT,
+      '【因果过程 — 写进正文】',
+      '状态/场景变化须在小说场面中写清触发→过程→结果。',
+      '【变更记录】由系统在正文定稿后单独生成；本次修正**只输出小说正文**，勿附带变更记录条目。',
+      CAUSAL_PROSE_ONLY_RULE,
     ].join('\n'))
   }
 
@@ -1021,7 +1023,7 @@ export function formatContinuityFixInstructions(check: ContinuityCheckResult, mi
   } else if (!check.passed) {
     if (check.score > 0 && check.score < minScore) {
       sections.push(
-        `【评分不足】${check.score} 分，须 ≥ ${minScore}。请加强章间衔接、口语化润色、或补全【变更记录】因果链。`,
+        `【评分不足】${check.score} 分，须 ≥ ${minScore}。请加强章间衔接、口语化润色，或在正文补清因果过程（变更记录由系统另生成）。`,
       )
     } else if (check.audit?.model_rejected?.length) {
       const rejected = check.audit.model_rejected.filter(r =>

@@ -910,7 +910,7 @@ async function fetchEpisodePage() {
 async function alignChapterTitlesToOutline() {
   if (!novelOutlineText.value.trim()) return
   try {
-    await novelAPI.syncChapterTitles(dramaId)
+    await novelAPI.syncChapterTitles(dramaId, { force: true })
     await fetchEpisodePage()
   } catch {
     // 忽略同步失败，列表仍显示已有标题

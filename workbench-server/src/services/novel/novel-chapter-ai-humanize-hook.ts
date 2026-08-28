@@ -430,12 +430,13 @@ export async function runNovelChapterAiHumanizeHook(args: {
   }
 
   let merged = mergeProseAndChange(prose, changeBlock)
-  if (isCausalChainEnabled(meta) && !changeBlock) {
+  if (isCausalChainEnabled(meta)) {
     try {
       const ensured = await ensureCausalChangeRecordAppended({
-        content: merged,
+        content: prose,
         chapterNumber,
-        billing: billing ? { ...billing, reason: '去AI味后补全变更记录' } : undefined,
+        force: true,
+        billing: billing ? { ...billing, reason: '去AI味后生成变更记录' } : undefined,
       })
       merged = ensured.content
     } catch {

@@ -4,7 +4,7 @@
 import { looksLikeModelThinkingLeak, sanitizeModelCreativeOutput } from '../../services/ai/ai.js'
 import { countNovelChars } from './novel-char-limit.js'
 import { getMaxParsedChapterNumber, validateOutlineChapterCoverage } from './novel-outline.js'
-import { detectOutlineCultivationBleed } from '../../agents/novel-defaults.js'
+import { detectOutlineCultivationBleed, sanitizeOutlineWorldMetaLeak } from '../../agents/novel-defaults.js'
 
 export type NovelCreativeOutputKind = 'premise' | 'outline' | 'outline_skeleton' | 'writing_brief' | 'chapter_prose'
 
@@ -90,7 +90,7 @@ export function assertValidNovelCreativeOutput(
   context?: string,
   options?: NovelCreativeOutputOptions,
 ): string {
-  const trimmed = text.trim()
+  let trimmed = text.trim()
   const name = context ? `${context}${LABEL[kind]}` : LABEL[kind]
 
   if (!trimmed) {
@@ -98,6 +98,9 @@ export function assertValidNovelCreativeOutput(
   }
   if (looksLikeModelThinkingLeak(trimmed)) {
     throw new Error(`${name}含模型思考链/英文分析。若使用 MiniMax，请确认后端已启用 reasoning_split + thinking.disabled，并重启服务后重试`)
+  }
+  if (kind === 'outline' || kind === 'outline_skeleton') {
+    trimmed = sanitizeOutlineWorldMetaLeak(trimmed)
   }
   const chars = countNovelChars(trimmed)
   if (chars < MIN_CHARS[kind]) {

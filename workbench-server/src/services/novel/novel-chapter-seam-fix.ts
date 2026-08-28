@@ -33,8 +33,9 @@ export async function maybeFixChapterSeamOpening(args: {
   chapterNumber: number
   billing?: TextBillingContext
   chapterOutline?: string
+  novelGenreSkillKey?: string
 }): Promise<{ content: string; fixed: boolean }> {
-  const { dramaId, chapterNumber, billing, chapterOutline } = args
+  const { dramaId, chapterNumber, billing, chapterOutline, novelGenreSkillKey } = args
   let content = args.content.trim()
   if (chapterNumber < 2 || !content) return { content, fixed: false }
 
@@ -77,7 +78,7 @@ export async function maybeFixChapterSeamOpening(args: {
   }
 
   const system = [
-    await buildNovelAgentSystem('novel_chapter_writer'),
+    await buildNovelAgentSystem('novel_chapter_writer', { novelGenreSkillKey }),
     '',
     '当前任务：只改写【开篇片段】，消除章缝回放。',
     '硬性：从上章已发生事实**之后**起笔；轻锚最多一句；禁止重演上章末对白/场面；立刻进入本章新信息。',

@@ -20,7 +20,10 @@ import { hashNovelContent } from '../ai/ai-text-detection.js'
 import { mergeEpisodeMetadata, parseEpisodeMetadata } from '../../common/drama/episode-meta.js'
 import * as episodesRepo from '../../db/repos/episodes/index.js'
 import { now } from '../../common/http/response.js'
-import type { NovelMetadata } from '../../common/novel/novel-meta.js'
+import {
+  resolveNovelGenreSkillKey,
+  type NovelMetadata,
+} from '../../common/novel/novel-meta.js'
 import { resolveContinuityRewriteMax, resolveContinuityStagnantStreak } from '../../common/novel/novel-meta.js'
 import type { NovelContinuityLedger } from '../../common/novel/novel-continuity-state.js'
 import type { ContinuityCheckResult, ContinuityRewriteLogEntry } from '../../common/novel/novel-continuity-state.js'
@@ -99,6 +102,7 @@ async function runOutlineComplianceGate(args: {
   targetLength?: number
   billing?: TextBillingContext
   onProgress?: (status: string) => void
+  novelGenreSkillKey?: string
 }): Promise<{
   content: string
   report: import('./novel-outline-compliance-fix.js').OutlineComplianceReport
@@ -132,6 +136,7 @@ async function runOutlineComplianceGate(args: {
       maxLen: Math.round(target * 1.12),
       onProgress: args.onProgress,
       mode: args.mode === 'continue' ? 'continue' : args.mode === 'generate' ? 'generate' : 'rewrite',
+      novelGenreSkillKey: args.novelGenreSkillKey,
     })
     const stillCold = outlineFix.reasons.some(r => r.code === 'chapter_seam_cold_open')
     return {
@@ -246,7 +251,8 @@ export async function postProcessNovelChapterContent(args: {
       const ensured = await ensureCausalChangeRecordAppended({
         content,
         chapterNumber,
-        billing: billing ? { ...billing, reason: `??${reason}??????` } : undefined,
+        force: true,
+        billing: billing ? { ...billing, reason: `流式审校前生成变更记录（${reason}）` } : undefined,
       })
       content = ensured.content
     }
@@ -264,7 +270,8 @@ export async function postProcessNovelChapterContent(args: {
       const fixed = await ensureCausalChangeRecordAppended({
         content,
         chapterNumber,
-        billing: billing ? { ...billing, reason: `??${reason}??????` } : undefined,
+        force: true,
+        billing: billing ? { ...billing, reason: `流式审校补生成变更记录（${reason}）` } : undefined,
       })
       if (fixed.fixed) {
         content = fixed.content
@@ -295,6 +302,7 @@ export async function postProcessNovelChapterContent(args: {
         chapterNumber,
         chapterOutline,
         billing: billing ? { ...billing, reason: '????????' } : undefined,
+        novelGenreSkillKey: resolveNovelGenreSkillKey(meta),
       })
       if (fixed.fixed) {
         content = fixed.content
@@ -322,6 +330,7 @@ export async function postProcessNovelChapterContent(args: {
       targetLength: generateArgs?.targetLength,
       billing,
       onProgress,
+      novelGenreSkillKey: resolveNovelGenreSkillKey(meta),
     })
 
     content = gate.content
@@ -491,6 +500,7 @@ export async function postProcessNovelChapterContent(args: {
       targetLength: generateArgs?.targetLength,
       billing,
       onProgress,
+      novelGenreSkillKey: resolveNovelGenreSkillKey(meta),
     })
     content = gate.content
     outlineCompliance = {
@@ -548,7 +558,8 @@ export async function postProcessNovelChapterContent(args: {
     const ensured = await ensureCausalChangeRecordAppended({
       content,
       chapterNumber,
-      billing: billing ? { ...billing, reason: '??????????' } : undefined,
+      force: true,
+      billing: billing ? { ...billing, reason: '跳过审校时生成变更记录' } : undefined,
     })
     content = ensured.content
   }
@@ -740,6 +751,7 @@ export async function runNovelChapterPipeline(args: {
     const ensured = await ensureCausalChangeRecordAppended({
       content,
       chapterNumber,
+      force: true,
       billing: billing ? { ...billing, reason } : undefined,
     })
     content = ensured.content
@@ -908,6 +920,7 @@ export async function runNovelChapterPipeline(args: {
       mode: generateArgs?.mode || 'generate',
       targetLength: generateArgs?.targetLength,
       billing,
+      novelGenreSkillKey: resolveNovelGenreSkillKey(meta),
     })
     content = gate.content
     outlineCompliance = gate.report
@@ -1087,6 +1100,7 @@ export async function runNovelChapterPipeline(args: {
       mode: generateArgs?.mode || 'generate',
       targetLength: generateArgs?.targetLength,
       billing,
+      novelGenreSkillKey: resolveNovelGenreSkillKey(meta),
     })
     content = gate.content
     outlineCompliance = {

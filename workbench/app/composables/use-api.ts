@@ -593,6 +593,7 @@ export const novelAPI = {
     outline: string
     premise: string
     novel_genre: string
+    novel_genre_skill_key?: string
     context_chars: number
     target_chapter_chars: number
     continue_segment_chars: number
@@ -601,14 +602,15 @@ export const novelAPI = {
     outline?: string
     premise?: string
     novel_genre?: string
+    novel_genre_skill_key?: string
     context_chars?: number
     target_chapter_chars?: number
     continue_segment_chars?: number
   }) => api.put(`/novel/dramas/${dramaId}/meta`, data),
   generateOutline: (dramaId: number, body?: { premise?: string }) =>
     api.post<{ outline: string; titles_updated?: number }>(`/novel/dramas/${dramaId}/outline`, body ?? {}),
-  syncChapterTitles: (dramaId: number) =>
-    api.post<{ updated: number }>(`/novel/dramas/${dramaId}/sync-chapter-titles`, {}),
+  syncChapterTitles: (dramaId: number, body?: { force?: boolean }) =>
+    api.post<{ updated: number }>(`/novel/dramas/${dramaId}/sync-chapter-titles`, body ?? {}),
   createChapter: (dramaId: number, data?: { title?: string }) =>
     api.post(`/novel/dramas/${dramaId}/chapters`, data || {}),
   getChapterBrief: (chapterId: number) =>

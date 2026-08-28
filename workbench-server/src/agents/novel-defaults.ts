@@ -22,12 +22,12 @@ export const NOVEL_OUTLINE_WORLD_SECTION = '【世界观设定】'
 /** 全书大纲须含的分卷块 */
 export const NOVEL_OUTLINE_VOLUME_SECTION = '【分卷设计】'
 
-/** 明确修真力量体系题材（含种田修真、都市修真、玄幻种田等复合标签） */
+/** 明确修真/术法力量体系题材（含种田修真、都市修真、驱魔等复合标签） */
 export function isCultivationPowerGenre(genre?: string): boolean {
   const g = (genre || '').trim()
   if (!g) return false
   // 只要带这些力量标签就走 A；「种田」「都市」前缀不抵消
-  return /修真|玄幻|仙侠|高武|修仙|洪荒|灵气复苏|诸天/.test(g)
+  return /修真|玄幻|仙侠|高武|修仙|洪荒|灵气复苏|诸天|驱魔|道士|茅山|符箓|灵异斗法/.test(g)
 }
 
 /**
@@ -62,28 +62,88 @@ export function detectOutlineCultivationBleed(outline: string, genre?: string): 
 /** 大纲生成【硬性要求】中的世界观条款（力量标签优先于种田/都市等场景标签） */
 export function buildOutlineWorldHardRequirement(genre?: string): string {
   if (isCultivationPowerGenre(genre)) {
-    return `【世界观】本题材含修真/玄幻/仙侠/高武力量体系（含种田修真、都市修真等）：「${NOVEL_OUTLINE_WORLD_SECTION}」须含「修炼体系」（用「-」连接完整境界链）、「大陆/地域」、「修真门派/势力」；种田/都市只是场景，不得省略境界链。`
+    return `【世界观】本题材含修真/玄幻/仙侠/高武/驱魔等力量体系（含种田修真、都市修真等）：「${NOVEL_OUTLINE_WORLD_SECTION}」须直接写「修炼体系」（用「-」连接完整境界链）、「大陆/地域」、「修真门派/势力」三项设定；种田/都市只是场景，不得省略境界链。禁止把「走A」「力量标签优先」等路由说明写入大纲。`
   }
   if (isMundaneNonCultivationGenre(genre)) {
-    return `【世界观】本题材无修真力量体系：「${NOVEL_OUTLINE_WORLD_SECTION}」只许写「时代背景」「地域」「组织/规则」三项；禁止「修炼体系」「修真门派」条目，禁止淬体、凝气、筑基、炼气、金丹等修真境界词（含假托比喻）。`
+    return `【世界观】本题材无修真力量体系：「${NOVEL_OUTLINE_WORLD_SECTION}」只许写「时代背景」「地域」「组织/规则」三项；禁止「修炼体系」「修真门派」条目，禁止淬体、凝气、筑基、炼气、金丹等修真境界词（含假托比喻）。禁止输出路由说明。`
   }
-  return `【世界观】按是否含修真力量体系二选一：A 题材或梗概含修真/玄幻/仙侠/高武（含种田修真、玄幻种田）→ 须写修炼体系+大陆/地域+修真门派；B 纯现实/年代/家业、无灵气修炼 → 时代背景+地域+组织/规则，禁止淬体凝气筑基。禁止把种田修真写成无境界链，也禁止把纯年代文硬套筑基。`
+  return `【世界观】据题材与梗概择一写满设定条目（勿输出「走A/B」「力量标签优先」等说明）：梗概含修真/玄幻/仙侠/高武/驱魔（含种田修真）→ 修炼体系+大陆/地域+修真门派；纯现实/年代/家业、无灵气修炼 → 时代背景+地域+组织/规则，禁止淬体凝气筑基。禁止把种田修真写成无境界链，也禁止把纯年代文硬套筑基。`
+}
+
+/**
+ * 清洗模型把「走 A/B」「力量标签优先」等生成路由说明抄进【世界观设定】的泄漏，
+ * 并合并开头重复的【世界观设定】标题。
+ */
+export function sanitizeOutlineWorldMetaLeak(outline: string): string {
+  let t = (outline || '').replace(/\r\n/g, '\n')
+  if (!t.trim()) return t
+
+  t = t
+    .split('\n')
+    .filter((line) => {
+      const s = line.trim()
+      if (!s) return true
+      if (/力量标签优先/.test(s)) return false
+      if (/本梗概含/.test(s) && /走\s*[AB]/.test(s)) return false
+      if (/按是否含.*修真力量体系/.test(s)) return false
+      if (/种田修真.*都市修真.*走\s*A/.test(s)) return false
+      if (/不得因[「「"]种田[」」"].*改走/.test(s)) return false
+      if (/^-\s*\*\*[AB]\./.test(s) && /题材含修真|无修真力量/.test(s)) return false
+      if (/^-\s*\*\*A\.\s*题材含/.test(s)) return false
+      if (/^-\s*\*\*B\.\s*无修真/.test(s)) return false
+      return true
+    })
+    .join('\n')
+
+  t = t.replace(/(【世界观设定】\s*\n){2,}/g, '【世界观设定】\n')
+
+  const totalIdx = t.search(/\n【总纲】/)
+  const head = totalIdx >= 0 ? t.slice(0, totalIdx) : t
+  const rest = totalIdx >= 0 ? t.slice(totalIdx) : ''
+  if (head.includes('【世界观设定】')) {
+    const bodies = head
+      .split('【世界观设定】')
+      .slice(1)
+      .map((s) => s.trim())
+      .filter(Boolean)
+    if (bodies.length > 1) {
+      const lines = bodies
+        .join('\n')
+        .split('\n')
+        .map((l) => l.trimEnd())
+      const seen = new Set<string>()
+      const merged: string[] = []
+      for (const line of lines) {
+        const key = line.trim()
+        if (!key) {
+          if (merged.length && merged[merged.length - 1] !== '') merged.push('')
+          continue
+        }
+        if (seen.has(key)) continue
+        seen.add(key)
+        merged.push(line)
+      }
+      const preamble = head.split('【世界观设定】')[0] || ''
+      t = `${preamble}${NOVEL_OUTLINE_WORLD_SECTION}\n${merged.join('\n').trim()}${rest}`
+    }
+  }
+
+  return t.replace(/\n{3,}/g, '\n\n').trim()
 }
 
 export const NOVEL_OUTLINE_STRUCTURE_HINT = `大纲须按以下顺序输出（标题原样保留，便于后续写作对齐）：
 
 ${NOVEL_OUTLINE_WORLD_SECTION}
-按是否含**修真力量体系**二选一写满三项（**力量标签优先**：种田修真/都市修真/玄幻种田走 A，不得因「种田」「都市」改走 B）：
-- **A. 题材含修真/玄幻/仙侠/高武**（含种田修真、都市修真、玄幻种田等）：
-  - **修炼体系**：完整境界链，用「-」连接（示例：淬体-凝气-筑基-气海-金丹…；须据题材自定，全文一套名称）。有层/重/阶须简要说明；禁止同书混用别称。
-  - **大陆/地域**：主要地理单元及一句定位（种田修真可写凡人乡野+修真势力交界）。
-  - **修真门派/势力**：3～8 个宗门/家族/皇朝等，各一句。
-- **B. 无修真力量体系**（纯年代/现实/职场/都市生活等）：
-  - **时代背景**：年份/年代与生活规则一句（勿写敏感政治运动细节）。
-  - **地域**：省/县/公社/街区等可演出地理。
-  - **组织/规则**：单位、大队、邻里、产业规矩等 3～8 条。
-  - **禁止**写「修炼体系」「修真门派」标题行；**禁止**淬体、凝气、筑基、炼气、金丹等修真境界词（含「村里老人常念叨」类假托比喻）。
-  - 单写「种田」且梗概无修炼/灵气时走 B；梗概有境界/宗门/灵气则走 A。
+（只写本书设定条目；**禁止**输出「走 A/B」「力量标签优先」「本梗概含…」等生成路由说明；**禁止**重复本标题）
+含修真/玄幻/仙侠/高武/驱魔等力量体系时，写满三项：
+- **修炼体系**：完整境界链，用「-」连接（示例：淬体-凝气-筑基-气海-金丹…；驱魔可写道行/炼体层级；须据题材自定，全文一套名称）。有层/重/阶须简要说明；禁止同书混用别称。
+- **大陆/地域**：主要地理单元及一句定位（种田修真可写凡人乡野+修真势力交界；驱魔可写城域/阴司交界）。
+- **修真门派/势力**：3～8 个宗门/家族/皇朝/镇魔司等，各一句。
+无修真力量体系（纯年代/现实/职场/都市生活）时，改写满三项：
+- **时代背景**：年份/年代与生活规则一句（勿写敏感政治运动细节）。
+- **地域**：省/县/公社/街区等可演出地理。
+- **组织/规则**：单位、大队、邻里、产业规矩等 3～8 条。
+无修真力量体系时**禁止**写「修炼体系」「修真门派」标题行；**禁止**淬体、凝气、筑基、炼气、金丹等修真境界词（含假托比喻）。
 
 【总纲】
 （3～8 句：全书主线、核心冲突、终局方向）
@@ -174,6 +234,7 @@ ${NOVEL_OUTLINE_STRUCTURE_HINT}
 - **平台安全（年代/现实向）**：冲突聚焦家庭伦理、邻里口舌、生意资源与人物选择；年代仅作生活背景。勿写政治运动细节、敏感历史事件、色情暴力与可操作违法步骤。
 - 人物设定简洁但具体（姓名、动机、关系）。
 - 不要输出前言套话，直接从「${NOVEL_OUTLINE_WORLD_SECTION}」开始。
+- **世界观正文**：只写修炼体系/地域/势力（或时代/组织）等设定条目；**禁止**把「走A/B」「力量标签优先」「本梗概含某某故走A」等路由自述写入大纲；**禁止**重复输出「${NOVEL_OUTLINE_WORLD_SECTION}」标题。
 - **严禁**输出思考过程、英文分析、redacted_thinking / thinking 等 XML 标签；只输出简体中文大纲正文。`,
   },
   novel_writing_brief: {

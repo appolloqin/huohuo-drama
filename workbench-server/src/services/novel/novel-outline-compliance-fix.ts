@@ -151,10 +151,12 @@ async function rewriteOnceForOutline(args: {
   minLen: number
   maxLen: number
   nuclearCold?: boolean
+  novelGenreSkillKey?: string
 }): Promise<string | null> {
   const {
     content, reasons, chapterOutline, writingBrief, orphanDraftExcerpt, nextChapterOutline,
     nextChapterHead, prevChapterTail, chapterNumber, billing, minLen, maxLen, nuclearCold,
+    novelGenreSkillKey,
   } = args
 
   const user = buildOutlineComplianceFixPrompt({
@@ -170,7 +172,7 @@ async function rewriteOnceForOutline(args: {
     nuclearCold,
   })
   const system = [
-    await buildNovelAgentSystem('novel_chapter_writer'),
+    await buildNovelAgentSystem('novel_chapter_writer', { novelGenreSkillKey }),
     nuclearCold
       ? `?????? ${chapterNumber} ?????????????????????????+?????????`
       : `??????????????? ${chapterNumber} ??????????????`,
@@ -234,6 +236,7 @@ async function rewriteOnceForOutline(args: {
       colloquialBoost: true,
       minLen,
       maxLen,
+      novelGenreSkillKey,
     },
   )
   const fixedN = countNovelChars(fixed)
@@ -281,12 +284,14 @@ export async function maybeFixOutlineCompliance(args: {
    * ?? rewrite????????
    */
   mode?: 'generate' | 'rewrite' | 'continue'
+  novelGenreSkillKey?: string
 }): Promise<OutlineComplianceFixResult> {
   const {
     dramaId, chapterNumber, chapterOutline, writingBrief, existingText, billing,
     maxRounds = OUTLINE_COMPLIANCE_MAX_ROUNDS,
     onProgress,
     mode = 'rewrite',
+    novelGenreSkillKey,
   } = args
   const considerNext = mode === 'rewrite'
   let content = args.content.trim()
@@ -660,6 +665,7 @@ export async function maybeFixOutlineCompliance(args: {
       billing,
       minLen,
       maxLen,
+      novelGenreSkillKey,
     })
 
     if (!next) {
@@ -732,6 +738,7 @@ export async function maybeFixOutlineCompliance(args: {
       minLen,
       maxLen,
       nuclearCold: true,
+      novelGenreSkillKey,
     })
     attempts += 1
     if (nuclear) {
