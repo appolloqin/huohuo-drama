@@ -1,8 +1,13 @@
 /**
  * 章内近重复：同一长段在章内出现两次（常见于补写/合规修正拼缝）。
  * 题材无关：只凭长连续归一化指纹，不认场面词。
+ * 另挂条款复读剥离（金额+时限+证物/罪名簇）。
  */
 import { logTaskWarn } from '../../common/task/task-logger.js'
+import { stripStakesPackageRestatement } from './novel-stakes-restatement.js'
+import { stripEmotionBeatMetaLabels } from '../../common/novel/novel-emotion-beat-meta-strip.js'
+import { stripOutsiderKinshipAddress } from '../../common/novel/novel-kinship-address-strip.js'
+import { lockDeadlineDayConsistency } from '../../common/novel/novel-deadline-day-lock.js'
 
 function norm(s: string): string {
   return s.replace(/\s+/g, '').replace(/[，。！？、；：…—\-~·"'「」『』“”']/g, '')
@@ -374,6 +379,34 @@ export function stripIntraChapterNearDuplicate(content: string): {
     if (!bridge.removed) break
     text = bridge.text
     removed = true
+  }
+  {
+    const stakes = stripStakesPackageRestatement(text)
+    if (stakes.removed) {
+      text = stakes.text
+      removed = true
+    }
+  }
+  {
+    const meta = stripEmotionBeatMetaLabels(text)
+    if (meta.removed) {
+      text = meta.text
+      removed = true
+    }
+  }
+  {
+    const kin = stripOutsiderKinshipAddress(text)
+    if (kin.removed) {
+      text = kin.text
+      removed = true
+    }
+  }
+  {
+    const days = lockDeadlineDayConsistency(text)
+    if (days.removed) {
+      text = days.text
+      removed = true
+    }
   }
   return { text, removed, excerpt }
 }

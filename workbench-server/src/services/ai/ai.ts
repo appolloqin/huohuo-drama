@@ -25,6 +25,8 @@ import {
 } from '../../common/ai/text-api-errors.js'
 import { resolveUserServiceConfig } from './user-ai-config-resolve.js'
 import { getUserTextAuditModelSettings, resolveTextAuditAiConfig } from './text-audit-model.js'
+import { normalizeNovelDialogueQuotes } from '../../common/novel/novel-dialogue-quotes.js'
+import { repairNovelReplacementCharsLexicon } from '../../common/novel/novel-replacement-char.js'
 
 export type ServiceType = 'text' | 'image' | 'video' | 'audio'
 
@@ -496,7 +498,8 @@ export function looksLikeModelThinkingLeak(text: string): boolean {
 export function sanitizeModelCreativeOutput(text: string): string {
   const stripped = stripThinkingArtifactsFromText(text)
   if (!stripped || looksLikeModelThinkingLeak(stripped)) return ''
-  return stripped
+  // 程序强制中文弯引号 + 常见 U+FFFD 词表修复，不依赖模型自觉
+  return repairNovelReplacementCharsLexicon(normalizeNovelDialogueQuotes(stripped))
 }
 
 function rawMessageContentString(message: unknown): string {

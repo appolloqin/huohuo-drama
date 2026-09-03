@@ -84,6 +84,7 @@ import {
 import { runChapterCraftPipelineHook } from './novel-chapter-craft-hook.js'
 import { maybeFixChapterSeamOpening } from './novel-chapter-seam-fix.js'
 import { maybeFixOutlineCompliance } from './novel-outline-compliance-fix.js'
+import { maybeRepairNovelReplacementChars } from './novel-replacement-char-fix.js'
 import { alignNovelChapterOutlineBoundary } from './novel-outline-boundary.js'
 import { resolveEffectiveChapterTarget } from './novel-chapter-target.js'
 import { runNovelChapterAiHumanizeHook } from './novel-chapter-ai-humanize-hook.js'
@@ -601,7 +602,19 @@ export async function postProcessNovelChapterContent(args: {
     }
   }
 
+  {
+    const repaired = await maybeRepairNovelReplacementChars({
+      content,
+      chapterNumber,
+      billing: billing ? { ...billing, reason: '流式收口替换符修补' } : undefined,
+    })
+    content = repaired.content
+  }
   content = normalizeNovelTemporalNumerals(preserveNovelLineLayout('', content))
+  {
+    const { stripIntraChapterNearDuplicate } = await import('./novel-intra-chapter-dedupe.js')
+    content = stripIntraChapterNearDuplicate(content).text
+  }
   {
     const target = Math.min(20000, Math.max(500, Number(generateArgs?.targetLength) || 3000))
     const minLen = Math.round(target * 0.88)
@@ -1173,6 +1186,19 @@ export async function runNovelChapterPipeline(args: {
   }
 
   if (content.trim()) {
+    {
+      const repaired = await maybeRepairNovelReplacementChars({
+        content,
+        chapterNumber,
+        billing: billing ? { ...billing, reason: '管线收口替换符修补' } : undefined,
+      })
+      content = repaired.content
+    }
+    content = normalizeNovelTemporalNumerals(preserveNovelLineLayout('', content))
+    {
+      const { stripIntraChapterNearDuplicate } = await import('./novel-intra-chapter-dedupe.js')
+      content = stripIntraChapterNearDuplicate(content).text
+    }
     const target = Math.min(20000, Math.max(500, Number(generateArgs?.targetLength) || 3000))
     const minLen = Math.round(target * 0.88)
     const maxLen = Math.round(target * 1.12)

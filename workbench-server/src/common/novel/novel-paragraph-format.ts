@@ -6,8 +6,15 @@
  * - 引号内句末标点不拆句；跨段未闭合对白须粘回
  */
 
+import { normalizeNovelDialogueQuotes } from './novel-dialogue-quotes.js'
+
 const QUOTE_OPEN = new Set(['“', '「', '『'])
-const QUOTE_CLOSE = new Set(['”', '」', '』', "'", '"'])
+const QUOTE_CLOSE = new Set(['”', '」', '』'])
+
+/** @deprecated 使用 normalizeNovelDialogueQuotes（含 ASCII/"/「」） */
+export function normalizeAsciiDialogueQuotes(text: string): string {
+  return normalizeNovelDialogueQuotes(text)
+}
 
 /** 仅在非换行片段上变换，原样保留每一段换行序列 */
 export function mapTextPreservingLineBreaks(text: string, mapBlock: (block: string) => string): string {
@@ -266,7 +273,7 @@ export function mergeLeadingCloseQuoteParagraphs(text: string): string {
   for (const raw of blocks) {
     const b = raw.trim()
     if (!b) continue
-    if (merged.length && /^[」』”'"]/.test(b)) {
+    if (merged.length && /^[」』”]/.test(b)) {
       merged[merged.length - 1] = `${merged[merged.length - 1]}${b}`
       continue
     }
@@ -295,14 +302,10 @@ export function mergeUnclosedDialogueParagraphs(text: string): string {
 }
 
 /**
- * 收引号后紧跟「他说/秦霄道」等标注 → 同段保留；
- * 紧跟新叙述动作（如。”钱虎没理他）→ 换段，避免右引号贴着后文。
+ * 仅处理「两句对白粘连」：。” “ / ！” “ → 中间加一个空格。
+ * 不换段（避免诗化碎行）；收引号后接叙述保持原样。
  */
-function isDialogueAttributionTail(s: string): boolean {
-  return /^(?:他|她|它|我|你|咱|您)?[\u4e00-\u9fff]{0,4}(?:说道|说了|问道|喊道|吼道|骂道|笑道|答道|回道|冷哼|冷笑|道|说|问|喊|吼|骂|笑|哼|叹|答|叫)/.test(s)
-}
-
-export function breakNarrationAfterClosingQuote(text: string): string {
+export function spaceBetweenAdjacentDialogueQuotes(text: string): string {
   const src = text.replace(/\r\n/g, '\n')
   if (!src) return src
   let depth = 0
@@ -319,24 +322,24 @@ export function breakNarrationAfterClosingQuote(text: string): string {
     if (depth !== 0) continue
 
     const rest = src.slice(i + 1)
-    if (!rest || /^\s*\n/.test(rest)) continue
-    const trimmed = rest.replace(/^[ \t]+/, '')
-    if (!trimmed) continue
-    if (/^[，。！？、；：…]/.test(trimmed)) continue
-    if (QUOTE_OPEN.has(trimmed[0]!)) continue
-    if (isDialogueAttributionTail(trimmed)) continue
-    if (!/^[\u4e00-\u9fffA-Za-z0-9]/.test(trimmed)) continue
+    if (!rest || /^\s/.test(rest)) continue
+    if (!QUOTE_OPEN.has(rest[0]!)) continue
 
-    out += '\n\n'
-    while (i + 1 < src.length && /[ \t]/.test(src[i + 1]!)) i += 1
+    out += ' '
   }
-  return out.replace(/\n{3,}/g, '\n\n')
+  return out
 }
 
-/** 引号相关段落修复：段首收引号 + 跨段未闭合对白 + 收引号后叙述换段 */
+/** @deprecated 使用 spaceBetweenAdjacentDialogueQuotes */
+export function breakNarrationAfterClosingQuote(text: string): string {
+  return spaceBetweenAdjacentDialogueQuotes(text)
+}
+
+/** 引号相关段落修复：中文引号归一 + 段首收引号 + 跨段未闭合对白 + 粘连对白加空格 */
 export function repairNovelQuoteParagraphs(text: string): string {
-  return breakNarrationAfterClosingQuote(
-    mergeUnclosedDialogueParagraphs(mergeLeadingCloseQuoteParagraphs(text)),
+  const normalized = normalizeNovelDialogueQuotes(text)
+  return spaceBetweenAdjacentDialogueQuotes(
+    mergeUnclosedDialogueParagraphs(mergeLeadingCloseQuoteParagraphs(normalized)),
   )
 }
 

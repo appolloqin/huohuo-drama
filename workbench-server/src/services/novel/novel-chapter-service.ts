@@ -2,6 +2,8 @@ import type { EpisodeRow } from '../../db/repos/types.js'
 import { countNovelChars } from '../../common/novel/novel-char-limit.js'
 import { splitProseAndChangeRecord } from '../../common/novel/novel-change-record.js'
 import { stripLengthAdjustInstructionEcho } from '../../common/novel/novel-change-record.js'
+import { normalizeNovelDialogueQuotes } from '../../common/novel/novel-dialogue-quotes.js'
+import { repairNovelReplacementCharsLexicon } from '../../common/novel/novel-replacement-char.js'
 import { stripIntraChapterNearDuplicate } from './novel-intra-chapter-dedupe.js'
 import { mergeEpisodeMetadata } from '../../common/drama/episode-meta.js'
 import {
@@ -54,7 +56,10 @@ export function saveChapterContent(args: SaveChapterContentArgs): SaveChapterCon
   const raw = typeof content === 'string' ? content : ''
   const cleaned = stripLengthAdjustInstructionEcho(raw) || raw
   const deduped = stripIntraChapterNearDuplicate(cleaned).text
-  const { prose, changeBlock } = splitProseAndChangeRecord(deduped)
+  const { prose: splitProse, changeBlock } = splitProseAndChangeRecord(deduped)
+  const prose = repairNovelReplacementCharsLexicon(
+    normalizeNovelDialogueQuotes(splitProse || ''),
+  )
   const p = writeChapter({
     dramaId,
     episodeId,

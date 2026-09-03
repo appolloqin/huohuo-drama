@@ -130,10 +130,11 @@ export function buildEmotionBeatSpecs(args: {
   ].filter(Boolean)
 
   const jiLines = [
-    '【急】尖期限（本拍开口不收束）',
+    '【急】倒计时压迫（本拍开口不收束；勿重报已立条款）',
     jiTag ? clipEmotionOutlineSeed('急', jiTag) : '',
     !jiTag && endingQ ? `未决：${endingQ}` : '',
     !jiTag && !endingQ && legacy[2] ? `加码：${legacy[2]}` : '',
+    '硬性：若前拍已立金额/期限，本拍只加压手段与反应，禁止再完整宣读合同。',
     buildEmotionCorePhaseHardLine('急'),
   ].filter(Boolean)
 

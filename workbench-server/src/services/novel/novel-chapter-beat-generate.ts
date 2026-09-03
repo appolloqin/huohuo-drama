@@ -17,6 +17,7 @@ import {
 } from '../../common/novel/novel-meta.js'
 import { extractChapterOutline } from '../../common/novel/novel-outline.js'
 import { normalizeNovelTemporalNumerals } from '../../common/novel/novel-temporal-numerals.js'
+import { stripEmotionBeatMetaLabels } from '../../common/novel/novel-emotion-beat-meta-strip.js'
 import { logTaskWarn } from '../../common/task/task-logger.js'
 import {
   chatCompletionText,
@@ -114,6 +115,7 @@ function buildFrozenProgressNoReplayBlock(frozenProse: string): string {
   return [
     '【已写进度 — 勿回卷】',
     '已写正文中写到完成态的过程：可一句承接，禁止无闪回框又以当前进行时完整换皮再写一遍。只推进本拍尚未完成的新冲突。',
+    '已写正文若已立金额/期限/证物条款：本拍禁止再完整宣读同一套合同；急拍用手段升级与倒计时感加压，勿另报不同天数。',
     `…${anchor.replace(/\s+/g, ' ').trim()}`,
   ].join('\n')
 }
@@ -279,7 +281,7 @@ async function generateOneBeat(args: {
       : '',
     frozenNoReplay,
     frozenPresence,
-    `【本拍任务 — 第 ${item.index}/${beatTotal} 拍 · ${item.phase}】\n${item.beat}`,
+    `【本拍任务 — 第 ${item.index}/${beatTotal} 拍｜情绪职：${item.phase}｜标签禁止写入正文】\n${item.beat}`,
     emotionHard,
     item.tag === '本章起因' || item.phase === '起因'
       ? '【本拍】写清该起因由【本章人物】完成；禁止续写上章末悬念正文。'
@@ -293,7 +295,7 @@ async function generateOneBeat(args: {
     `【本拍篇幅】须写约 ${item.minChars}～${item.maxChars} 字（目标 ${item.targetChars}）；写完本拍即停。`,
     lastBeatRule,
     draftExcerpt,
-    '【输出】只输出本拍简体中文正文；不要章节标题；不要复述已写正文；不要输出说明标记。',
+    '【输出】只输出本拍简体中文正文；禁止输出（恨拍）（爽拍）（急拍）（盼拍）、【恨】【爽】【急】【盼】等任务标签/小标题；不要章节标题；不要复述已写正文；不要输出说明标记。',
   ])
 
   const maxTokens = chapterLengthTokenBudget(item.maxChars)
@@ -320,6 +322,7 @@ async function generateOneBeat(args: {
   )
 
   let text = normalizeNovelTemporalNumerals(sanitizeModelCreativeOutput(raw) || raw.trim())
+  text = stripEmotionBeatMetaLabels(text).text
   if (prior && text.replace(/\s+/g, '').startsWith(prior.replace(/\s+/g, '').slice(0, 24))) {
     const cut = text.indexOf(prior.slice(-12))
     if (cut > 0) text = text.slice(cut + 12).trim()

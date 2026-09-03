@@ -1,5 +1,5 @@
 /**
- * 句末+收引号不可拆段；引号内多句对白不可跨段
+ * 句末+收引号不可拆段；引号内多句对白不可跨段；仅拆！”“粘连，勿诗化碎段
  * npx tsx scripts/verify-paragraph-close-quote.ts
  */
 import {
@@ -56,19 +56,52 @@ if (/来了？\s*\n/.test(userPreserved)) {
 if (!/来了？里头坐，里头坐。”/.test(userPreserved.replace(/\s+/g, ''))) {
   throw new Error(`dialogue must stay one quote pair:\n${userPreserved}`)
 }
+/** 收引号后叙述可同段，勿诗化换行 */
+if (/。”\s*\n+\s*钱虎没理他/.test(userPreserved)) {
+  throw new Error(`must not force break before narration:\n${userPreserved}`)
+}
 
 const wall = '“秦霄呢？叫那小子滚出来！”堂屋门槛上，秦卫东先迎了出去，赔着一脸笑：“钱爷，怎的这时辰来了？里头坐，里头坐。”钱虎没理他，径直走到院中石缸前，把一张盖着红印的借据拍在缸沿上。'
 const wallOut = toNaturalNovelParagraphs(wall)
 if (/来了？\s*\n/.test(wallOut) || /里头坐[^\n]*\n+\s*[”"]/.test(wallOut)) {
   throw new Error(`toNatural must not split inside quotes:\n${wallOut}`)
 }
-if (!/里头坐，里头坐。”\s*\n\n\s*钱虎没理他/.test(wallOut)) {
-  throw new Error(`closing quote must break before narration:\n${wallOut}`)
+if (/。”\s*\n+\s*钱虎没理他/.test(wallOut)) {
+  throw new Error(`narration after close quote must stay same para:\n${wallOut}`)
+}
+if (!/。”钱虎没理他/.test(wallOut.replace(/\s+/g, ''))) {
+  throw new Error(`。”钱虎 should remain readable:\n${wallOut}`)
 }
 
 const attrKeep = preserveNovelLineLayout('', '她垂着眼皮。“多大？”刘建国问。')
 if (/\？”\s*\n/.test(attrKeep)) {
   throw new Error(`attribution must stay after close quote:\n${attrKeep}`)
+}
+
+/** 英文直引号归一；收引号后叙述仍同段 */
+const asciiGlued = '"欠债还钱，天经地义。"钱虎压低身子'
+const asciiOut = preserveNovelLineLayout('', asciiGlued)
+if (/"/.test(asciiOut)) {
+  throw new Error(`ASCII quotes must normalize to curly:\n${asciiOut}`)
+}
+if (!/天经地义。”钱虎压低身子/.test(asciiOut.replace(/\n/g, ''))) {
+  throw new Error(`ASCII normalize + keep narration same para:\n${asciiOut}`)
+}
+if (/。”\s*\n+\s*钱虎/.test(asciiOut)) {
+  throw new Error(`must not poetry-break before 钱虎:\n${asciiOut}`)
+}
+
+/** 仅给粘连对白加空格：！”“ → ！” “ */
+const gluedQuotes = '秦卫东急了，“游煞骸骨，那是镇魔司才有的东西，我们秦家哪有那本事去猎！”“那是你们的事。”'
+const gluedOut = preserveNovelLineLayout('', gluedQuotes)
+if (/猎！”[ \t]*“那是你们/.test(gluedOut) === false && /猎！”\s*\n/.test(gluedOut)) {
+  throw new Error(`must space not paragraph-break:\n${gluedOut}`)
+}
+if (/猎！”[ \t]+“那是你们的事。”/.test(gluedOut) === false) {
+  throw new Error(`expected space between dialogues:\n${gluedOut}`)
+}
+if (/猎！”\s*\n/.test(gluedOut)) {
+  throw new Error(`must not break paragraph between dialogues:\n${gluedOut}`)
 }
 
 console.log('verify-paragraph-close-quote OK')

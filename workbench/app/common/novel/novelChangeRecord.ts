@@ -1,4 +1,42 @@
-/** 编辑区只展示小说正文；【变更记录】与章末事件摘要为系统元数据 */
+/**
+ * 对话引号程序归一：英文 "/全角＂/直角「」→ 中文 “”
+ *（与服务端 novel-dialogue-quotes 对齐；展示层兜底）
+ */
+function normalizeNovelDialogueQuotes(text: string): string {
+  if (!text) return text
+  let out = text
+  if (out.includes('「')) {
+    for (let i = 0; i < 8; i++) {
+      const next = out.replace(/「([^「」]*)」/g, '“$1”')
+      if (next === out) break
+      out = next
+    }
+  }
+  if (!/["＂〝〞]/.test(out)) return out
+  let open = false
+  let buf = ''
+  for (const ch of out) {
+    if (ch === '"' || ch === '＂' || ch === '〝' || ch === '〞') {
+      if (ch === '〝') {
+        buf += '“'
+        open = true
+        continue
+      }
+      if (ch === '〞') {
+        buf += '”'
+        open = false
+        continue
+      }
+      buf += open ? '”' : '“'
+      open = !open
+      continue
+    }
+    if (ch === '“' || ch === '「' || ch === '『') open = true
+    else if (ch === '”' || ch === '」' || ch === '』') open = false
+    buf += ch
+  }
+  return buf
+}
 
 /** 规范化后的标题行 */
 const CHANGE_RECORD_RE = /^【变更记录】/m
@@ -174,5 +212,5 @@ export function stripNovelChangeRecord(text: string): string {
   }
 
   const peeled = peelOrphanedStructuredFromProse(proseParts.join('\n\n').trim())
-  return stripChapterEndMeta(peeled.prose)
+  return normalizeNovelDialogueQuotes(stripChapterEndMeta(peeled.prose))
 }

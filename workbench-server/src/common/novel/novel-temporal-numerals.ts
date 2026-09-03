@@ -2,10 +2,11 @@
  * 网文数字规范化：
  * - 时间：中文年月日时 → 阿拉伯（一九九零年 → 1990年）
  * - 金钱：中文金额 → 阿拉伯（八百元 → 800元，两千元 → 2000元）
- * - 对话引号：顺带「」→ “”（见 novel-dialogue-quotes）
+ * - 对话引号：顺带 「」/" / ＂ → “”（见 novel-dialogue-quotes；程序兜底）
  * - 装饰分节符：剥离 *** / * * * 等（模型爱用的场切符号）
  */
 import { normalizeNovelDialogueQuotes } from './novel-dialogue-quotes.js'
+import { repairNovelReplacementCharsLexicon } from './novel-replacement-char.js'
 
 const CN_DIGIT: Record<string, string> = {
   '零': '0',
@@ -235,6 +236,7 @@ export function normalizeNovelTemporalNumerals(text: string): string {
 
   out = normalizeNovelMoneyNumerals(out)
   out = normalizeNovelDialogueQuotes(out)
+  out = repairNovelReplacementCharsLexicon(out)
   out = stripNovelAsteriskSceneBreaks(out)
   out = stripNovelPipelineStatusLeak(out)
 
