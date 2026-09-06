@@ -13,6 +13,12 @@ import { getAbsolutePath } from '../../common/media/storage.js'
 
 export type AiDetectSourceType = 'text' | 'file' | 'audio' | 'video'
 
+export type DetectHubOptions = {
+  genre?: unknown
+  enableAdversarial?: boolean
+  budgetTier?: 'short' | 'standard' | 'long'
+}
+
 export type AiDetectHubResult = AiDetectionResult & {
   source_type: AiDetectSourceType
   source_name?: string
@@ -42,12 +48,20 @@ function hubBilling(userId: number, reason: string, role?: string): TextBillingC
 async function runDetection(
   content: string,
   billing: TextBillingContext,
+  opts: DetectHubOptions = {},
+  sourceTypeHint?: string,
 ): Promise<AiDetectionResult> {
   try {
-    return await detectAiTextWithPerplexity(content, billing)
-  } catch (perplexityErr: any) {
-    const reason = perplexityErr?.message || '困惑度检测不可用'
-    return detectAiTextStatisticalFallback(content, reason)
+    return await detectAiTextWithPerplexity(content, billing, {
+      genre: typeof opts.genre === 'string' ? opts.genre : undefined,
+      enableAdversarial: opts.enableAdversarial,
+      budgetTier: opts.budgetTier,
+      sourceTypeHint,
+    })
+  } catch (err: any) {
+    return await detectAiTextStatisticalFallback(content, err?.message || '检测失败', {
+      genre: typeof opts.genre === 'string' ? opts.genre : undefined,
+    })
   }
 }
 
@@ -67,9 +81,10 @@ export async function detectHubText(
   text: string,
   userId: number,
   role?: string,
+  opts: DetectHubOptions = {},
 ): Promise<AiDetectHubResult> {
   const { text: content, note } = clampText(text)
-  const result = await runDetection(content, hubBilling(userId, 'AI 检测 · 文本', role))
+  const result = await runDetection(content, hubBilling(userId, 'AI 检测 · 文本', role), opts, 'text')
   return {
     ...result,
     source_type: 'text',
@@ -85,6 +100,7 @@ export async function detectHubTextFile(
   originalName: string,
   userId: number,
   role?: string,
+  opts: DetectHubOptions = {},
 ): Promise<AiDetectHubResult> {
   const ext = path.extname(originalName).toLowerCase()
   if (!isSupportedTextFile(ext)) {
@@ -101,7 +117,7 @@ export async function detectHubTextFile(
   const raw = await extractTextFromFile(absPath, originalName)
   const { text: content, note } = clampText(raw)
   const extractNote = isDocument ? '已从 PDF/Word 提取正文' : undefined
-  const result = await runDetection(content, hubBilling(userId, 'AI 检测 · 文件', role))
+  const result = await runDetection(content, hubBilling(userId, 'AI 检测 · 文件', role), opts, 'file')
   return {
     ...result,
     source_type: 'file',
@@ -118,6 +134,7 @@ export async function detectHubAudioFile(
   originalName: string,
   userId: number,
   role?: string,
+  opts: DetectHubOptions = {},
 ): Promise<AiDetectHubResult> {
   const ext = path.extname(originalName).toLowerCase()
   if (!AUDIO_EXTENSIONS.has(ext)) {
@@ -129,7 +146,7 @@ export async function detectHubAudioFile(
   }
   const transcript = await transcribeAudioFile(absPath)
   const { text: content, note } = clampText(transcript)
-  const result = await runDetection(content, hubBilling(userId, 'AI 检测 · 音频', role))
+  const result = await runDetection(content, hubBilling(userId, 'AI 检测 · 音频', role), opts, 'audio')
   return {
     ...result,
     source_type: 'audio',
@@ -146,6 +163,7 @@ export async function detectHubVideoFile(
   originalName: string,
   userId: number,
   role?: string,
+  opts: DetectHubOptions = {},
 ): Promise<AiDetectHubResult> {
   const ext = path.extname(originalName).toLowerCase()
   if (!VIDEO_EXTENSIONS.has(ext)) {
@@ -161,7 +179,7 @@ export async function detectHubVideoFile(
     ? '读取内嵌字幕 → 对字幕文本做困惑度/统计特征检测（不分析画面）'
     : '提取音轨并语音转写（ASR）→ 对转写文本做困惑度/统计特征检测（不分析画面）'
   const fromLabel = from === 'subtitle' ? '内嵌字幕' : '音轨转写'
-  const result = await runDetection(content, hubBilling(userId, 'AI 检测 · 视频', role))
+  const result = await runDetection(content, hubBilling(userId, 'AI 检测 · 视频', role), opts, 'video')
   return {
     ...result,
     source_type: 'video',

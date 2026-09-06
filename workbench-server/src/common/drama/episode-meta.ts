@@ -12,6 +12,10 @@ import {
   type ChapterStateCard,
 } from '../novel/novel-state-card.js'
 import { parseJsonColumnObject, type JsonColumnInput } from '../db/parse-json-column.js'
+import {
+  HUMANIZE_TARGET_MIN,
+  HUMANIZE_TARGET_MAX,
+} from '../novel/novel-detect-calib.js'
 
 export type { ContinuityCheckResult }
 
@@ -75,6 +79,16 @@ export type EpisodeAiDetection = {
       probability?: number
     }>
   }
+  genre?: string
+  engine_version?: string
+  ref_mode?: 'echo' | 'prompt_logprobs' | 'proxy' | 'none'
+  calibration?: 'calibrated' | 'none'
+  needs_review?: boolean
+  probability_band?: string
+  coverage?: { windows_total: number; windows_scored: number; scored_chars: number; text_chars: number }
+  evidence?: Array<{ key: string; label?: string; score?: number | null; missing?: boolean; note?: string }>
+  perturb?: { applied: boolean; stability?: number | null; error?: string }
+  suspected_source?: string
 }
 
 export type ProductionPipeline = 'ai_video' | 'frame_slideshow'
@@ -268,7 +282,7 @@ function parseAiDetection(ai: unknown): EpisodeAiDetection | undefined {
       : undefined,
     humanize_passed: typeof src.humanize_passed === 'boolean' ? src.humanize_passed : undefined,
     humanize_target: Number.isFinite(Number(src.humanize_target))
-      ? Math.min(60, Math.max(20, Math.round(Number(src.humanize_target))))
+      ? Math.min(HUMANIZE_TARGET_MAX, Math.max(HUMANIZE_TARGET_MIN, Math.round(Number(src.humanize_target))))
       : undefined,
     humanize_warning: typeof src.humanize_warning === 'string' && src.humanize_warning.trim()
       ? src.humanize_warning.trim()
@@ -315,6 +329,43 @@ function parseAiDetection(ai: unknown): EpisodeAiDetection | undefined {
             }}),
         }
       : undefined,
+    genre: typeof src.genre === 'string' ? src.genre : undefined,
+    engine_version: typeof src.engine_version === 'string' ? src.engine_version : undefined,
+    ref_mode: src.ref_mode === 'echo' || src.ref_mode === 'prompt_logprobs' || src.ref_mode === 'proxy' || src.ref_mode === 'none'
+      ? src.ref_mode
+      : undefined,
+    calibration: src.calibration === 'calibrated' || src.calibration === 'none' ? src.calibration : undefined,
+    needs_review: typeof src.needs_review === 'boolean' ? src.needs_review : undefined,
+    probability_band: typeof src.probability_band === 'string' ? src.probability_band : undefined,
+    coverage: src.coverage && typeof src.coverage === 'object'
+      ? {
+          windows_total: Math.max(0, Number((src.coverage as { windows_total?: unknown }).windows_total) || 0),
+          windows_scored: Math.max(0, Number((src.coverage as { windows_scored?: unknown }).windows_scored) || 0),
+          scored_chars: Math.max(0, Number((src.coverage as { scored_chars?: unknown }).scored_chars) || 0),
+          text_chars: Math.max(0, Number((src.coverage as { text_chars?: unknown }).text_chars) || 0),
+        }
+      : undefined,
+    evidence: Array.isArray(src.evidence)
+      ? src.evidence.filter((e: unknown) => e && typeof e === 'object').map((e: Record<string, unknown>) => ({
+          key: typeof e.key === 'string' ? e.key : 'unknown',
+          label: typeof e.label === 'string' ? e.label : undefined,
+          score: e.score == null ? null : (Number.isFinite(Number(e.score)) ? Number(e.score) : null),
+          missing: typeof e.missing === 'boolean' ? e.missing : undefined,
+          note: typeof e.note === 'string' ? e.note : undefined,
+        }))
+      : undefined,
+    perturb: src.perturb && typeof src.perturb === 'object'
+      ? {
+          applied: !!(src.perturb as { applied?: unknown }).applied,
+          stability: Number.isFinite(Number((src.perturb as { stability?: unknown }).stability))
+            ? Number((src.perturb as { stability?: unknown }).stability)
+            : null,
+          error: typeof (src.perturb as { error?: unknown }).error === 'string'
+            ? (src.perturb as { error: string }).error
+            : undefined,
+        }
+      : undefined,
+    suspected_source: typeof src.suspected_source === 'string' ? src.suspected_source : undefined,
   }
 }
 

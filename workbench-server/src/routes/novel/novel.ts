@@ -817,13 +817,19 @@ app.post('/chapters/:id/detect-ai', async (c) => {
 
   logTaskStart('Novel', 'detect-ai', { chapterId: id, charCount: content.length })
   try {
+    const genre = typeof body.genre === 'string' ? body.genre : 'web_fiction'
+    const enableAdversarial = body.enable_adversarial === false ? false : undefined
     let result
     try {
-      result = await detectAiTextWithPerplexity(content, novelTextBilling(user, '小说章节 AI 率检测（困惑度）', id))
+      result = await detectAiTextWithPerplexity(
+        content,
+        novelTextBilling(user, '小说章节 AI 率检测（困惑度）', id),
+        { genre, enableAdversarial },
+      )
     } catch (perplexityErr: any) {
       const reason = perplexityErr?.message || '困惑度检测不可用'
       logTaskError('Novel', 'detect-ai-perplexity-fallback', { chapterId: id, error: reason })
-      result = detectAiTextStatisticalFallback(content, reason)
+      result = await detectAiTextStatisticalFallback(content, reason, { genre })
     }
 
     const metadata = mergeEpisodeMetadata(pack.episode.metadata, { ai_detection: result })

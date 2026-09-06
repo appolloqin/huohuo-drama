@@ -9,6 +9,10 @@ import {
   getUserTextAuditModelSettings,
   saveUserTextAuditModelSettings,
 } from '../../services/ai/text-audit-model.js'
+import {
+  getUserDefaultPerplexityModelSettings,
+  saveUserDefaultPerplexityModelSettings,
+} from '../../services/ai/text-perplexity-model.js'
 
 const serviceConfigRouter = new Hono()
 
@@ -77,6 +81,24 @@ serviceConfigRouter.put('/text-audit-model', async (c) => {
   }
 })
 
+serviceConfigRouter.get('/default-perplexity-model', async (c) => {
+  const user = getAuthUser(c)
+  return success(c, await getUserDefaultPerplexityModelSettings(user.id))
+})
+
+serviceConfigRouter.put('/default-perplexity-model', async (c) => {
+  const user = getAuthUser(c)
+  const body = await c.req.json().catch(() => ({})) as { enabled?: unknown; model?: unknown }
+  try {
+    return success(c, await saveUserDefaultPerplexityModelSettings(user.id, {
+      enabled: typeof body.enabled === 'boolean' ? body.enabled : undefined,
+      model: typeof body.model === 'string' ? body.model : undefined,
+    }))
+  } catch (err: any) {
+    return badRequest(c, err.message || '保存失败')
+  }
+})
+
 serviceConfigRouter.get('/preset', async (c) => {
   const user = getAuthUser(c)
   if (user.role === 'admin') {
@@ -127,6 +149,7 @@ serviceConfigRouter.post('/test', async (c) => {
 
 serviceConfigRouter.get('/:id', async (c) => {
   const id = Number(c.req.param('id'))
+  if (!Number.isFinite(id) || id <= 0) return notFound(c)
   const row = await aiConfigService.getServiceConfigById(id)
   if (!row) return notFound(c)
   return success(c, row)
@@ -134,6 +157,7 @@ serviceConfigRouter.get('/:id', async (c) => {
 
 serviceConfigRouter.put('/:id', requireAdmin, async (c) => {
   const id = Number(c.req.param('id'))
+  if (!Number.isFinite(id) || id <= 0) return notFound(c)
   const body = await c.req.json()
   await aiConfigService.updateServiceConfig(id, body)
   return success(c)
@@ -141,6 +165,7 @@ serviceConfigRouter.put('/:id', requireAdmin, async (c) => {
 
 serviceConfigRouter.delete('/:id', requireAdmin, async (c) => {
   const id = Number(c.req.param('id'))
+  if (!Number.isFinite(id) || id <= 0) return notFound(c)
   await aiConfigService.deleteServiceConfig(id)
   return success(c)
 })

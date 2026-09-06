@@ -1,6 +1,5 @@
 /**
- * 去 AI 味采纳门：分数升高必须丢弃；持平但最高维明显下降可采纳；
- * PPL 顶在 97% 封顶时，原始困惑度升高也可采纳
+ * 去 AI 味采纳门（G14）：纯分段指标优先；总分下降次之；持平看 PPL/顶信号。
  * npx tsx scripts/verify-humanize-accept.ts
  */
 import {
@@ -33,5 +32,38 @@ if (shouldAcceptHumanizePass(97, 97, {
 }
 if (!isPerplexityImproved(1.28, 2.0)) throw new Error('isPerplexityImproved true')
 if (isPerplexityImproved(2.0, 1.5)) throw new Error('isPerplexityImproved false on drop')
+
+// G14：总分升高但段高危下降 → 仍采纳
+if (!shouldAcceptHumanizePass(90, 95, { beforeHighBand: 3, afterHighBand: 1 })) {
+  throw new Error('seg highBand drop should accept even if prob rises')
+}
+// G14：总分持平 + meanAigc 下降 → 采纳
+if (!shouldAcceptHumanizePass(60, 60, { beforeMeanAigc: 0.55, afterMeanAigc: 0.4 })) {
+  throw new Error('meanAigc drop should accept')
+}
+// G14：总分升高 + 分段无改善 → 拒绝（旧实现曾因 PPL 允许）
+if (shouldAcceptHumanizePass(90, 95, {
+  beforeHighBand: 2,
+  afterHighBand: 2,
+  beforeMeanAigc: 0.5,
+  afterMeanAigc: 0.5,
+  beforePerplexity: 1.0,
+  afterPerplexity: 2.0,
+})) {
+  throw new Error('prob rise without seg improve must reject even if PPL up')
+}
+// 综合用例
+if (!shouldAcceptHumanizePass(80, 75, {
+  beforeMeanAigc: 0.55,
+  afterMeanAigc: 0.55,
+  beforeHighBand: 3,
+  afterHighBand: 2,
+  beforePerplexity: 10,
+  afterPerplexity: 10,
+  beforeTopSignal: 0.6,
+  afterTopSignal: 0.55,
+})) {
+  throw new Error('combined case should accept')
+}
 
 console.log('verify-humanize-accept OK')

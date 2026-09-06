@@ -376,6 +376,8 @@
             <p class="ai-detect-verdict">{{ aiVerdictLabel }}</p>
             <p class="ai-detect-confidence">{{ aiConfidenceLabel }}</p>
           </div>
+          <p v-if="aiDetectionResult.needs_review" class="ai-detect-stale">{{ tm.aiDetectHub.needsReviewBanner }}</p>
+          <p v-if="aiCoverageChipText" class="ai-detect-coverage-chip">{{ aiCoverageChipText }}</p>
           <p v-if="aiDetectionResult.is_stale" class="ai-detect-stale">{{ tm.novel.aiDetectStale }}</p>
           <p v-if="aiDetectionResult.detected_at" class="ai-detect-time">
             {{ tx(tm.novel.aiDetectLastAt, { time: formatDetectTime(aiDetectionResult.detected_at) }) }}
@@ -736,6 +738,16 @@ const aiHotSegments = computed(() => {
   return segs.filter((s) => s?.band === 'suspected' || s?.band === 'ai')
 })
 
+const aiCoverageChipText = computed(() => {
+  const c = aiDetectionResult.value?.coverage
+  if (!c) return ''
+  return tx(tm.value.aiDetectHub.coverageChip, {
+    scored: c.windows_scored,
+    total: c.windows_total,
+    chars: c.scored_chars,
+  })
+})
+
 function aiSegmentBandLabel(band) {
   if (band === 'ai') return tm.value.aiDetectHub.bandAi
   if (band === 'suspected') return tm.value.aiDetectHub.bandSuspected
@@ -939,7 +951,11 @@ async function probeChapterAi() {
   try {
     aiProbeRunning.value = true
     aiDetectSheetOpen.value = true
-    const result = await novelAPI.detectChapterAi(activeChapter.value.id, { text: chapterBody.value })
+    const result = await novelAPI.detectChapterAi(activeChapter.value.id, {
+      text: chapterBody.value,
+      genre: 'web_fiction',
+      enable_adversarial: false,
+    })
     savedAiDetection.value = result
     aiDetectionResult.value = result
   } catch (e) {
@@ -1762,6 +1778,17 @@ html[data-theme="dark"] .ai-detect-loading-overlay {
   border-radius: var(--radius);
   background: rgba(201, 122, 46, 0.08);
   border: 1px solid rgba(201, 122, 46, 0.2);
+}
+.ai-detect-coverage-chip {
+  margin: 0;
+  display: inline-block;
+  width: fit-content;
+  font-size: 12px;
+  color: var(--text-2);
+  padding: 4px 10px;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  background: var(--bg-0);
 }
 .ai-detect-method {
   margin: 0.35rem 0 0;

@@ -1,6 +1,7 @@
 import crypto from 'crypto'
 import { countNovelChars } from '../../common/novel/novel-char-limit.js'
 import { NOVEL_AI_TRANSITION_TELLS } from '../../common/novel/novel-ai-tells.js'
+import { aiScoreFromZ, DEFAULT_PERCENTILE_TABLES } from './ai-detect-calibration.js'
 
 export type AiDetectionSignal = {
   key: string
@@ -42,9 +43,11 @@ export type AiDetectionSuggestion = {
 export const AI_DETECTION_METHOD = 'statistical_v1' as const
 
 export type AiDetectionMethod =
-  | typeof AI_DETECTION_METHOD
-  | 'perplexity_v1'
-  | 'statistical_v1_fallback'
+  | typeof AI_DETECTION_METHOD   // 'statistical_v1'（旧，不再产新数据但保留类型）
+  | 'perplexity_v1'              // 旧
+  | 'statistical_v1_fallback'    // 旧
+  | 'fusion_v2'                  // 新：多证据融合主口径
+  | 'statistical_v2'             // 新：参考线不可用的纯统计融合
 
 export type AiDetectionResult = {
   probability: number
@@ -75,6 +78,25 @@ export type AiDetectionResult = {
   }
   /** 高危段数量（suspected+ai） */
   high_band_count?: number
+  genre?: string
+  engine_version?: string
+  /** S2 生效轨道 */
+  ref_mode?: 'echo' | 'prompt_logprobs' | 'proxy' | 'none'
+  /** ppl_tracks 档案命中情况 */
+  calibration?: 'calibrated' | 'none'
+  needs_review?: boolean
+  /** 仅 <SHORT_TEXT_CHARS：'40-60' 区间显示 */
+  probability_band?: string
+  /** 采样覆盖（spec G12） */
+  coverage?: { windows_total: number; windows_scored: number; scored_chars: number; text_chars: number }
+  /** S1–S5 证据线明细（UI 直读；parseAiDetection Chunk6 透传） */
+  evidence?: Array<{ key: string; label?: string; score?: number | null; missing?: boolean; note?: string }>
+  /** S5 扰动 */
+  perturb?: { applied: boolean; stability: number | null; error?: string }
+  /** S3 命中：站内风格最近模型（仅对照展示） */
+  suspected_source?: string
+  /** 缓存命中 */
+  cache_hit?: boolean
 }
 
 /** 修改建议展示门槛（原 0.55 过高：用词 72% 以外的次高维常被整表吞掉） */
@@ -204,21 +226,13 @@ function lexicalPatternScore(text: string): number {
   const chars = [...text.replace(/\s/g, '')]
   if (chars.length < 10) return 0.5
   const ratio = new Set(chars).size / chars.length
-  if (ratio < 0.15) return 0.82
-  if (ratio < 0.22) return 0.68
-  if (ratio >= 0.28 && ratio <= 0.42) return 0.72
-  if (ratio > 0.55) return 0.38
-  return 0.48
+  return aiScoreFromZ('char_ttr', ratio, DEFAULT_PERCENTILE_TABLES.web_fiction)
 }
-
 function punctuationRhythmScore(text: string): number {
   const chars = countNovelChars(text)
   if (chars < 50) return 0.5
   const marks = (text.match(/[，。！？、；：]/g) || []).length
-  const perChar = marks / chars
-  if (perChar >= 0.018 && perChar <= 0.045) return 0.74
-  if (perChar < 0.01 || perChar > 0.065) return 0.32
-  return 0.52
+  return aiScoreFromZ('punct_density', marks / chars, DEFAULT_PERCENTILE_TABLES.web_fiction)
 }
 
 function paragraphIndexAt(text: string, charIndex: number): number {
@@ -656,10 +670,7 @@ function colloquialMarkerScore(text: string): number {
   const chars = countNovelChars(text)
   if (chars < 50) return 0.5
   const oral = (text.match(/[吧呢啊嘛呗咯呀哇噢哦嗯]/g) || []).length
-  const ratio = oral / chars
-  if (ratio < 0.002) return 0.68
-  if (ratio > 0.01) return 0.22
-  return 0.42
+  return aiScoreFromZ('colloquial_density', oral / chars, DEFAULT_PERCENTILE_TABLES.web_fiction)
 }
 
 export function hashNovelContent(text: string): string {

@@ -21,6 +21,21 @@
           >{{ tab.label }}</button>
         </div>
 
+        <div class="genre-row">
+          <span class="field-label">{{ tm.aiDetectHub.genre }}</span>
+          <div class="genre-tabs" role="radiogroup" :aria-label="tm.aiDetectHub.genre">
+            <button
+              v-for="g in genreOptions"
+              :key="g.id"
+              type="button"
+              role="radio"
+              :aria-checked="detectGenre === g.id"
+              :class="['genre-tab', { active: detectGenre === g.id }]"
+              @click="detectGenre = g.id"
+            >{{ g.label }}</button>
+          </div>
+        </div>
+
         <div v-if="detectMode === 'text'" class="input-block">
           <label class="field-label">{{ tm.aiDetectHub.textLabel }}</label>
           <textarea
@@ -68,7 +83,7 @@
             :disabled="rewriteRunning || scanRunning || !canHumanize"
             @click="startHumanizeRewrite"
           >
-            {{ rewriteRunning ? tm.aiDetectHub.rewriteRunning : tm.aiDetectHub.humanize }}
+            {{ rewriteRunning ? tm.aiDetectHub.humanizing : tm.aiDetectHub.humanize }}
           </button>
         </div>
         <p class="hub-action-hint">{{ tm.aiDetectHub.humanizeHint }}</p>
@@ -121,10 +136,18 @@
           </div>
           <div class="ai-detect-score" :class="verdictClass">
             <p class="ai-detect-score-label">{{ tm.novel.aiDetectProbability }}</p>
-            <p class="ai-detect-score-value">{{ scanResult.probability }}%</p>
+            <p
+              class="ai-detect-score-value"
+              :title="showProbabilityBand ? tm.aiDetectHub.shortTextBandHint : undefined"
+            >
+              <template v-if="showProbabilityBand">{{ scanResult.probability_band }}%</template>
+              <template v-else>{{ scanResult.probability }}%</template>
+            </p>
             <p class="ai-detect-verdict">{{ verdictLabel }}</p>
             <p class="ai-detect-confidence">{{ confidenceLabel }}</p>
           </div>
+          <p v-if="scanResult.needs_review" class="hub-needs-review">{{ tm.aiDetectHub.needsReviewBanner }}</p>
+          <p v-if="coverageChipText" class="hub-coverage-chip">{{ coverageChipText }}</p>
           <p v-if="scanResult.detected_at" class="ai-detect-time">
             {{ tx(tm.novel.aiDetectLastAt, { time: formatDetectTime(scanResult.detected_at) }) }}
             <template v-if="scanResult.elapsed_ms != null">
@@ -133,6 +156,25 @@
           </p>
           <p v-if="scanResult.ai_detect_warning" class="hub-disclaimer">{{ scanResult.ai_detect_warning }}</p>
           <p v-else class="hub-disclaimer">{{ tm.aiDetectHub.zhuqueDisclaimer }}</p>
+          <div v-if="scanResult.evidence?.length" class="ai-detect-evidence">
+            <ul class="ai-evidence-list">
+              <li v-for="e in scanResult.evidence" :key="e.key" class="ai-evidence-item">
+                <span class="ai-evidence-label">{{ evidenceLineLabel(e.key) }}</span>
+                <span class="ai-evidence-bar-wrap">
+                  <span
+                    v-if="!e.missing && e.score != null"
+                    class="ai-evidence-bar"
+                    :style="{ width: `${Math.round(Math.max(0, Math.min(1, e.score)) * 100)}%` }"
+                  />
+                  <span v-else class="ai-evidence-missing">{{ tm.aiDetectHub.lineUnavailable }}</span>
+                </span>
+                <span v-if="!e.missing && e.score != null" class="ai-evidence-pct">
+                  {{ Math.round(Math.max(0, Math.min(1, e.score)) * 100) }}%
+                </span>
+                <p v-if="e.note" class="ai-evidence-note">{{ e.note }}</p>
+              </li>
+            </ul>
+          </div>
           <div v-if="hotSegments.length" class="ai-detect-segments">
             <p class="ai-detect-signals-title">
               {{ tm.aiDetectHub.segmentsTitle }}
@@ -198,6 +240,27 @@
             <summary>{{ tm.aiDetectHub.transcriptTitle }}</summary>
             <pre class="transcript-pre">{{ scanResult.transcript }}</pre>
           </details>
+          <div v-if="showFeedbackRow" class="hub-feedback">
+            <p class="hub-feedback-prompt">{{ tm.aiDetectHub.feedbackPrompt }}</p>
+            <label class="hub-feedback-consent">
+              <input v-model="feedbackConsent" type="checkbox" />
+              <span>{{ tm.aiDetectHub.feedbackConsent }}</span>
+            </label>
+            <div class="hub-actions hub-feedback-actions">
+              <button
+                type="button"
+                class="btn btn-sm"
+                :disabled="feedbackSending"
+                @click="submitFeedback('human')"
+              >{{ tm.aiDetectHub.feedbackHuman }}</button>
+              <button
+                type="button"
+                class="btn btn-sm"
+                :disabled="feedbackSending"
+                @click="submitFeedback('ai')"
+              >{{ tm.aiDetectHub.feedbackAi }}</button>
+            </div>
+          </div>
         </div>
       </section>
     </div>
@@ -218,6 +281,8 @@ const { messages: tm, init, lang } = useI18n()
 const { canGenerate, guardGenerate } = useCreditsGate()
 
 const detectMode = ref<'text' | 'file' | 'audio' | 'video'>('text')
+type DetectGenre = 'web_fiction' | 'official' | 'academic' | 'media'
+const detectGenre = ref<DetectGenre>('web_fiction')
 const pasteText = ref('')
 const uploadFile = ref<File | null>(null)
 const fileInputRef = ref<HTMLInputElement | null>(null)
@@ -230,12 +295,48 @@ const scanBeforeRewrite = ref<AiDetectHubResult | null>(null)
 const scanResult = ref<AiDetectHubResult | null>(null)
 const scanPanelRef = ref<HTMLElement | null>(null)
 const humanizeRef = ref<HTMLElement | null>(null)
+const feedbackConsent = ref(false)
+const feedbackSending = ref(false)
+const feedbackSent = ref(false)
+
+const FEEDBACK_TTL_MS = 5 * 60 * 1000
+function feedbackStorageKey(hash: string) {
+  return `aiDetectFeedbackDone:${hash}`
+}
+function isFeedbackRecentlyDone(hash: string) {
+  if (!import.meta.client || !hash) return false
+  try {
+    const raw = localStorage.getItem(feedbackStorageKey(hash))
+    if (!raw) return false
+    const ts = Number(raw)
+    if (!Number.isFinite(ts) || Date.now() - ts > FEEDBACK_TTL_MS) {
+      localStorage.removeItem(feedbackStorageKey(hash))
+      return false
+    }
+    return true
+  } catch {
+    return false
+  }
+}
+function markFeedbackDone(hash: string) {
+  if (!import.meta.client || !hash) return
+  try {
+    localStorage.setItem(feedbackStorageKey(hash), String(Date.now()))
+  } catch { /* ignore quota */ }
+}
 
 function scrollToScanPanel() {
   nextTick(() => {
     scanPanelRef.value?.scrollIntoView({ behavior: 'smooth', block: 'start' })
   })
 }
+
+const genreOptions = computed(() => [
+  { id: 'web_fiction' as const, label: tm.value.aiDetectHub.genreWebFiction },
+  { id: 'official' as const, label: tm.value.aiDetectHub.genreOfficial },
+  { id: 'academic' as const, label: tm.value.aiDetectHub.genreAcademic },
+  { id: 'media' as const, label: tm.value.aiDetectHub.genreMedia },
+])
 
 const modeTabs = computed(() => [
   { id: 'text' as const, label: tm.value.aiDetectHub.tabText },
@@ -318,10 +419,38 @@ const hotSegments = computed(() => {
   return segs.filter((s: any) => s?.band === 'suspected' || s?.band === 'ai')
 })
 
+const showProbabilityBand = computed(() => {
+  const r = scanResult.value
+  if (!r?.probability_band) return false
+  const chars = r.char_count ?? [...(pasteText.value || r.transcript || '')].length
+  return chars < 300
+})
+
+const coverageChipText = computed(() => {
+  const c = scanResult.value?.coverage
+  if (!c) return ''
+  return tx(tm.value.aiDetectHub.coverageChip, {
+    scored: c.windows_scored,
+    total: c.windows_total,
+    chars: c.scored_chars,
+  })
+})
+
+const showFeedbackRow = computed(() => {
+  const r = scanResult.value
+  if (!r?.content_hash || feedbackSent.value) return false
+  return !isFeedbackRecentlyDone(r.content_hash)
+})
+
 function segmentBandLabel(band: string) {
   if (band === 'ai') return tm.value.aiDetectHub.bandAi
   if (band === 'suspected') return tm.value.aiDetectHub.bandSuspected
   return tm.value.aiDetectHub.bandHuman
+}
+
+function evidenceLineLabel(key: string) {
+  const map = tm.value.aiDetectEvidence as Record<string, string>
+  return map[key] || key
 }
 
 function formatNovelWords(n: number) {
@@ -425,7 +554,9 @@ async function rescanAfterRewrite() {
   if (!text) return
   scanRunning.value = true
   try {
-    scanResult.value = await aiDetectAPI.detectText(text)
+    scanResult.value = await aiDetectAPI.detectText(text, { genre: detectGenre.value })
+    feedbackSent.value = false
+    feedbackConsent.value = false
     scrollToScanPanel()
   } catch (e: any) {
     toast.error(e.message)
@@ -479,6 +610,31 @@ function applyHumanized() {
   toast.success(tm.value.aiDetectHub.humanizeApplied)
 }
 
+async function submitFeedback(label: 'human' | 'ai') {
+  const r = scanResult.value
+  if (!r?.content_hash || feedbackSending.value) return
+  feedbackSending.value = true
+  try {
+    const consent = feedbackConsent.value
+    const sourceText = (pasteText.value.trim() || r.transcript || '').slice(0, 8000)
+    await aiDetectAPI.feedback({
+      content_hash: r.content_hash,
+      label,
+      consent_store: consent,
+      source_type: r.source_type,
+      genre: detectGenre.value,
+      text: consent ? sourceText : undefined,
+    })
+    markFeedbackDone(r.content_hash)
+    feedbackSent.value = true
+    toast.success(tm.value.aiDetectHub.feedbackDone)
+  } catch (e: any) {
+    toast.error(e.message)
+  } finally {
+    feedbackSending.value = false
+  }
+}
+
 async function startAiScan() {
   if (!guardGenerate()) return
   scanRunning.value = true
@@ -486,16 +642,19 @@ async function startAiScan() {
   scanBeforeRewrite.value = null
   humanizedText.value = ''
   humanizePipeline.value = ''
+  feedbackSent.value = false
+  feedbackConsent.value = false
   scrollToScanPanel()
+  const genreOpts = { genre: detectGenre.value }
   try {
     if (detectMode.value === 'text') {
-      scanResult.value = await aiDetectAPI.detectText(pasteText.value)
+      scanResult.value = await aiDetectAPI.detectText(pasteText.value, genreOpts)
     } else if (detectMode.value === 'file' && uploadFile.value) {
-      scanResult.value = await aiDetectAPI.detectFile(uploadFile.value)
+      scanResult.value = await aiDetectAPI.detectFile(uploadFile.value, genreOpts)
     } else if (detectMode.value === 'audio' && uploadFile.value) {
-      scanResult.value = await aiDetectAPI.detectAudio(uploadFile.value)
+      scanResult.value = await aiDetectAPI.detectAudio(uploadFile.value, genreOpts)
     } else if (detectMode.value === 'video' && uploadFile.value) {
-      scanResult.value = await aiDetectAPI.detectVideo(uploadFile.value)
+      scanResult.value = await aiDetectAPI.detectVideo(uploadFile.value, genreOpts)
     }
     scrollToScanPanel()
   } catch (e: any) {
@@ -588,6 +747,34 @@ onMounted(() => init())
   cursor: pointer;
 }
 .mode-tab.active {
+  background: var(--accent-bg);
+  border-color: rgba(76,125,255,0.25);
+  color: var(--accent-text);
+}
+.genre-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px 14px;
+  margin-bottom: 14px;
+}
+.genre-tabs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.genre-tab {
+  height: 30px;
+  padding: 0 12px;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  background: var(--bg-0);
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-2);
+  cursor: pointer;
+}
+.genre-tab.active {
   background: var(--accent-bg);
   border-color: rgba(76,125,255,0.25);
   color: var(--accent-text);
@@ -808,6 +995,121 @@ onMounted(() => init())
   font-size: 12px;
   color: var(--text-3);
   line-height: 1.45;
+}
+.hub-needs-review {
+  margin: 0;
+  font-size: 12px;
+  line-height: 1.5;
+  color: #c97a2e;
+  padding: 10px 12px;
+  border-radius: var(--radius);
+  background: rgba(201, 122, 46, 0.08);
+  border: 1px solid rgba(201, 122, 46, 0.2);
+}
+.hub-coverage-chip {
+  margin: 0;
+  display: inline-block;
+  width: fit-content;
+  font-size: 12px;
+  color: var(--text-2);
+  padding: 4px 10px;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  background: var(--bg-0);
+}
+.ai-detect-evidence {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.ai-evidence-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.ai-evidence-item {
+  display: grid;
+  grid-template-columns: minmax(120px, 160px) 1fr auto;
+  gap: 6px 10px;
+  align-items: center;
+}
+.ai-evidence-label {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-1);
+}
+.ai-evidence-bar-wrap {
+  position: relative;
+  height: 8px;
+  border-radius: 999px;
+  background: var(--bg-0);
+  border: 1px solid var(--border);
+  overflow: hidden;
+  min-width: 80px;
+}
+.ai-evidence-bar {
+  display: block;
+  height: 100%;
+  background: var(--accent, #4c7dff);
+  border-radius: 999px;
+}
+.ai-evidence-missing {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 10px;
+  color: var(--text-3);
+  background: var(--bg-1, var(--bg-2));
+}
+.ai-evidence-pct {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  color: var(--text-2);
+  min-width: 36px;
+  text-align: right;
+}
+.ai-evidence-note {
+  grid-column: 1 / -1;
+  margin: 0;
+  font-size: 11px;
+  color: var(--text-3);
+  line-height: 1.4;
+}
+.hub-feedback {
+  margin-top: 4px;
+  padding-top: 14px;
+  border-top: 1px solid var(--border);
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.hub-feedback-prompt {
+  margin: 0;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-1);
+}
+.hub-feedback-consent {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  font-size: 12px;
+  color: var(--text-2);
+  line-height: 1.5;
+  cursor: pointer;
+}
+.hub-feedback-consent input {
+  margin-top: 2px;
+}
+.hub-feedback-actions {
+  margin-top: 0;
+  padding-top: 0;
+  border-top: none;
 }
 .ai-detect-segments { margin: 12px 0; }
 .ai-segment-list {

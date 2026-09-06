@@ -30,6 +30,21 @@ jobs:
       - run: npm run check:genre-skills
       - run: npm run verify:scene-drama-skills
       - run: npm run verify:novel-genre-skill-routing
+      - run: npm run verify:ai-detect-constants
+      - run: npm run verify:ai-detect-features
+      - run: npm run verify:ai-detect-zlines
+      - run: npm run verify:ai-detect-segments
+      - run: npm run verify:ai-detect-tables
+      - run: npm run verify:ai-detect-reference
+      - run: npm run verify:ai-detect-profile
+      - run: npm run verify:ai-detect-fusion
+      - run: npm run verify:ai-detect-budget-cache
+      - run: npm run verify:ai-detect-engine
+      - run: npm run verify:ai-detect-train
+      - run: npm run verify:ai-detect-fingerprint
+      - run: npm run verify:ai-detect-corpus
+      - run: npm run verify:ai-detect-calib
+      - run: npm run verify:ai-detect-hub
       - run: npm run smoke:novel-chapter
 
   smoke-sqlite:
@@ -97,6 +112,15 @@ jobs:
           cache: npm
           cache-dependency-path: workbench-server/package-lock.json
       - run: npm ci
+      - name: AI detect verifies (MySQL)
+        env:
+          DB_DRIVER: mysql
+          DATABASE_URL: mysql://root:root@127.0.0.1:3306/huohuo_drama
+          DB_AUTO_INIT: 'true'
+        run: |
+          npm run verify:ai-detect-tables
+          npm run verify:ai-detect-engine
+          npm run verify:ai-detect-budget-cache
       - name: API smoke (MySQL)
         env:
           DB_DRIVER: mysql

@@ -25,6 +25,11 @@ import {
 } from '../../common/ai/text-api-errors.js'
 import { resolveUserServiceConfig } from './user-ai-config-resolve.js'
 import { getUserTextAuditModelSettings, resolveTextAuditAiConfig } from './text-audit-model.js'
+import {
+  defaultPerplexityModelName,
+  getUserDefaultPerplexityModelSettings,
+  resolveDefaultPerplexityAiConfig,
+} from './text-perplexity-model.js'
 import { normalizeNovelDialogueQuotes } from '../../common/novel/novel-dialogue-quotes.js'
 import { repairNovelReplacementCharsLexicon } from '../../common/novel/novel-replacement-char.js'
 
@@ -51,6 +56,11 @@ export {
   saveUserTextAuditModelSettings,
   isTextAuditModelActive,
 } from './text-audit-model.js'
+export {
+  getUserDefaultPerplexityModelSettings,
+  saveUserDefaultPerplexityModelSettings,
+  isDefaultPerplexityModelActive,
+} from './text-perplexity-model.js'
 export { resolveServiceConfigById, resolveActiveConfigForUser } from './user-ai-config-resolve.js'
 
 export interface AIConfig {
@@ -190,27 +200,183 @@ export function textConfigCanHostPerplexityModel(args: {
   return false
 }
 
+type TextConfigRowLite = {
+  id: number
+  isActive?: boolean | number | null
+  priority?: number | null
+  provider: string | null
+  baseUrl: string
+  apiKey: string
+  model: string | null
+  settings: string | Record<string, unknown> | null
+}
+
+function isRowActive(row: TextConfigRowLite): boolean {
+  return row.isActive === true || row.isActive === 1
+}
+
+function readRowPerplexityModel(row: TextConfigRowLite): string {
+  const settings = parseConfigSettings(row.settings)
+  return typeof settings.perplexityModel === 'string' ? settings.perplexityModel.trim() : ''
+}
+
+function readRowModelList(row: TextConfigRowLite): string[] {
+  if (!row.model) return []
+  try {
+    const models = JSON.parse(row.model)
+    return Array.isArray(models)
+      ? models.filter((m): m is string => typeof m === 'string' && m.trim().length > 0)
+      : []
+  } catch {
+    return []
+  }
+}
+
+function hostArgsForRow(row: TextConfigRowLite, targetModel: string) {
+  return {
+    provider: row.provider || '',
+    baseUrl: row.baseUrl || '',
+    models: readRowModelList(row),
+    targetModel,
+  }
+}
+
 /**
- * 困惑度专用：写作配置可指定异系「困惑度检测模型」，须改走能承载该型号的文本服务
- *（例如 DeepSeek 写作 + qwen-plus 检测 → 使用阿里云 dashscope 配置的 key/根地址）。
+ * 困惑度模型全局复用：不必每个写作文本配置都填一遍。
+ * 优先级：当前写作配置 → 其他启用配置 → 曾配置过的停用配置 → 其他配置模型列表里更可能支持 logprobs 的型号。
  */
-export async function getPerplexityConfigWithModels(): Promise<{
+export function resolveSharedPerplexitySelection(rows: TextConfigRowLite[]): {
+  writingRow: TextConfigRowLite
+  pplModel: string
+  hostRow: TextConfigRowLite
+  source: 'writing' | 'shared-active' | 'shared-inactive' | 'host-model-list' | 'none'
+} {
+  const sorted = [...rows].sort((a, b) => (b.priority || 0) - (a.priority || 0))
+  const active = sorted.filter(isRowActive)
+  const writingRow = active[0]
+  if (!writingRow) throw new Error('No active text AI config')
+
+  type Hit = { model: string; row: TextConfigRowLite; source: 'writing' | 'shared-active' | 'shared-inactive' }
+  let hit: Hit | null = null
+
+  const writingPpl = readRowPerplexityModel(writingRow)
+  if (writingPpl) hit = { model: writingPpl, row: writingRow, source: 'writing' }
+
+  if (!hit) {
+    for (const r of active) {
+      const m = readRowPerplexityModel(r)
+      if (m) {
+        hit = { model: m, row: r, source: 'shared-active' }
+        break
+      }
+    }
+  }
+
+  if (!hit) {
+    for (const r of sorted) {
+      if (isRowActive(r)) continue
+      const m = readRowPerplexityModel(r)
+      if (m) {
+        hit = { model: m, row: r, source: 'shared-inactive' }
+        break
+      }
+    }
+  }
+
+  if (!hit) {
+    const pickFromList = (list: TextConfigRowLite[]) => {
+      for (const r of list) {
+        const models = readRowModelList(r)
+        const preferred = models.find((m) => /qwen-plus|qwen-turbo/i.test(m) && supportsLogprobsHeuristic(m))
+          || models.find((m) => supportsLogprobsHeuristic(m))
+        if (preferred) return { model: preferred, row: r as TextConfigRowLite }
+      }
+      return null
+    }
+    const fromActive = pickFromList(active)
+    const fromAny = fromActive || pickFromList(sorted)
+    if (fromAny) {
+      return {
+        writingRow,
+        pplModel: fromAny.model,
+        hostRow: fromAny.row,
+        source: 'host-model-list',
+      }
+    }
+    return { writingRow, pplModel: '', hostRow: writingRow, source: 'none' }
+  }
+
+  // 宿主：优先「写出该困惑度型号」的配置，否则任意能承载的启用/停用配置
+  const preferHost = hit.row
+  let hostRow = preferHost
+  if (!textConfigCanHostPerplexityModel(hostArgsForRow(preferHost, hit.model))) {
+    const better =
+      active.find((r) => textConfigCanHostPerplexityModel(hostArgsForRow(r, hit!.model)))
+      || sorted.find((r) => textConfigCanHostPerplexityModel(hostArgsForRow(r, hit!.model)))
+    if (!better) {
+      throw new Error(
+        `困惑度模型「${hit.model}」无法通过已有文本服务调用。请启用可承载该型号的文本配置（如阿里云 DashScope），或在任一文本配置中改填可支持 logprobs 的困惑度模型（如 qwen-plus）。`,
+      )
+    }
+    hostRow = better
+  }
+
+  return { writingRow, pplModel: hit.model, hostRow, source: hit.source }
+}
+
+/**
+ * 困惑度专用：优先用户「默认困惑度模型」；否则全站复用已配置的困惑度型号。
+ * 异系检测时改走能承载该型号的文本服务。
+ */
+export async function getPerplexityConfigWithModels(opts?: {
+  userId?: number
+}): Promise<{
   cfg: AIConfig
   models: string[]
   settings: Record<string, unknown>
   writingProvider: string
   perplexityModel: string
 }> {
-  const rows = (await aiConfigsRepo.listServiceConfigsByType('text'))
-    .filter(r => r.isActive)
-    .sort((a, b) => (b.priority || 0) - (a.priority || 0))
-  const writingRow = rows[0]
+  const rows = await aiConfigsRepo.listServiceConfigsByType('text')
+  const activeRows = rows.filter(isRowActive).sort((a, b) => (b.priority || 0) - (a.priority || 0))
+  const writingRow = activeRows[0]
   if (!writingRow) throw new Error('No active text AI config')
-
   const writingBundle = rowToTextConfigBundle(writingRow)
-  const pplModel = typeof writingBundle.settings.perplexityModel === 'string'
-    ? writingBundle.settings.perplexityModel.trim()
-    : ''
+
+  if (opts?.userId) {
+    const userPpl = await getUserDefaultPerplexityModelSettings(opts.userId)
+    if (userPpl.enabled && userPpl.model.trim()) {
+      const resolved = await resolveDefaultPerplexityAiConfig(userPpl.model, writingBundle.cfg.provider)
+      if (resolved) {
+        const modelName = defaultPerplexityModelName(userPpl.model)
+        logTaskWarn('AI', 'perplexity-user-default', {
+          userId: opts.userId,
+          writingProvider: writingBundle.cfg.provider,
+          hostProvider: resolved.provider,
+          hostBaseUrl: resolved.baseUrl,
+          perplexityModel: modelName,
+          ref: userPpl.model,
+        })
+        return {
+          cfg: resolved,
+          models: [modelName, ...((await rowModelsIfAny(resolved.id)) || [])].filter(
+            (m, i, arr) => m && arr.indexOf(m) === i,
+          ),
+          settings: {
+            perplexityModel: modelName,
+          },
+          writingProvider: writingBundle.cfg.provider,
+          perplexityModel: modelName,
+        }
+      }
+      logTaskWarn('AI', 'perplexity-user-default-unresolved', {
+        userId: opts.userId,
+        ref: userPpl.model,
+      })
+    }
+  }
+
+  const { pplModel, hostRow, source } = resolveSharedPerplexitySelection(rows)
 
   if (!pplModel) {
     return {
@@ -220,39 +386,19 @@ export async function getPerplexityConfigWithModels(): Promise<{
     }
   }
 
-  const hostArgs = (r: typeof writingRow) => {
-    const models = r.model ? JSON.parse(r.model) : []
-    const modelList = Array.isArray(models)
-      ? models.filter((m): m is string => typeof m === 'string' && m.trim().length > 0)
-      : []
-    return {
-      provider: r.provider || '',
-      baseUrl: r.baseUrl || '',
-      models: modelList,
-      targetModel: pplModel,
-    }
-  }
-
-  let hostRow = writingRow
-  if (!textConfigCanHostPerplexityModel(hostArgs(writingRow))) {
-    const better = rows.find((r) => textConfigCanHostPerplexityModel(hostArgs(r)))
-    if (!better) {
-      throw new Error(
-        `困惑度模型「${pplModel}」无法通过当前文本服务（${writingRow.provider} / ${writingRow.baseUrl}）调用。请启用可承载该型号的文本配置（如阿里云 DashScope），或把困惑度模型改成当前服务商支持的型号。`,
-      )
-    }
-    hostRow = better
-    logTaskWarn('AI', 'perplexity-host-reroute', {
+  if (hostRow.id !== writingRow.id || source !== 'writing') {
+    logTaskWarn('AI', 'perplexity-shared-reuse', {
       writingProvider: writingRow.provider,
       writingBaseUrl: writingRow.baseUrl,
-      hostProvider: better.provider,
-      hostBaseUrl: better.baseUrl,
+      hostProvider: hostRow.provider,
+      hostBaseUrl: hostRow.baseUrl,
       perplexityModel: pplModel,
+      source,
+      hostActive: isRowActive(hostRow),
     })
   }
 
   const hostBundle = rowToTextConfigBundle(hostRow)
-  // 候选仍以「写作配置里填写的困惑度模型」为准
   return {
     cfg: hostBundle.cfg,
     models: hostBundle.models,
@@ -263,6 +409,13 @@ export async function getPerplexityConfigWithModels(): Promise<{
     writingProvider: writingBundle.cfg.provider,
     perplexityModel: pplModel,
   }
+}
+
+async function rowModelsIfAny(configId?: number): Promise<string[]> {
+  if (!configId) return []
+  const row = await aiConfigsRepo.findServiceConfigById(configId)
+  if (!row) return []
+  return readRowModelList(row)
 }
 
 /** 启发式：哪些型号更可能支持 logprobs（仅作排序参考，不再注入未配置的型号） */
@@ -298,7 +451,34 @@ export function shouldSkipChatAfterCompletionsFail(err: unknown): boolean {
   const msg = err instanceof Error ? err.message : String(err || '')
   if (/unsupported model[^]*compatibility mode/i.test(msg)) return false
   if (/unsupported model/i.test(msg) && /compatibility mode/i.test(msg)) return false
+  // 网关无 /completions：应改试 chat，勿当终态失败
+  if (isCompletionsEndpointMissing(err)) return false
   return /does not support.*logprobs|logprobs.*not support|not support.*logprobs/i.test(msg)
+}
+
+/** 网关未实现 POST /v1/completions（中转站常见） */
+export function isCompletionsEndpointMissing(err: unknown): boolean {
+  const msg = err instanceof Error ? err.message : String(err || '')
+  return /接口不存在[^]*\/completions|\/v1\/completions|not found[^]*completions|completions[^]*(?:not found|does not exist|404)/i.test(
+    msg,
+  )
+}
+
+/**
+ * 是否优先走 chat 续写 logprobs（跳过 /completions）。
+ * DashScope、多数中转、Qwen/DeepSeek 商用常无可用的 completions+echo+logprobs。
+ */
+export function shouldPreferChatLogprobs(cfg: AIConfig, model?: string): boolean {
+  const provider = (cfg.provider || '').toLowerCase()
+  const base = cfg.baseUrl || ''
+  if (provider === 'ali' || /dashscope|aliyun/i.test(base)) return true
+  if (provider === 'deepseek' || /deepseek/i.test(base)) return true
+  const m = (model || cfg.model || '').toLowerCase()
+  if (/qwen|deepseek/i.test(m)) return true
+  // 明确像官方 OpenAI 时才优先 completions
+  if (provider === 'openai' || /api\.openai\.com|openai\.azure/i.test(base)) return false
+  // 其余中转/自建默认 chat-first，避免先打一枪「接口不存在」
+  return true
 }
 
 /**
@@ -391,6 +571,13 @@ async function maybeChargeText(cfg: AIConfig, messages: ChatMessage[], output: s
     resourceType: billing.resourceType,
     resourceId: billing.resourceId,
   })
+}
+
+/** reference 打分计费出口（内部复用 maybeChargeText 语义与估算逻辑） */
+export async function maybeChargeTextPublic(
+  cfg: AIConfig, messages: ChatMessage[], output: string, usage: any, billing?: TextBillingContext,
+): Promise<void> {
+  return maybeChargeText(cfg, messages, output, usage, billing)
 }
 
 function sleep(ms: number) {
@@ -1391,57 +1578,11 @@ export async function chatContinuationLogprobs(
   return perplexityFromLogprobs(allLogprobs)
 }
 
-/** 优先 completions echo；Chat-only 模型自动改用续写 logprobs；多模型依次尝试 */
-export async function promptLogprobs(
-  text: string,
-  options: ChatCompletionOptions = {},
-): Promise<{ perplexity: number; tokenCount: number; meanLogprob: number; model: string }> {
-  const { cfg, models, settings, perplexityModel } = await getPerplexityConfigWithModels()
-  const candidates = buildPerplexityModelCandidates(cfg, models, settings)
-  if (candidates.length === 0) {
-    throw new Error(
-      '未配置可用于困惑度检测的模型：请在文本服务设置中填写「困惑度检测模型」（须支持 logprobs，如 qwen-plus）',
-    )
-  }
-
-  const preferChatFirst = cfg.provider.toLowerCase() === 'ali' || /dashscope|aliyun/i.test(cfg.baseUrl || '')
-
-  let lastErr: Error | null = null
-  for (const model of candidates) {
-    const modelOptions = { ...options, model, config: cfg }
-    try {
-      if (preferChatFirst) {
-        const result = await chatContinuationLogprobs(text, modelOptions)
-        return { ...result, model }
-      }
-      try {
-        const result = await completionPromptLogprobs(text, modelOptions)
-        return { ...result, model }
-      } catch (completionsErr: any) {
-        logTaskWarn('AI', 'perplexity-chat-fallback', { model, error: completionsErr?.message })
-        // 明确不支持 logprobs：换下一候选；「兼容模式不支持该型号」仍应改试 chat
-        if (shouldSkipChatAfterCompletionsFail(completionsErr)) {
-          throw completionsErr instanceof Error ? completionsErr : new Error(String(completionsErr?.message || completionsErr))
-        }
-        const result = await chatContinuationLogprobs(text, modelOptions)
-        return { ...result, model }
-      }
-    } catch (err: any) {
-      lastErr = err instanceof Error ? err : new Error(String(err?.message || err))
-      logTaskWarn('AI', 'perplexity-model-failed', {
-        model,
-        host: cfg.provider,
-        baseUrl: cfg.baseUrl,
-        configuredPerplexityModel: perplexityModel || undefined,
-        error: lastErr.message,
-      })
-    }
-  }
-
-  throw new Error(
-    lastErr?.message
-      || '困惑度检测失败：请在文本服务设置中填写「困惑度检测模型」（须支持 logprobs，如 qwen-plus）；qwen3.5 / qwen3.7 通常不支持。DashScope 兼容模式请优先填 qwen-plus 而非带日期快照名。',
-  )
+/** @deprecated 旧接口：转调 ai-detect-reference。保留导出兼容 verify-perplexity-host-reroute 与过渡调用点。 */
+export async function promptLogprobs(text: string, options: ChatCompletionOptions = {}) {
+  const { scoreWithReference } = await import('./ai-detect-reference.js')
+  const r = await scoreWithReference(text, options)
+  return { perplexity: r.ppl, tokenCount: r.tokenCount, meanLogprob: r.meanLogprob, model: r.model }
 }
 
 /** OpenAI 兼容 SSE 流式补全，逐段 yield 文本增量（已过滤 reasoning / thinking） */

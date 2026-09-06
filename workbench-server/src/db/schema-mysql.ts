@@ -606,3 +606,44 @@ export const assets = mysqlTable('assets', {
   updatedAt: text('updated_at').notNull(),
   deletedAt: text('deleted_at'),
 })
+
+/** AI 率检测运行记录（历史 + 结果缓存） */
+export const aiDetectRuns = mysqlTable('ai_detect_runs', {
+  id: int('id').autoincrement().primaryKey(),
+  userId: int('user_id'),
+  sourceType: text('source_type').notNull(),
+  genre: text('genre').notNull(),
+  contentHash: text('content_hash').notNull(),
+  charCount: int('char_count').notNull(),
+  engineVersion: text('engine_version').notNull(),
+  cacheVariant: text('cache_variant').notNull(),
+  probability: int('probability').notNull(),
+  verdict: text('verdict').notNull(),
+  confidence: text('confidence').notNull(),
+  method: text('method').notNull(),
+  resultJson: text('result_json'),
+  modelRef: text('model_ref'),
+  uncalibrated: int('uncalibrated').default(0),
+  needsReview: int('needs_review').default(0),
+  perturbScore: double('perturb_score'),
+  cacheHit: int('cache_hit').notNull().default(0),
+  elapsedMs: int('elapsed_ms'),
+  expiresAt: text('expires_at'),
+  createdAt: text('created_at').notNull(),
+})
+
+/** AI 率检测用户/管理员反馈（校准语料采样） */
+export const aiDetectFeedback = mysqlTable('ai_detect_feedback', {
+  id: int('id').autoincrement().primaryKey(),
+  runId: int('run_id'),
+  contentHash: text('content_hash').notNull(),
+  userId: int('user_id'),
+  sourceType: text('source_type').notNull(),
+  declaredLabel: text('declared_label'),
+  adminLabel: text('admin_label'),
+  consentStore: int('consent_store').default(0),
+  note: text('note'),
+  excerpt: text('excerpt'),
+  genre: text('genre').notNull(),
+  createdAt: text('created_at').notNull(),
+})

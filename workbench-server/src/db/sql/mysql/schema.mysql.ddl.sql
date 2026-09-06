@@ -537,6 +537,48 @@ CREATE TABLE IF NOT EXISTS generation_lessons (
   CREATE INDEX IF NOT EXISTS idx_batch_jobs_user_status ON batch_jobs (user_id, status);
   CREATE INDEX IF NOT EXISTS idx_batch_jobs_drama_status ON batch_jobs (drama_id, status);
 
+CREATE TABLE IF NOT EXISTS ai_detect_runs (
+  id INT AUTO_INCREMENT PRIMARY KEY,
+  user_id INT,
+  source_type VARCHAR(32) NOT NULL,
+  genre VARCHAR(32) NOT NULL,
+  content_hash VARCHAR(80) NOT NULL,
+  char_count INT NOT NULL,
+  engine_version VARCHAR(32) NOT NULL,
+  cache_variant VARCHAR(160) NOT NULL,
+  probability INT NOT NULL,
+  verdict VARCHAR(32) NOT NULL,
+  confidence VARCHAR(16) NOT NULL,
+  method VARCHAR(48) NOT NULL,
+  result_json LONGTEXT,
+  model_ref VARCHAR(160),
+  uncalibrated TINYINT(1) DEFAULT 0,
+  needs_review TINYINT(1) DEFAULT 0,
+  perturb_score DOUBLE,
+  cache_hit INT NOT NULL DEFAULT 0,
+  elapsed_ms INT,
+  expires_at TEXT,
+  created_at TEXT NOT NULL,
+  UNIQUE KEY uq_ai_detect_runs_cache (content_hash, genre, engine_version, cache_variant),
+  KEY idx_ai_detect_runs_hash (content_hash)
+);
+
+CREATE TABLE IF NOT EXISTS ai_detect_feedback (
+  id INT AUTO_INCREMENT PRIMARY KEY,
+  run_id INT,
+  content_hash VARCHAR(80) NOT NULL,
+  user_id INT,
+  source_type VARCHAR(32) NOT NULL,
+  declared_label VARCHAR(16),
+  admin_label VARCHAR(16),
+  consent_store TINYINT(1) DEFAULT 0,
+  note TEXT,
+  excerpt LONGTEXT,
+  genre VARCHAR(32) NOT NULL,
+  created_at TEXT NOT NULL,
+  KEY idx_ai_detect_feedback_label (admin_label, declared_label)
+);
+
 -- >>> INDEXES
 
 -- Secondary indexes and uniqueness constraints (P1, MySQL).
