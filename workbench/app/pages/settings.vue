@@ -100,6 +100,39 @@
             </button>
           </div>
         </section>
+        <section class="settings-type-section">
+          <div class="section-head">
+            <div class="section-head-text">
+              <span class="section-title">{{ tm.settings.defaultPerplexityModelTitle }}</span>
+              <div class="section-subtitle">{{ tm.settings.defaultPerplexityModelDesc }}</div>
+            </div>
+          </div>
+          <div class="field-switch-row" style="margin-top:8px">
+            <div class="field-switch-copy">
+              <span class="field-label">{{ tm.settings.defaultPerplexityModelEnable }}</span>
+              <p class="field-hint">{{ tm.settings.defaultPerplexityModelEnableHint }}</p>
+            </div>
+            <label class="toggle">
+              <input v-model="defaultPerplexityModelEnabled" type="checkbox" />
+              <span />
+            </label>
+          </div>
+          <label class="field" style="margin-top:12px">
+            <span class="field-label">{{ tm.settings.defaultPerplexityModel }}</span>
+            <BaseSelect
+              v-model="defaultPerplexityModelName"
+              :options="textAuditModelPickerOptions"
+              :placeholder="tm.settings.defaultPerplexityModelPlaceholder"
+              :disabled="!defaultPerplexityModelEnabled"
+              searchable
+            />
+          </label>
+          <div class="modal-actions" style="margin-top:12px">
+            <button type="button" class="btn btn-primary" :disabled="defaultPerplexityModelSaving" @click="saveDefaultPerplexityModelPrefs">
+              {{ defaultPerplexityModelSaving ? tm.settings.saving : tm.settings.saveDefaultPerplexityModel }}
+            </button>
+          </div>
+        </section>
         <section class="setup-panel card">
           <div class="setup-panel-head">
             <div>
@@ -377,6 +410,39 @@
           <div class="modal-actions" style="margin-top:12px">
             <button type="button" class="btn btn-primary" :disabled="textAuditModelSaving" @click="saveTextAuditModelPrefs">
               {{ textAuditModelSaving ? tm.settings.saving : tm.settings.saveTextAuditModel }}
+            </button>
+          </div>
+        </section>
+        <section class="settings-type-section card" style="margin-top:16px">
+          <div class="section-head">
+            <div class="section-head-text">
+              <span class="section-title">{{ tm.settings.defaultPerplexityModelTitle }}</span>
+              <div class="section-subtitle">{{ tm.settings.defaultPerplexityModelDesc }}</div>
+            </div>
+          </div>
+          <div class="field-switch-row" style="margin-top:8px">
+            <div class="field-switch-copy">
+              <span class="field-label">{{ tm.settings.defaultPerplexityModelEnable }}</span>
+              <p class="field-hint">{{ tm.settings.defaultPerplexityModelEnableHint }}</p>
+            </div>
+            <label class="toggle">
+              <input v-model="defaultPerplexityModelEnabled" type="checkbox" />
+              <span />
+            </label>
+          </div>
+          <label class="field" style="margin-top:12px">
+            <span class="field-label">{{ tm.settings.defaultPerplexityModel }}</span>
+            <BaseSelect
+              v-model="defaultPerplexityModelName"
+              :options="textAuditModelPickerOptions"
+              :placeholder="tm.settings.defaultPerplexityModelPlaceholder"
+              :disabled="!defaultPerplexityModelEnabled"
+              searchable
+            />
+          </label>
+          <div class="modal-actions" style="margin-top:12px">
+            <button type="button" class="btn btn-primary" :disabled="defaultPerplexityModelSaving" @click="saveDefaultPerplexityModelPrefs">
+              {{ defaultPerplexityModelSaving ? tm.settings.saving : tm.settings.saveDefaultPerplexityModel }}
             </button>
           </div>
         </section>
@@ -1536,6 +1602,9 @@ const preferredAudioConfigId = ref(null)
 const textAuditModelEnabled = ref(false)
 const textAuditModelName = ref('')
 const textAuditModelSaving = ref(false)
+const defaultPerplexityModelEnabled = ref(false)
+const defaultPerplexityModelName = ref('')
+const defaultPerplexityModelSaving = ref(false)
 const textConfigPickerRows = ref([])
 const imageConfigPickerRows = ref([])
 const videoConfigPickerRows = ref([])
@@ -3351,6 +3420,38 @@ async function saveTextAuditModelPrefs() {
   }
 }
 
+async function loadDefaultPerplexityModelPrefs() {
+  try {
+    const data = await aiConfigAPI.getDefaultPerplexityModel()
+    defaultPerplexityModelEnabled.value = data.enabled === true
+    defaultPerplexityModelName.value = normalizeTextAuditModelSelection(data.model || '')
+  } catch {
+    defaultPerplexityModelEnabled.value = false
+    defaultPerplexityModelName.value = ''
+  }
+}
+
+async function saveDefaultPerplexityModelPrefs() {
+  if (defaultPerplexityModelEnabled.value && !defaultPerplexityModelName.value.trim()) {
+    toast.error(tm.value.settings.defaultPerplexityModelRequired)
+    return
+  }
+  try {
+    defaultPerplexityModelSaving.value = true
+    const data = await aiConfigAPI.saveDefaultPerplexityModel({
+      enabled: defaultPerplexityModelEnabled.value,
+      model: defaultPerplexityModelName.value.trim(),
+    })
+    defaultPerplexityModelEnabled.value = data.enabled === true
+    defaultPerplexityModelName.value = normalizeTextAuditModelSelection(data.model || '')
+    toast.success(tm.value.settings.toastDefaultPerplexityModelSaved)
+  } catch (e: any) {
+    toast.error(e.message)
+  } finally {
+    defaultPerplexityModelSaving.value = false
+  }
+}
+
 async function bootstrapAdminSettings(force = false) {
   if (force) adminSettingsReady.value = false
   await runAdminSettingsBootstrap(adminSettingsReady, async () => {
@@ -3392,7 +3493,7 @@ onMounted(async () => {
     await fetchServiceConfigRows()
     void fetchBundledPresetRows()
   }
-  await loadTextAuditModelPrefs()
+  await Promise.all([loadTextAuditModelPrefs(), loadDefaultPerplexityModelPrefs()])
 })
 
 // 「火火一键配置」弹窗打开时重新拉数据，保证卡片显示最新 DB/env 值

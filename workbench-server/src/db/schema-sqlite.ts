@@ -603,3 +603,44 @@ export const assets = sqliteTable('assets', {
   updatedAt: text('updated_at').notNull(),
   deletedAt: text('deleted_at'),
 })
+
+/** AI 率检测运行记录（历史 + 结果缓存） */
+export const aiDetectRuns = sqliteTable('ai_detect_runs', {
+  id: integer('id').primaryKey({ autoIncrement: true }),
+  userId: integer('user_id'),
+  sourceType: text('source_type').notNull(),
+  genre: text('genre').notNull(),
+  contentHash: text('content_hash').notNull(),
+  charCount: integer('char_count').notNull(),
+  engineVersion: text('engine_version').notNull(),
+  cacheVariant: text('cache_variant').notNull(),
+  probability: integer('probability').notNull(),
+  verdict: text('verdict').notNull(),
+  confidence: text('confidence').notNull(),
+  method: text('method').notNull(),
+  resultJson: text('result_json'),
+  modelRef: text('model_ref'),
+  uncalibrated: integer('uncalibrated').default(0),
+  needsReview: integer('needs_review').default(0),
+  perturbScore: real('perturb_score'),
+  cacheHit: integer('cache_hit').notNull().default(0),
+  elapsedMs: integer('elapsed_ms'),
+  expiresAt: text('expires_at'),
+  createdAt: text('created_at').notNull(),
+})
+
+/** AI 率检测用户/管理员反馈（校准语料采样） */
+export const aiDetectFeedback = sqliteTable('ai_detect_feedback', {
+  id: integer('id').primaryKey({ autoIncrement: true }),
+  runId: integer('run_id'),
+  contentHash: text('content_hash').notNull(),
+  userId: integer('user_id'),
+  sourceType: text('source_type').notNull(),
+  declaredLabel: text('declared_label'),
+  adminLabel: text('admin_label'),
+  consentStore: integer('consent_store').default(0),
+  note: text('note'),
+  excerpt: text('excerpt'),
+  genre: text('genre').notNull(),
+  createdAt: text('created_at').notNull(),
+})

@@ -49,10 +49,11 @@ import {
   isCausalChainEnabled,
 } from './novel-causal-chain/index.js'
 
-/** 与 AI 检测页同口径：优先 PPL，失败再统计（避免「统计已过关、界面仍 97%」） */
+/** 与 AI 检测页同口径：优先引擎融合；humanize 闭环关闭 S5 扰动 */
 async function detectForHumanize(
   text: string,
   billing?: TextBillingContext,
+  opts?: { writingModelHint?: string },
 ): Promise<AiDetectionResult> {
   try {
     return await detectAiTextWithPerplexity(
@@ -60,11 +61,16 @@ async function detectForHumanize(
       billing
         ? { ...billing, reason: billing.reason || '小说章节 AI 率检测' }
         : undefined,
+      {
+        enableAdversarial: false,
+        skipCacheStore: false,
+        writingModelHint: opts?.writingModelHint,
+      },
     )
   } catch (err: unknown) {
     const reason = err instanceof Error ? err.message : '困惑度检测不可用'
     logTaskWarn('Novel', 'ai-humanize-detect-fallback-statistical', { reason })
-    return detectAiTextStatisticalFallback(text, reason)
+    return await detectAiTextStatisticalFallback(text, reason)
   }
 }
 
@@ -196,49 +202,36 @@ export function topSignalScore(detect: { signals?: Array<{ score: number }> } | 
 }
 
 /**
- * 采纳门：AI 率严格下降 → 采纳；
- * 或总分持平但最高维明显下降 → 采纳；
- * 或 PPL 明显升高（越像人工；概率常顶在 97% 封顶看不出下降）→ 采纳；
- * 分数升高且 PPL 未改善 → 拒绝。
+ * 采纳门（G14，纯分段指标，与融合权重版本无关）：
+ * 接受：段高危数或平均 aigc 下降；或总分严格下降。
+ * 拒绝：总分升高。持平：PPL 改善或最高信号维降 ≥0.12 才接受。
  */
+export type HumanizeAcceptOpts = {
+  beforeTopSignal?: number
+  afterTopSignal?: number
+  beforePerplexity?: number
+  afterPerplexity?: number
+  beforeHighBand?: number
+  afterHighBand?: number
+  beforeMeanAigc?: number
+  afterMeanAigc?: number
+}
+
 export function shouldAcceptHumanizePass(
   beforeProb: number,
   afterProb: number,
-  opts?: {
-    beforeTopSignal?: number
-    afterTopSignal?: number
-    /** 困惑度：数值越高越不像 AI */
-    beforePerplexity?: number
-    afterPerplexity?: number
-    beforeHighBand?: number
-    afterHighBand?: number
-    beforeMeanAigc?: number
-    afterMeanAigc?: number
-  },
+  opts?: HumanizeAcceptOpts,
 ): boolean {
+  const segImproved =
+    (opts?.afterHighBand != null && opts.beforeHighBand != null && opts.afterHighBand < opts.beforeHighBand)
+    || (opts?.afterMeanAigc != null && opts.beforeMeanAigc != null && opts.afterMeanAigc < opts.beforeMeanAigc)
+  if (segImproved) return true
   if (afterProb < beforeProb) return true
-  if (
-    opts?.beforeHighBand != null
-    && opts?.afterHighBand != null
-    && opts.afterHighBand < opts.beforeHighBand
-  ) {
-    return true
-  }
-  if (
-    opts?.beforeMeanAigc != null
-    && opts?.afterMeanAigc != null
-    && opts.afterMeanAigc <= opts.beforeMeanAigc - 0.04
-  ) {
-    return true
-  }
-  if (afterProb > beforeProb) {
-    if (isPerplexityImproved(opts?.beforePerplexity, opts?.afterPerplexity)) return true
-    return false
-  }
+  if (afterProb > beforeProb) return false
   if (isPerplexityImproved(opts?.beforePerplexity, opts?.afterPerplexity)) return true
-  const beforeTop = opts?.beforeTopSignal
-  const afterTop = opts?.afterTopSignal
-  if (beforeTop != null && afterTop != null && afterTop <= beforeTop - 0.12) return true
+  const b = opts?.beforeTopSignal
+  const a = opts?.afterTopSignal
+  if (b != null && a != null && a <= b - 0.12) return true
   return false
 }
 

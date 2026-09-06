@@ -315,3 +315,31 @@ export async function episodePropLinkExists(episodeId: number, propId: number): 
     ? mysql.episodePropLinkExists(episodeId, propId)
     : sqlite.episodePropLinkExists(episodeId, propId)
 }
+
+/** AI 检测校准/指纹取样（含水合正文，供指纹重建与语料采集） */
+export async function listEpisodesForAiDetect(
+  limit: number,
+): Promise<Array<{ id: number; content: string; metadata: string | null }>> {
+  const rows = isMysqlDriver()
+    ? await mysql.listEpisodesForAiDetect(limit)
+    : sqlite.listEpisodesForAiDetect(limit)
+  return rows.map((row) => {
+    const hasInline = !!String(row.content || '').trim()
+    if (hasInline) {
+      return { id: row.id, content: row.content || '', metadata: row.metadata ?? null }
+    }
+    const hydrated = hydrateEpisodeRow({
+      id: row.id,
+      dramaId: row.dramaId,
+      episodeNumber: row.episodeNumber,
+      content: row.content,
+      contentBlobPath: row.contentBlobPath,
+      metadata: row.metadata,
+    } as EpisodeRow)
+    return {
+      id: hydrated.id,
+      content: hydrated.content || '',
+      metadata: hydrated.metadata ?? null,
+    }
+  })
+}

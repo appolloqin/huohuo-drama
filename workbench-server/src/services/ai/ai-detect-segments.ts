@@ -2,7 +2,11 @@
  * 朱雀式分段：自然段切分 + 段级 AIGC band（启发式，非朱雀官方分）
  */
 import { countNovelChars } from '../../common/novel/novel-char-limit.js'
+import type { Genre } from '../../common/novel/novel-detect-calib.js'
 import { detectAiText, type AiDetectionSignal } from './ai-text-detection.js'
+import { extractRawFeatures } from './ai-detect-features.js'
+import { fuseEvidence, segmentAigc, type RefLineInput, type FusionWeights } from './ai-detect-fusion.js'
+import type { PercentileTable, StatSub } from './ai-detect-calibration.js'
 
 /** 与 detectAiText 最小有效窗口对齐，避免 &lt;80 → 固定 50% 误标 suspected */
 export const AI_DETECT_SEGMENT_MIN_CHARS = 80
@@ -26,11 +30,13 @@ export type AiDetectSegment = {
 }
 
 export type AiDetectSamplingWindow = {
-  label: 'head' | 'mid' | 'tail'
+  label: 'head' | 'mid' | 'tail' | string
   char_start: number
   char_end: number
   perplexity?: number
   probability?: number
+  /** 引擎窗记账（spec §5.8：失败静默修） */
+  status?: 'scored' | 'failed' | 'uncalibrated' | 'skipped'
 }
 
 export function bandFromAigc(aigc: number): AiDetectBand {
@@ -179,6 +185,7 @@ export function segmentTextForAiDetect(text: string): Array<{
   }))
 }
 
+/** @deprecated 由 buildFusedSegments 取代 */
 export function scoreSegmentStatistical(segmentText: string): {
   aigc: number
   probability: number
@@ -195,7 +202,7 @@ export function scoreSegmentStatistical(segmentText: string): {
   }
 }
 
-/** 统计段分；可后续用局部 PPL 概率融合 */
+/** @deprecated 由 buildFusedSegments 取代 */
 export function buildStatisticalSegments(text: string): AiDetectSegment[] {
   return segmentTextForAiDetect(text).map((s) => {
     const scored = scoreSegmentStatistical(s.text)
@@ -212,6 +219,7 @@ export function buildStatisticalSegments(text: string): AiDetectSegment[] {
   })
 }
 
+/** @deprecated 由 buildFusedSegments 取代 */
 export function fuseSegmentAigc(statAigc: number, pplProbability: number): number {
   const p = Math.min(1, Math.max(0, pplProbability / 100))
   return Math.round((0.55 * p + 0.45 * statAigc) * 1000) / 1000
@@ -225,6 +233,39 @@ export function countHighBandSegments(segments: AiDetectSegment[] | undefined): 
 export function meanSegmentAigc(segments: AiDetectSegment[] | undefined): number {
   if (!segments?.length) return 0
   return segments.reduce((a, s) => a + s.aigc, 0) / segments.length
+}
+
+export type SegmentFusionDeps = {
+  genre: Genre
+  table: PercentileTable
+  weights: FusionWeights
+  ref?: RefLineInput | null
+  /** 段级局部参考分（engine 用 topK PPL 复检填充；返回 undefined 表示继承全局 ref） */
+  localRefOf?: (seg: { index: number; char_start: number; char_end: number; text: string }) => RefLineInput | null | undefined
+  sameFamily: boolean
+  fpSim?: number | null
+  perturbStab?: number | null
+  statsSub?: StatSub
+}
+export function buildFusedSegments(text: string, deps: SegmentFusionDeps): AiDetectSegment[] {
+  return segmentTextForAiDetect(text).map((seg) => {
+    const local = deps.localRefOf?.(seg)
+    const ref = local === undefined ? deps.ref ?? null : local
+    const f = fuseEvidence({
+      raws: extractRawFeatures(seg.text), genre: deps.genre, table: deps.table, weights: deps.weights,
+      ref, sameFamily: deps.sameFamily, fpSim: deps.fpSim, perturbStab: deps.perturbStab, statsSub: deps.statsSub,
+    })
+    const aigc = segmentAigc(f)
+    return {
+      index: seg.index, char_start: seg.char_start, char_end: seg.char_end, text: seg.text,
+      aigc, band: bandFromAigc(aigc), probability: f.probability,
+      signals: [
+        { key: 's1_stat', score: Math.round(f.s1 * 1000) / 1000 },
+        { key: 's2_reference', score: f.s2 == null ? 0 : Math.round(f.s2 * 1000) / 1000 },
+      ],
+      perplexity: ref?.ppl,
+    }
+  })
 }
 
 /** 落库瘦身：去掉 text，只保留非 human 或截断 */

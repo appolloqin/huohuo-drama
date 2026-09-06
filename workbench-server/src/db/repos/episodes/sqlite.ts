@@ -1,4 +1,4 @@
-import { and, asc, eq, inArray, isNull, sql } from 'drizzle-orm'
+import { and, asc, desc, eq, inArray, isNull, sql } from 'drizzle-orm'
 import { readEpisodeFrameMergedUrl, readProductionPipeline } from '../../../common/drama/episode-meta.js'
 import { getSqliteDb, schema } from '../../sqlite/client.js'
 import type {
@@ -330,4 +330,34 @@ export function episodePropLinkExists(episodeId: number, propId: number): boolea
     ))
     .all()
   return rows.length > 0
+}
+
+/** AI 检测校准/指纹取样：按 id 降序取最近章节正文+元数据 */
+export function listEpisodesForAiDetect(limit: number): Array<{
+  id: number
+  content: string
+  metadata: string | null
+  contentBlobPath: string | null
+  dramaId: number
+  episodeNumber: number
+}> {
+  return db().select({
+    id: schema.episodes.id,
+    content: schema.episodes.content,
+    metadata: schema.episodes.metadata,
+    contentBlobPath: schema.episodes.contentBlobPath,
+    dramaId: schema.episodes.dramaId,
+    episodeNumber: schema.episodes.episodeNumber,
+  }).from(schema.episodes)
+    .orderBy(desc(schema.episodes.id))
+    .limit(Math.max(1, limit))
+    .all()
+    .map((row) => ({
+      id: row.id,
+      content: row.content ?? '',
+      metadata: row.metadata ?? null,
+      contentBlobPath: row.contentBlobPath ?? null,
+      dramaId: row.dramaId,
+      episodeNumber: row.episodeNumber,
+    }))
 }

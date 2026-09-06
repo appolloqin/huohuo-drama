@@ -187,6 +187,17 @@ export type NovelAiDetection = {
   humanize_passed?: boolean
   humanize_target?: number
   humanize_warning?: string
+  genre?: string
+  engine_version?: string
+  needs_review?: boolean
+  probability_band?: string
+  coverage?: { windows_total: number; windows_scored: number; scored_chars: number; text_chars: number }
+  evidence?: Array<{ key: string; label?: string; score?: number | null; missing?: boolean; note?: string }>
+  perturb?: { applied: boolean; stability?: number | null; error?: string }
+  suspected_source?: string
+  calibration?: 'calibrated' | 'none'
+  ref_mode?: 'echo' | 'prompt_logprobs' | 'proxy' | 'none'
+  cache_hit?: boolean
 }
 
 export type ContinuityBlockingItem = {
@@ -625,7 +636,11 @@ export const novelAPI = {
       ai_detection: NovelAiDetection | null
       continuity_check: ContinuityCheckResult | null
     }>(`/novel/chapters/${chapterId}/brief`),
-  detectChapterAi: (chapterId: number, body?: { text?: string }) =>
+  detectChapterAi: (chapterId: number, body?: {
+    text?: string
+    genre?: string
+    enable_adversarial?: boolean
+  }) =>
     api.post<NovelAiDetection>(`/novel/chapters/${chapterId}/detect-ai`, body ?? {}),
   getChapterStateCard: (chapterId: number) =>
     api.get<{
@@ -779,23 +794,62 @@ export const novelAPI = {
   ) => consumeBatchSSE(`/novel/dramas/${dramaId}/generate-remaining/stream`, onEvent, signal, scope ?? {}),
 }
 
+export type AiDetectTextBody = {
+  text: string
+  genre?: string
+  enable_adversarial?: boolean
+  budget_tier?: 'short' | 'standard' | 'long'
+}
+
+export type AiDetectFeedbackBody = {
+  run_id?: number | null
+  content_hash: string
+  label: 'human' | 'ai'
+  note?: string
+  consent_store?: boolean
+  source_type?: string
+  genre?: string
+  text?: string
+}
+
+function appendDetectOpts(fd: FormData, opts?: { genre?: string; enable_adversarial?: boolean }) {
+  if (opts?.genre) fd.append('genre', opts.genre)
+  if (opts?.enable_adversarial === false) fd.append('enable_adversarial', 'false')
+}
+
 export const aiDetectAPI = {
-  detectText: (text: string) => api.post<AiDetectHubResult>('/ai-detect/text', { text }),
-  detectFile: (file: File) => {
+  /** 兼容旧调用：detectText(text) 或 detectText(text, { genre })；也可传完整 body */
+  detectText: (
+    textOrBody: string | AiDetectTextBody,
+    opts?: Omit<AiDetectTextBody, 'text'>,
+  ) => {
+    const body: AiDetectTextBody = typeof textOrBody === 'string'
+      ? { text: textOrBody, ...opts }
+      : textOrBody
+    return api.post<AiDetectHubResult>('/ai-detect/text', body)
+  },
+  detectTextV2: (body: AiDetectTextBody) =>
+    api.post<AiDetectHubResult>('/ai-detect/text', body),
+  detectFile: (file: File, opts?: { genre?: string; enable_adversarial?: boolean }) => {
     const fd = new FormData()
     fd.append('file', file)
+    appendDetectOpts(fd, opts)
     return uploadMultipart<AiDetectHubResult>('/ai-detect/file', fd)
   },
-  detectAudio: (file: File) => {
+  detectAudio: (file: File, opts?: { genre?: string; enable_adversarial?: boolean }) => {
     const fd = new FormData()
     fd.append('file', file)
+    appendDetectOpts(fd, opts)
     return uploadMultipart<AiDetectHubResult>('/ai-detect/audio', fd)
   },
-  detectVideo: (file: File) => {
+  detectVideo: (file: File, opts?: { genre?: string; enable_adversarial?: boolean }) => {
     const fd = new FormData()
     fd.append('file', file)
+    appendDetectOpts(fd, opts)
     return uploadMultipart<AiDetectHubResult>('/ai-detect/video', fd)
   },
+  feedback: (body: AiDetectFeedbackBody) =>
+    api.post<{ id: number }>('/ai-detect/feedback', body),
   humanize: (body: {
     text: string
     detection?: {
@@ -965,6 +1019,10 @@ export const aiConfigAPI = {
   getTextAuditModel: () => api.get<{ enabled: boolean; model: string }>('/ai-configs/text-audit-model'),
   saveTextAuditModel: (d: { enabled: boolean; model: string }) =>
     api.put<{ enabled: boolean; model: string }>('/ai-configs/text-audit-model', d),
+  getDefaultPerplexityModel: () =>
+    api.get<{ enabled: boolean; model: string }>('/ai-configs/default-perplexity-model'),
+  saveDefaultPerplexityModel: (d: { enabled: boolean; model: string }) =>
+    api.put<{ enabled: boolean; model: string }>('/ai-configs/default-perplexity-model', d),
   readiness: (scope?: 'novel' | 'drama' | 'full') =>
     api.get<{ ready: boolean; credit_billing_enabled: boolean; items: Array<{ block: string; service_type: string; ready: boolean; config_id?: number | null; message?: string }> }>(
       `/ai-configs/readiness${scope ? `?scope=${scope}` : ''}`,

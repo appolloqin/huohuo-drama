@@ -545,6 +545,46 @@ CREATE TABLE IF NOT EXISTS generation_lessons (
   CREATE INDEX IF NOT EXISTS idx_batch_jobs_user_status ON batch_jobs (user_id, status);
   CREATE INDEX IF NOT EXISTS idx_batch_jobs_drama_status ON batch_jobs (drama_id, status);
 
+CREATE TABLE IF NOT EXISTS ai_detect_runs (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  user_id INTEGER,
+  source_type TEXT NOT NULL,
+  genre TEXT NOT NULL,
+  content_hash TEXT NOT NULL,
+  char_count INTEGER NOT NULL,
+  engine_version TEXT NOT NULL,
+  cache_variant TEXT NOT NULL,
+  probability INTEGER NOT NULL,
+  verdict TEXT NOT NULL,
+  confidence TEXT NOT NULL,
+  method TEXT NOT NULL,
+  result_json TEXT,
+  model_ref TEXT,
+  uncalibrated INTEGER DEFAULT 0,
+  needs_review INTEGER DEFAULT 0,
+  perturb_score REAL,
+  cache_hit INTEGER NOT NULL DEFAULT 0,
+  elapsed_ms INTEGER,
+  expires_at TEXT,
+  created_at TEXT NOT NULL,
+  UNIQUE(content_hash, genre, engine_version, cache_variant)
+);
+
+CREATE TABLE IF NOT EXISTS ai_detect_feedback (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  run_id INTEGER,
+  content_hash TEXT NOT NULL,
+  user_id INTEGER,
+  source_type TEXT NOT NULL,
+  declared_label TEXT,
+  admin_label TEXT,
+  consent_store INTEGER DEFAULT 0,
+  note TEXT,
+  excerpt TEXT,
+  genre TEXT NOT NULL,
+  created_at TEXT NOT NULL
+);
+
 -- >>> INDEXES
 
 -- Secondary indexes and uniqueness constraints (P1).
@@ -602,3 +642,9 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_episode_characters_unique
   ON episode_characters (episode_id, character_id);
 CREATE UNIQUE INDEX IF NOT EXISTS idx_episode_scenes_unique
   ON episode_scenes (episode_id, scene_id);
+
+CREATE INDEX IF NOT EXISTS idx_ai_detect_runs_hash
+  ON ai_detect_runs (content_hash);
+
+CREATE INDEX IF NOT EXISTS idx_ai_detect_feedback_label
+  ON ai_detect_feedback (admin_label, declared_label);

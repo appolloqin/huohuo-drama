@@ -1,4 +1,4 @@
-import { and, asc, eq, inArray, isNull, sql } from 'drizzle-orm'
+import { and, asc, desc, eq, inArray, isNull, sql } from 'drizzle-orm'
 import { getMysqlDb, schema } from '../../mysql/client.js'
 import type {
   CharacterRow,
@@ -282,4 +282,33 @@ export async function episodePropLinkExists(episodeId: number, propId: number): 
     eq(schema.episodeProps.propId, propId),
   )).limit(1)
   return rows.length > 0
+}
+
+/** AI 检测校准/指纹取样：按 id 降序取最近章节正文+元数据 */
+export async function listEpisodesForAiDetect(limit: number): Promise<Array<{
+  id: number
+  content: string
+  metadata: string | null
+  contentBlobPath: string | null
+  dramaId: number
+  episodeNumber: number
+}>> {
+  const rows = await db().select({
+    id: schema.episodes.id,
+    content: schema.episodes.content,
+    metadata: schema.episodes.metadata,
+    contentBlobPath: schema.episodes.contentBlobPath,
+    dramaId: schema.episodes.dramaId,
+    episodeNumber: schema.episodes.episodeNumber,
+  }).from(schema.episodes)
+    .orderBy(desc(schema.episodes.id))
+    .limit(Math.max(1, limit))
+  return rows.map((row) => ({
+    id: row.id,
+    content: row.content ?? '',
+    metadata: row.metadata ?? null,
+    contentBlobPath: row.contentBlobPath ?? null,
+    dramaId: row.dramaId,
+    episodeNumber: row.episodeNumber,
+  }))
 }

@@ -6,6 +6,11 @@ import {
   type NovelGlobalContinuityState,
 } from './novel-continuity-state.js'
 import { resolveSkillKeyFromGenreValue } from './novel-genre-registry.js'
+import {
+  DEFAULT_HUMANIZE_TARGET,
+  HUMANIZE_TARGET_MAX,
+  HUMANIZE_TARGET_MIN,
+} from './novel-detect-calib.js'
 
 export type NovelMetadata = {
   outline?: string
@@ -255,11 +260,13 @@ export function resolveAiHumanizeMax(meta: NovelMetadata): number {
   return DEFAULT_AI_HUMANIZE_MAX
 }
 
-const DEFAULT_AI_HUMANIZE_TARGET = 39
+const DEFAULT_AI_HUMANIZE_TARGET = DEFAULT_HUMANIZE_TARGET
 
 export function resolveAiHumanizeTarget(meta: NovelMetadata): number {
   const n = meta.ai_humanize_target
-  if (Number.isFinite(n)) return Math.min(60, Math.max(20, Math.round(n!)))
+  if (Number.isFinite(n)) {
+    return Math.min(HUMANIZE_TARGET_MAX, Math.max(HUMANIZE_TARGET_MIN, Math.round(n!)))
+  }
   return DEFAULT_AI_HUMANIZE_TARGET
 }
 

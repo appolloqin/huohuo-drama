@@ -5,6 +5,7 @@
 import {
   AI_DETECT_SEGMENT_MIN_CHARS,
   bandFromAigc,
+  buildFusedSegments,
   buildStatisticalSegments,
   charWindows,
   countHighBandSegments,
@@ -15,6 +16,8 @@ import {
 import { countNovelChars } from '../src/common/novel/novel-char-limit.js'
 import { shouldAcceptHumanizePass } from '../src/services/novel/novel-chapter-ai-humanize-hook.js'
 import { buildExcerptFirstHumanizeUser } from '../src/services/ai/ai-dehumanizer.js'
+import { DEFAULT_PERCENTILE_TABLES } from '../src/services/ai/ai-detect-calibration.js'
+import { seedFusionWeights } from '../src/services/ai/ai-evidence-rules.js'
 
 if (AI_DETECT_SEGMENT_MIN_CHARS < 80) {
   throw new Error('segment min must be >= 80 to avoid detectAiText stub')
@@ -49,6 +52,15 @@ if (!labels.has('head') || !labels.has('tail')) throw new Error('need head+tail'
 const fused = fuseSegmentAigc(0.4, 80)
 if (fused < 0.5 || fused > 0.7) throw new Error(`fuse unexpected ${fused}`)
 
+const fusedSegs = buildFusedSegments(shortParas, {
+  genre: 'web_fiction',
+  table: DEFAULT_PERCENTILE_TABLES.web_fiction,
+  weights: seedFusionWeights('web_fiction'),
+  ref: null,
+  sameFamily: false,
+})
+if (!fusedSegs.length) throw new Error('buildFusedSegments empty')
+
 const hot = [
   { index: 0, char_start: 0, char_end: 10, aigc: 0.9, band: 'ai' as const, probability: 90 },
   { index: 1, char_start: 10, char_end: 20, aigc: 0.2, band: 'human' as const, probability: 20 },
@@ -78,7 +90,9 @@ if (!prompt.includes('同义词') && !prompt.includes('节奏')) {
 }
 
 console.log('verify-ai-detect-zhuque-style OK', {
-  segs: scored.length,
-  windows: wins.map((w) => w.label),
-  fused,
+  segments: segs.length,
+  scored: scored.length,
+  windows: wins.length,
+  fusedSegs: fusedSegs.length,
 })
+process.exit(0)

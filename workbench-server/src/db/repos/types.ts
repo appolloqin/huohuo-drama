@@ -33,6 +33,59 @@ export type AiServiceProviderRow = typeof sqliteSchema.aiServiceProviders.$infer
 export type PaymentOrderRow = typeof sqliteSchema.paymentOrders.$inferSelect
 export type PaymentProviderConfigRow = typeof sqliteSchema.paymentProviderConfigs.$inferSelect
 export type BatchJobRow = typeof sqliteSchema.batchJobs.$inferSelect
+export type AiDetectRunRow = typeof sqliteSchema.aiDetectRuns.$inferSelect
+export type AiDetectFeedbackRow = typeof sqliteSchema.aiDetectFeedback.$inferSelect
+
+export type AiDetectRunCacheKey = {
+  contentHash: string
+  genre: string
+  engineVersion: string
+  cacheVariant: string
+}
+
+export type AiDetectRunInput = AiDetectRunCacheKey & {
+  userId: number | null
+  sourceType: string
+  charCount: number
+  probability: number
+  verdict: string
+  confidence: string
+  method: string
+  resultJson: string | null
+  modelRef: string | null
+  uncalibrated: 0 | 1 | boolean
+  needsReview: 0 | 1 | boolean
+  perturbScore: number | null
+  expiresAt: string | null
+  createdAt: string
+  elapsedMs?: number | null
+  cacheHit?: number
+}
+
+export type AiDetectFeedbackInput = {
+  runId: number | null
+  contentHash: string
+  userId: number | null
+  sourceType: string
+  declaredLabel: string | null
+  adminLabel: string | null
+  consentStore: 0 | 1 | boolean
+  note: string | null
+  excerpt: string | null
+  genre: string
+  createdAt: string
+}
+
+export type TrainableFeedbackRow = {
+  id: number
+  contentHash: string
+  excerpt: string | null
+  genre: string
+  declaredLabel: string | null
+  adminLabel: string | null
+  sourceLabel: 'human' | 'ai' | null
+  createdAt: string
+}
 
 export type DbRunResult = {
   lastInsertRowid: number
