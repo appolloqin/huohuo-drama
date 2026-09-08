@@ -55,18 +55,24 @@ npm run dist:linux  # 仅 Linux
 
 ### 一次打出三端（推荐）
 
-仓库已配置 [`.github/workflows/desktop-release.yml`](../.github/workflows/desktop-release.yml)：
+仓库配置 [`.github/workflows/release.yml`](../.github/workflows/release.yml)：
 
-1. **自动**：向 `main` 推送 `desktop/` 内变更（含本 workflow）时，并行构建 Win / Mac / Linux
-2. **手动**：GitHub → **Actions** → **Desktop release** → **Run workflow**
-3. **发版 tag（可选）**：`git tag desktop-v1.0.0 && git push origin desktop-v1.0.0`
+1. **自动**：push 到 `main` / `master` → 自动 bump `vX.Y.Z`，构建 Docker（GHCR + tar）与 Win / Mac / Linux 桌面包，并创建 GitHub Release（四者全部成功才发版）
+2. **手动**：GitHub → **Actions** → **Release** → **Run workflow**
+3. **PR**：仍构建并上传 Actions Artifacts，但不推 GHCR、不发 Release
 
-完成后可在两处下载安装包：
+下载：
 
-- **Releases**（推荐对外分发）：仓库 **Releases** 页，每次 push `desktop/` 到 `main` 会生成预发布 `desktop-v{版本}-build.{编号}`，附带 Win / Mac / Linux 安装包
-- **Actions → Artifacts**：同次构建的 `desktop-win` / `desktop-mac` / `desktop-linux`（约 90 天有效）
+- **Releases**（推荐）：`vX.Y.Z` 附件含三端安装包 + `huohuo-drama-vX.Y.Z-linux-amd64.tar.gz`
+- **Actions → Artifacts**：同次构建的 `desktop-win` / `desktop-mac` / `desktop-linux` / `docker-linux-amd64`（约 90 天）
 
-推送 tag `desktop-v1.0.0` 时也会构建，并创建**正式 Release**（非 pre-release）。
+Docker 一键（默认 MySQL）：
+
+```bash
+cd deploy && docker compose -f docker-compose.yml -f docker-compose.mysql.yml up -d --build
+```
+
+或：`docker pull ghcr.io/<owner>/huohuo-drama:vX.Y.Z`
 
 产物目录（本地打包时）：`desktop/release/`
 
