@@ -3,7 +3,7 @@
 set -eu
 
 # 根据 DB_DRIVER 自动选择配置模板
-DB_DRIVER="${DB_DRIVER:-sqlite}"
+DB_DRIVER="${DB_DRIVER:-mysql}"
 if [ "$DB_DRIVER" = "mysql" ]; then
   CONFIG_SRC="/app/deploy/config.mysql.yaml"
 else
