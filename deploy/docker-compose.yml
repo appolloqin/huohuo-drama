@@ -11,7 +11,7 @@ services:
     environment:
       - NODE_ENV=production
       - PORT=18555
-      - DB_DRIVER=${DB_DRIVER:-sqlite}
+      - DB_DRIVER=${DB_DRIVER:-mysql}
       - DATABASE_URL=${DATABASE_URL:-}
       - MYSQL_HOST=${MYSQL_HOST:-}
       - MYSQL_PORT=${MYSQL_PORT:-3306}
@@ -31,5 +31,9 @@ services:
     restart: unless-stopped
 
 # workbench + workbench-server；Nginx 已内置（deploy/nginx.conf），/ 跳转 /console/
-# 使用：cd deploy && docker compose up -d --build
-# 环境变量 DB_DRIVER / DATABASE_URL 见 .env.example（默认 sqlite）
+# 默认 DB_DRIVER=mysql（镜像内无 mysqld，需自备 MySQL 或叠加 overlay）
+# 推荐一键：
+#   cd deploy && docker compose -f docker-compose.yml -f docker-compose.mysql.yml up -d --build
+# 仅应用（自备 DATABASE_URL）：
+#   cd deploy && docker compose up -d --build
+# 环境变量见 .env.example
