@@ -1,0 +1,266 @@
+# push main/master → bump v* + Docker (GHCR + tar) + desktop Win/Mac/Linux → GitHub Release
+# PR / non-trunk: build artifacts only (no GHCR push, no Release)
+name: Release
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  packages: write
+
+concurrency:
+  group: release-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  prepare:
+    name: Version
+    runs-on: ubuntu-latest
+    outputs:
+      pkg_ver: ${{ steps.ver.outputs.pkg_ver }}
+      tag: ${{ steps.ver.outputs.tag }}
+      desktop_ver: ${{ steps.ver.outputs.desktop_ver }}
+      do_release: ${{ steps.ver.outputs.do_release }}
+      image: ${{ steps.ver.outputs.image }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - id: ver
+        name: Resolve version
+        shell: bash
+        run: |
+          set -euo pipefail
+          short="$(git rev-parse --short HEAD)"
+          owner_lc="$(echo '${{ github.repository_owner }}' | tr '[:upper:]' '[:lower:]')"
+          echo "image=ghcr.io/${owner_lc}/huohuo-drama" >> "$GITHUB_OUTPUT"
+
+          on_trunk=false
+          if [[ "${GITHUB_REF}" == refs/heads/main || "${GITHUB_REF}" == refs/heads/master ]]; then
+            on_trunk=true
+          fi
+
+          if [[ "$on_trunk" == true ]] && \
+             [[ "${GITHUB_EVENT_NAME}" == push || "${GITHUB_EVENT_NAME}" == workflow_dispatch ]]; then
+            git fetch --tags --force
+            latest="$(git tag -l 'v[0-9]*' --sort=-v:refname | head -n1 || true)"
+            if [[ -z "${latest}" ]]; then
+              next="v0.1.0"
+            else
+              ver="${latest#v}"
+              IFS=. read -r maj min pat <<< "${ver}"
+              maj="${maj:-0}"; min="${min:-0}"; pat="${pat:-0}"
+              pat=$((10#${pat} + 1))
+              next="v${maj}.${min}.${pat}"
+            fi
+            echo "pkg_ver=${next}" >> "$GITHUB_OUTPUT"
+            echo "tag=${next}" >> "$GITHUB_OUTPUT"
+            echo "desktop_ver=${next#v}" >> "$GITHUB_OUTPUT"
+            echo "do_release=true" >> "$GITHUB_OUTPUT"
+            echo "Release version: ${next} (prev=${latest:-none})"
+          else
+            echo "pkg_ver=${short}" >> "$GITHUB_OUTPUT"
+            echo "tag=" >> "$GITHUB_OUTPUT"
+            echo "desktop_ver=0.0.0-ci.${GITHUB_RUN_NUMBER}" >> "$GITHUB_OUTPUT"
+            echo "do_release=false" >> "$GITHUB_OUTPUT"
+            echo "Non-release build: pkg_ver=${short} desktop_ver=0.0.0-ci.${GITHUB_RUN_NUMBER}"
+          fi
+
+  docker:
+    name: Docker (linux-amd64)
+    needs: [prepare]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        if: needs.prepare.outputs.do_release == 'true'
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: Dockerfile
+          platforms: linux/amd64
+          load: true
+          tags: |
+            ${{ needs.prepare.outputs.image }}:${{ needs.prepare.outputs.pkg_ver }}
+            ${{ needs.prepare.outputs.image }}:latest
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Push to GHCR
+        if: needs.prepare.outputs.do_release == 'true'
+        run: |
+          set -euo pipefail
+          docker push "${{ needs.prepare.outputs.image }}:${{ needs.prepare.outputs.pkg_ver }}"
+          docker push "${{ needs.prepare.outputs.image }}:latest"
+
+      - name: Save image tar.gz
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          OUT="dist/huohuo-drama-${{ needs.prepare.outputs.pkg_ver }}-linux-amd64.tar.gz"
+          docker save "${{ needs.prepare.outputs.image }}:${{ needs.prepare.outputs.pkg_ver }}" | gzip > "$OUT"
+          ls -lh "$OUT"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: docker-linux-amd64
+          path: dist/huohuo-drama-*-linux-amd64.tar.gz
+          if-no-files-found: error
+
+  desktop-win:
+    name: Desktop (Windows)
+    needs: [prepare]
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: desktop/package-lock.json
+      - name: Set package version
+        shell: bash
+        run: |
+          node -e "const fs=require('fs');const p='desktop/package.json';const j=JSON.parse(fs.readFileSync(p,'utf8'));j.version=process.env.V;fs.writeFileSync(p,JSON.stringify(j,null,2)+'\n')"
+        env:
+          V: ${{ needs.prepare.outputs.desktop_ver }}
+      - run: npm ci
+        working-directory: desktop
+      - run: npm run dist:win
+        working-directory: desktop
+      - uses: actions/upload-artifact@v4
+        with:
+          name: desktop-win
+          path: desktop/release/*.exe
+          if-no-files-found: error
+
+  desktop-mac:
+    name: Desktop (macOS)
+    needs: [prepare]
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: desktop/package-lock.json
+      - name: Set package version
+        shell: bash
+        run: |
+          node -e "const fs=require('fs');const p='desktop/package.json';const j=JSON.parse(fs.readFileSync(p,'utf8'));j.version=process.env.V;fs.writeFileSync(p,JSON.stringify(j,null,2)+'\n')"
+        env:
+          V: ${{ needs.prepare.outputs.desktop_ver }}
+      - run: npm ci
+        working-directory: desktop
+      - run: npm run dist:mac
+        working-directory: desktop
+      - uses: actions/upload-artifact@v4
+        with:
+          name: desktop-mac
+          path: desktop/release/*.dmg
+          if-no-files-found: error
+
+  desktop-linux:
+    name: Desktop (Linux)
+    needs: [prepare]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: desktop/package-lock.json
+      - name: Set package version
+        shell: bash
+        run: |
+          node -e "const fs=require('fs');const p='desktop/package.json';const j=JSON.parse(fs.readFileSync(p,'utf8'));j.version=process.env.V;fs.writeFileSync(p,JSON.stringify(j,null,2)+'\n')"
+        env:
+          V: ${{ needs.prepare.outputs.desktop_ver }}
+      - run: npm ci
+        working-directory: desktop
+      - run: npm run dist:linux
+        working-directory: desktop
+      - uses: actions/upload-artifact@v4
+        with:
+          name: desktop-linux
+          path: desktop/release/*.AppImage
+          if-no-files-found: error
+
+  release:
+    name: GitHub Release
+    needs: [prepare, docker, desktop-win, desktop-mac, desktop-linux]
+    if: >-
+      always() &&
+      needs.prepare.outputs.do_release == 'true' &&
+      needs.docker.result == 'success' &&
+      needs.desktop-win.result == 'success' &&
+      needs.desktop-mac.result == 'success' &&
+      needs.desktop-linux.result == 'success'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: release-assets
+          pattern: '{desktop-*,docker-*}'
+          merge-multiple: true
+
+      - name: List assets
+        run: |
+          set -euo pipefail
+          find release-assets -type f -print
+          test -n "$(find release-assets -name '*.exe' | head -n1)"
+          test -n "$(find release-assets -name '*.dmg' | head -n1)"
+          test -n "$(find release-assets -name '*.AppImage' | head -n1)"
+          test -n "$(find release-assets -name '*-linux-amd64.tar.gz' | head -n1)"
+
+      - name: Build release body
+        id: body
+        env:
+          IMAGE: ${{ needs.prepare.outputs.image }}
+          TAG: ${{ needs.prepare.outputs.tag }}
+        run: |
+          set -euo pipefail
+          {
+            echo "## Docker"
+            echo ""
+            echo "\`\`\`bash"
+            echo "docker pull ${IMAGE}:${TAG}"
+            echo "# or: gunzip -c huohuo-drama-${TAG}-linux-amd64.tar.gz | docker load"
+            echo "docker tag ${IMAGE}:${TAG} huohuo/huohuo-drama:latest"
+            echo "cd deploy && docker compose -f docker-compose.yml -f docker-compose.mysql.yml up -d --build"
+            echo "\`\`\`"
+            echo ""
+            echo "Default DB: MySQL (compose overlay). Image has no mysqld."
+            echo ""
+            echo "## Desktop"
+            echo ""
+            echo "Windows \`.exe\` / macOS \`.dmg\` / Linux \`.AppImage\` attached below."
+          } > release-body.md
+
+      - uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ needs.prepare.outputs.tag }}
+          name: ${{ needs.prepare.outputs.tag }}
+          target_commitish: ${{ github.sha }}
+          body_path: release-body.md
+          generate_release_notes: true
+          prerelease: false
+          fail_on_unmatched_files: true
+          files: release-assets/**
