@@ -9,6 +9,8 @@ COPY workbench/package.json ./
 COPY workbench/package-lock.json* ./
 RUN if [ -f package-lock.json ]; then npm ci; else npm install; fi
 COPY workbench/ ./
+# Nuxt alias @huohuo-shared → ../workbench-server/src/common/novel（generate 需要 SSOT）
+COPY workbench-server/src/common/novel /app/workbench-server/src/common/novel
 ENV NUXT_APP_BASE_URL=/console/
 RUN npm run generate
 
