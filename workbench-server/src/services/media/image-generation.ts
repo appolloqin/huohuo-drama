@@ -9,6 +9,7 @@ import { normalizeMediaReferenceList } from './media-reference.js'
 import { finalizeImageFromBase64, finalizeImageFromUrl, markLinkedSceneFailed } from '../drama/generation-finalizer.js'
 import { pollImageGeneration } from './image-generation-poll.js'
 import { defaultAspectRatioForScope } from '../../common/media/image-aspect-presets.js'
+import { resolveRelativeMediaUrl } from '../ai/adapters/comfyui-workflow.js'
 
 interface GenerateImageParams {
   userId?: number
@@ -67,14 +68,18 @@ async function runImageGenerationWorker(id: number, config: AIConfig) {
     })
 
     const references = await normalizeMediaReferenceList(record.referenceImages, 'ImageTask')
-    const request = adapter.buildGenerateRequest(config, {
+    const frameJob = {
       id: record.id,
       model: record.model,
       prompt: record.prompt,
       size: record.size,
       frameType: record.frameType,
       referenceImages: references.length ? JSON.stringify(references) : null,
-    })
+    }
+    if (adapter.prepareGenerate) {
+      await adapter.prepareGenerate(config, frameJob)
+    }
+    const request = adapter.buildGenerateRequest(config, frameJob)
 
     logTaskProgress('ImageTask', 'request', {
       id,
@@ -106,8 +111,9 @@ async function runImageGenerationWorker(id: number, config: AIConfig) {
 
     const parsed = adapter.parseGenerateResponse(payload)
     if (!parsed.isAsync && parsed.imageUrl) {
-      logTaskProgress('ImageTask', 'sync-complete', { id, imageUrl: parsed.imageUrl })
-      await finalizeImageFromUrl(id, config.provider, parsed.imageUrl)
+      const imageUrl = resolveRelativeMediaUrl(config.baseUrl, parsed.imageUrl) || parsed.imageUrl
+      logTaskProgress('ImageTask', 'sync-complete', { id, imageUrl })
+      await finalizeImageFromUrl(id, config.provider, imageUrl)
       return
     }
 

@@ -4,6 +4,7 @@ import * as episodesRepo from '../../db/repos/episodes/index.js'
 import { now } from '../../common/http/response.js'
 import { readVideoGenOptionsFromMetadata } from '../../common/media/video-gen-options.js'
 import { getVideoAdapter } from '../ai/adapters/registry.js'
+import { resolveRelativeMediaUrl } from '../ai/adapters/comfyui-workflow.js'
 import type { AIConfig } from '../ai/adapters/types.js'
 import { logTaskError, logTaskPayload, logTaskProgress, redactUrl } from '../../common/task/task-logger.js'
 import { normalizeMediaReference, normalizeMediaReferenceList } from './media-reference.js'
@@ -43,7 +44,7 @@ export async function runVideoGenerationJob(id: number, config: AIConfig) {
       referenceMode: record.referenceMode,
     })
 
-    const request = adapter.buildGenerateRequest(config, {
+    const clip = {
       id: record.id,
       model: record.model,
       prompt: record.prompt,
@@ -58,7 +59,11 @@ export async function runVideoGenerationJob(id: number, config: AIConfig) {
       aspectRatio: record.aspectRatio,
       generateAudio: videoGenOptions.generate_audio,
       generateSubtitles: videoGenOptions.generate_subtitles,
-    })
+    }
+    if (adapter.prepareGenerate) {
+      await adapter.prepareGenerate(config, clip)
+    }
+    const request = adapter.buildGenerateRequest(config, clip)
 
     logTaskProgress('VideoTask', 'request', {
       id,
@@ -89,8 +94,9 @@ export async function runVideoGenerationJob(id: number, config: AIConfig) {
     const parsed = adapter.parseGenerateResponse(payload)
 
     if (!parsed.isAsync && parsed.videoUrl) {
-      logTaskProgress('VideoTask', 'sync-complete', { id, videoUrl: parsed.videoUrl })
-      await finalizeVideoFromUrl(id, parsed.videoUrl, record.duration, record.storyboardId)
+      const videoUrl = resolveRelativeMediaUrl(config.baseUrl, parsed.videoUrl) || parsed.videoUrl
+      logTaskProgress('VideoTask', 'sync-complete', { id, videoUrl })
+      await finalizeVideoFromUrl(id, videoUrl, record.duration, record.storyboardId)
       return
     }
 

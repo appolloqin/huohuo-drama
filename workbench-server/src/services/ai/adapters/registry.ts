@@ -3,6 +3,9 @@
  */
 import { MiniMaxImageAdapter } from './minimax-image.js'
 import { MiniMaxVideoAdapter } from './minimax-video.js'
+import { MiniMaxH3VideoAdapter } from './minimax-h3-video.js'
+import { ComfyUIImageAdapter } from './comfyui-image.js'
+import { ComfyUIVideoAdapter } from './comfyui-video.js'
 import { MiniMaxTTSAdapter } from './minimax-tts.js'
 import { OpenAIImageAdapter } from './openai-image.js'
 import { GeminiImageAdapter } from './gemini-image.js'
@@ -43,6 +46,7 @@ class VendorAdapterRegistry {
       volcengine: new VolcEngineImageAdapter(),
       ali: new AliImageAdapter(),
       huohuo: new OpenAIImageAdapter(),
+      comfyui: new ComfyUIImageAdapter(),
     })
   }
 
@@ -52,6 +56,8 @@ class VendorAdapterRegistry {
       volcengine: new VolcEngineVideoAdapter(),
       vidu: new ViduVideoAdapter(),
       ali: new AliVideoAdapter(),
+      'minimax-h3': new MiniMaxH3VideoAdapter(),
+      comfyui: new ComfyUIVideoAdapter(),
     })
   }
 

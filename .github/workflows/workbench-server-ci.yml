@@ -26,6 +26,7 @@ jobs:
           cache-dependency-path: workbench-server/package-lock.json
       - run: npm ci
       - run: npm run typecheck
+      - run: npm run verify:media-adapters
       - run: npm run check:layers
       - run: npm run check:genre-skills
       - run: npm run verify:scene-drama-skills

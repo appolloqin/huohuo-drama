@@ -147,7 +147,35 @@ function mergeBillingPatchFromBody(
   } else if ('credit_cost' in body) {
     settings.creditCost = Math.max(0, Math.floor(Number(body.credit_cost || 0)))
   }
+  applyWorkflowResolutionPatch(settings, body)
   return settings
+}
+
+function applyWorkflowResolutionPatch(settings: Record<string, any>, body: Record<string, unknown>) {
+  if ('workflow' in body) {
+    const raw = body.workflow
+    if (raw == null || raw === '') {
+      delete settings.workflow
+    } else if (typeof raw === 'string') {
+      const trimmed = raw.trim()
+      if (!trimmed) {
+        delete settings.workflow
+      } else {
+        try {
+          settings.workflow = JSON.parse(trimmed)
+        } catch {
+          throw new Error('ComfyUI workflow JSON 无法解析')
+        }
+      }
+    } else {
+      settings.workflow = raw
+    }
+  }
+  if ('resolution' in body) {
+    const r = String(body.resolution || '').trim()
+    if (r) settings.resolution = r
+    else delete settings.resolution
+  }
 }
 
 async function persistBundledServicePreset(
@@ -221,7 +249,7 @@ export async function createServiceConfig(body: Record<string, unknown>) {
   const ts = now()
   const settings = body.service_type === 'text'
     ? parseTextBillingPayload(body)
-    : { creditCost: Math.max(0, Math.floor(Number(body.credit_cost || 0))) }
+    : mergeBillingPatchFromBody({ serviceType: String(body.service_type), settings: null }, body)
 
   if (!body.service_type || !body.provider) {
     throw new Error('service_type and provider are required')
@@ -561,7 +589,7 @@ export async function updateServiceConfig(id: number, body: Record<string, unkno
   if ('model' in body) updates.model = JSON.stringify(body.model)
   if ('priority' in body) updates.priority = body.priority
   if ('is_active' in body) updates.isActive = body.is_active
-  if ('credit_cost' in body || 'credit_token_unit' in body || 'credit_token_cost' in body || 'perplexity_model' in body || 'enable_thinking' in body) {
+  if ('credit_cost' in body || 'credit_token_unit' in body || 'credit_token_cost' in body || 'perplexity_model' in body || 'enable_thinking' in body || 'workflow' in body || 'resolution' in body) {
     const existing = await aiServiceConfigsRepo.findServiceConfigById(id)
     updates.settings = JSON.stringify(mergeBillingPatchFromBody(existing ?? undefined, body))
   }

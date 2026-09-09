@@ -5,6 +5,7 @@ import * as imageGenerationsRepo from '../../db/repos/image-generations/index.js
 import { now } from '../../common/http/response.js'
 import { logTaskError, logTaskProgress, logTaskSuccess, logTaskWarn, redactUrl } from '../../common/task/task-logger.js'
 import { finalizeImageFromBase64, finalizeImageFromUrl, markLinkedSceneFailed } from '../drama/generation-finalizer.js'
+import { resolveRelativeMediaUrl } from '../ai/adapters/comfyui-workflow.js'
 
 const IMAGE_POLL_INTERVAL_MS = 5_000
 const IMAGE_POLL_MAX_MS = 600_000
@@ -28,8 +29,9 @@ async function handlePollOutcome(
   pollResp: ReturnType<ImageProviderAdapter['parsePollResponse']>,
 ) {
   if (pollResp.status === 'completed' && pollResp.imageUrl) {
-    logTaskSuccess('ImageTask', 'poll-complete', { id, taskId, imageUrl: pollResp.imageUrl })
-    await finalizeImageFromUrl(id, config.provider, pollResp.imageUrl)
+    const imageUrl = resolveRelativeMediaUrl(config.baseUrl, pollResp.imageUrl) || pollResp.imageUrl
+    logTaskSuccess('ImageTask', 'poll-complete', { id, taskId, imageUrl })
+    await finalizeImageFromUrl(id, config.provider, imageUrl)
     return true
   }
 

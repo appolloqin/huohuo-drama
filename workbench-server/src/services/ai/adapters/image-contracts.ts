@@ -29,6 +29,8 @@ export interface ImagePollResponse {
 
 export interface ImageProviderAdapter {
   provider: string
+  /** 可选：提交前上传素材等；旧适配器不实现 */
+  prepareGenerate?(config: AIConfig, record: ImageGenerationRecord): Promise<void>
   buildGenerateRequest(config: AIConfig, record: ImageGenerationRecord): ProviderRequest
   parseGenerateResponse(result: any): ImageGenResponse
   buildPollRequest(config: AIConfig, taskId: string): ProviderRequest

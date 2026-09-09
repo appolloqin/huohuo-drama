@@ -1197,6 +1197,22 @@
         </div>
         <p v-if="imageHuohuoDoubaoMismatchHint" class="field-hint field-hint-warn">{{ imageHuohuoDoubaoMismatchHint }}</p>
         <label class="field"><span class="field-label">{{ tm.settings.models }}</span><input v-model="serviceConfigFormState.modelStr" class="input" :placeholder="tm.settings.modelsPlaceholder" /></label>
+        <label v-if="serviceConfigFormState.provider === 'minimax-h3'" class="field">
+          <span class="field-label">{{ tm.settings.minimaxH3Resolution }}</span>
+          <BaseSelect
+            v-model="serviceConfigFormState.resolution"
+            :options="[
+              { label: '768P', value: '768P' },
+              { label: '2K', value: '2K' },
+            ]"
+            placeholder="768P"
+          />
+        </label>
+        <label v-if="serviceConfigFormState.provider === 'comfyui'" class="field">
+          <span class="field-label">{{ tm.settings.comfyuiWorkflow }}</span>
+          <textarea v-model="serviceConfigFormState.workflow" class="input" rows="8" :placeholder="tm.settings.comfyuiWorkflowPlaceholder" />
+          <p class="field-hint">{{ tm.settings.comfyuiWorkflowHint }}</p>
+        </label>
         <div v-if="serviceConfigFormState.service_type === 'text'" class="field-row">
           <label class="field">
             <span class="field-label">{{ tm.settings.creditTokenUnit }}</span>
@@ -1845,6 +1861,8 @@ const serviceConfigFormState = reactive({
   credit_token_cost: 10,
   perplexity_model: '',
   enable_thinking: false,
+  workflow: '',
+  resolution: '768P',
 })
 const paymentProviderRows = ref([])
 const bundledPresetKeyForm = reactive({ apiKey: '' })
@@ -1859,8 +1877,8 @@ const serviceTypes = computed(() => [
 ])
 const providersByServiceType = {
   text: ['ali', 'deepseek', 'huohuo', 'gemini', 'minimax', 'openai', 'openrouter', 'volcengine'],
-  image: ['ali', 'huohuo', 'gemini', 'minimax', 'openai', 'openrouter', 'vidu', 'volcengine'],
-  video: ['ali', 'huohuo', 'gemini', 'minimax', 'openai', 'openrouter', 'vidu', 'volcengine'],
+  image: ['ali', 'huohuo', 'gemini', 'minimax', 'openai', 'openrouter', 'vidu', 'volcengine', 'comfyui'],
+  video: ['ali', 'huohuo', 'gemini', 'minimax', 'minimax-h3', 'openai', 'openrouter', 'vidu', 'volcengine', 'comfyui'],
   audio: ['ali', 'huohuo', 'gemini', 'minimax', 'openai', 'openrouter', 'volcengine'],
 }
 const providerLabelKeys = {
@@ -1869,10 +1887,12 @@ const providerLabelKeys = {
   huohuo: 'providerHuohuo',
   gemini: 'providerGemini',
   minimax: 'providerMinimax',
+  'minimax-h3': 'providerMinimaxH3',
   openai: 'providerOpenai',
   openrouter: 'providerOpenrouter',
   volcengine: 'providerVolcengine',
   vidu: 'providerVidu',
+  comfyui: 'providerComfyui',
 }
 function formatProviderLabel(provider) {
   const key = providerLabelKeys[provider]
@@ -1905,10 +1925,13 @@ const providerPresetCatalog = computed(() => {
       { provider: 'volcengine', label: s.arkDirect, baseUrl: 'https://ark.cn-beijing.volces.com', models: ['doubao-seedream-4-0-250828'], creditCost: 10 },
       { provider: 'huohuo', label: s.geminiRecommended, baseUrl: 'https://huo.hcpzy.com/v1', models: ['gemini-3-pro-image-preview'], creditCost: 10 },
       { provider: 'minimax', label: s.minimaxOfficial, baseUrl: 'https://api.minimaxi.com', models: ['image-01'], creditCost: 10 },
+      { provider: 'comfyui', label: s.comfyuiLocal, baseUrl: 'http://127.0.0.1:8188', models: ['comfyui'], creditCost: 0 },
     ],
     video: {
       huohuo: { label: s.huohuoVideo, baseUrl: 'https://huo.hcpzy.com/v1', models: ['doubao-seedance-2-0-fast-260128', 'doubao-seedance-2-0-260128', 'doubao-seedance-1-5-pro-251215'], creditCost: 30 },
       minimax: { label: s.minimaxOfficial, baseUrl: 'https://api.minimaxi.com', models: ['MiniMax-Hailuo-2.3'], creditCost: 30 },
+      'minimax-h3': { label: s.minimaxH3Official, baseUrl: 'https://api.minimaxi.com', models: ['MiniMax-H3'], creditCost: 30 },
+      comfyui: { label: s.comfyuiLocal, baseUrl: 'http://127.0.0.1:8188', models: ['comfyui'], creditCost: 0 },
       vidu: { label: s.viduRecommended, baseUrl: 'https://api.vidu.com', models: ['viduq3-turbo'], creditCost: 30 },
       ali: { label: s.aliRecommended, baseUrl: 'https://dashscope.aliyuncs.com', models: ['wan2.6-i2v-flash'], creditCost: 30 },
     },
@@ -2231,6 +2254,7 @@ function providerEndpointPrefix(provider, serviceType) {
     openai: '/v1',
     openrouter: '/v1',
     minimax: '/v1',
+    'minimax-h3': '/v2',
     gemini: '/v1beta',
     volcengine: '/api/v3',
     vidu: '/ent/v2',
@@ -2329,6 +2353,8 @@ function showCreateServiceConfigSheet(t) {
     credit_token_cost: 10,
     perplexity_model: '',
     enable_thinking: false,
+    workflow: '',
+    resolution: '768P',
   })
   const firstPreset = presetCatalogForServiceType(t)[0]
   if (firstPreset) applyServiceProviderPreset(t, firstPreset)
@@ -2350,6 +2376,8 @@ function showEditServiceConfigSheet(c) {
     credit_token_cost: Number(c.credit_token_cost || 0),
     perplexity_model: c.perplexity_model || '',
     enable_thinking: c.enable_thinking === true,
+    workflow: c.workflow || '',
+    resolution: c.resolution || '768P',
   })
   serviceConfigSheetOpen.value = true
 }
@@ -2372,7 +2400,12 @@ function buildServiceConfigPayload() {
       enable_thinking: serviceConfigFormState.enable_thinking === true,
     }
   }
-  return { ...base, credit_cost: serviceConfigFormState.credit_cost || 0 }
+  const extra = {
+    credit_cost: serviceConfigFormState.credit_cost || 0,
+    workflow: serviceConfigFormState.provider === 'comfyui' ? (serviceConfigFormState.workflow?.trim() || '') : undefined,
+    resolution: serviceConfigFormState.provider === 'minimax-h3' ? (serviceConfigFormState.resolution || '768P') : undefined,
+  }
+  return { ...base, ...extra }
 }
 async function probeServiceConfigEndpoint(payload) {
   serviceConfigProbeBusy.value = true
