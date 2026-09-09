@@ -1,16 +1,17 @@
 {
   "name": "huohuo-drama-desktop",
   "version": "1.0.0",
-  "description": "Huohuo Drama desktop shell — loads the online console in a dedicated window",
+  "description": "Huohuo Drama desktop — local SQLite runtime or remote console URL",
   "private": true,
   "type": "module",
   "main": "electron/main.mjs",
   "scripts": {
     "dev": "electron .",
-    "dist": "electron-builder",
-    "dist:win": "electron-builder --win",
-    "dist:mac": "electron-builder --mac",
-    "dist:linux": "electron-builder --linux"
+    "prepare:runtime": "node scripts/prepare-runtime.mjs",
+    "dist": "npm run prepare:runtime && electron-builder",
+    "dist:win": "npm run prepare:runtime && electron-builder --win",
+    "dist:mac": "npm run prepare:runtime && electron-builder --mac",
+    "dist:linux": "npm run prepare:runtime && electron-builder --linux"
   },
   "build": {
     "appId": "com.seeddrama.console",
@@ -19,18 +20,37 @@
       "output": "release",
       "buildResources": "build"
     },
-    "files": ["electron/**/*", "package.json"],
+    "files": [
+      "electron/**/*",
+      "package.json"
+    ],
+    "extraResources": [
+      {
+        "from": "runtime",
+        "to": "runtime",
+        "filter": [
+          "**/*"
+        ]
+      }
+    ],
+    "asar": true,
     "win": {
-      "target": ["nsis"],
+      "target": [
+        "nsis"
+      ],
       "artifactName": "Huohuo-Drama-${version}-win-${arch}.${ext}"
     },
     "mac": {
-      "target": ["dmg"],
+      "target": [
+        "dmg"
+      ],
       "artifactName": "Huohuo-Drama-${version}-mac-${arch}.${ext}",
       "category": "public.app-category.video"
     },
     "linux": {
-      "target": ["AppImage"],
+      "target": [
+        "AppImage"
+      ],
       "artifactName": "Huohuo-Drama-${version}-linux-${arch}.${ext}",
       "category": "Network"
     },
