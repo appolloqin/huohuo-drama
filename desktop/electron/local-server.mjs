@@ -264,6 +264,12 @@ export async function startLocalServer() {
   const logFile = path.join(logsDir, 'local-server.log')
   const logFd = fs.openSync(logFile, 'a')
 
+  // 本地桌面默认建管理员；线上账号在远程模式用。可用环境变量覆盖。
+  const bootstrapUser =
+    (process.env.BOOTSTRAP_ADMIN_USERNAME || '').trim() || 'admin'
+  const bootstrapPass =
+    process.env.BOOTSTRAP_ADMIN_PASSWORD || 'admin123'
+
   const env = {
     ...process.env,
     NODE_ENV: 'production',
@@ -273,6 +279,8 @@ export async function startLocalServer() {
     DATA_PATH: data,
     STORAGE_PATH: path.join(data, 'static'),
     DB_AUTO_INIT: process.env.DB_AUTO_INIT || 'true',
+    BOOTSTRAP_ADMIN_USERNAME: bootstrapUser,
+    BOOTSTRAP_ADMIN_PASSWORD: bootstrapPass,
     ...(ff.FFMPEG_PATH ? { FFMPEG_PATH: ff.FFMPEG_PATH } : {}),
     ...(ff.FFPROBE_PATH ? { FFPROBE_PATH: ff.FFPROBE_PATH } : {}),
   }

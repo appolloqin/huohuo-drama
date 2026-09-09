@@ -3,9 +3,26 @@
  * 不修改 workbench / workbench-server 源码。
  */
 import { app, BrowserWindow, Menu, shell, dialog } from 'electron'
+import fs from 'fs'
+import path from 'path'
+import { fileURLToPath } from 'url'
 import { resolveRemoteConsoleUrl, allowedOriginFor } from './config.mjs'
 import { loadSettings, saveSettings, DEFAULT_REMOTE_URL } from './settings.mjs'
 import { startLocalServer, stopLocalServer } from './local-server.mjs'
+
+const __dirname = path.dirname(fileURLToPath(import.meta.url))
+
+function resolveAppIcon() {
+  const candidates = [
+    path.join(__dirname, '../build/icon.png'),
+    path.join(process.resourcesPath || '', 'app.asar.unpacked', 'build', 'icon.png'),
+    path.join(app.getAppPath(), 'build', 'icon.png'),
+  ]
+  for (const p of candidates) {
+    if (p && fs.existsSync(p)) return p
+  }
+  return undefined
+}
 
 /** @type {BrowserWindow | null} */
 let mainWindow = null
@@ -72,12 +89,14 @@ function attachWindowHandlers(win) {
 
 function ensureWindow() {
   if (mainWindow && !mainWindow.isDestroyed()) return mainWindow
+  const icon = resolveAppIcon()
   mainWindow = new BrowserWindow({
     width: 1440,
     height: 900,
     minWidth: 1024,
     minHeight: 640,
     title: '火火短剧',
+    ...(icon ? { icon } : {}),
     webPreferences: {
       contextIsolation: true,
       nodeIntegration: false,

@@ -17,13 +17,15 @@
   "build": {
     "appId": "com.seeddrama.console",
     "productName": "火火短剧",
+    "icon": "build/icon.png",
     "directories": {
       "output": "release",
       "buildResources": "build"
     },
     "files": [
       "electron/**/*",
-      "package.json"
+      "package.json",
+      "build/icon.png"
     ],
     "extraResources": [
       {
@@ -39,12 +41,14 @@
       "target": [
         "nsis"
       ],
+      "icon": "build/icon.ico",
       "artifactName": "Huohuo-Drama-${version}-win-${arch}.${ext}"
     },
     "mac": {
       "target": [
         "dmg"
       ],
+      "icon": "build/icon.png",
       "artifactName": "Huohuo-Drama-${version}-mac-${arch}.${ext}",
       "category": "public.app-category.video"
     },
@@ -52,16 +56,27 @@
       "target": [
         "AppImage"
       ],
+      "icon": "build/icon.png",
       "artifactName": "Huohuo-Drama-${version}-linux-${arch}.${ext}",
       "category": "Network"
     },
     "nsis": {
       "oneClick": false,
-      "allowToChangeInstallationDirectory": true
+      "allowToChangeInstallationDirectory": true,
+      "perMachine": false,
+      "allowElevation": true,
+      "deleteAppDataOnUninstall": false,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "uninstallDisplayName": "火火短剧",
+      "installerIcon": "build/icon.ico",
+      "uninstallerIcon": "build/icon.ico",
+      "installerHeaderIcon": "build/icon.ico",
+      "include": "build/installer.nsh"
     }
   },
   "devDependencies": {
-    "electron": "^35.0.0",
-    "electron-builder": "^25.1.8"
+    "electron": "35.5.1",
+    "electron-builder": "25.1.8"
   }
 }
