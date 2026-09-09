@@ -29,5 +29,11 @@ export function toServiceConfigApiShape(row: any) {
     credit_token_cost: Number(settings.creditTokenCost || 0),
     perplexity_model: typeof settings.perplexityModel === 'string' ? settings.perplexityModel : '',
     enable_thinking: resolveThinkingEnabled(settings),
+    workflow: typeof settings.workflow === 'string'
+      ? settings.workflow
+      : settings.workflow
+        ? JSON.stringify(settings.workflow, null, 2)
+        : '',
+    resolution: typeof settings.resolution === 'string' ? settings.resolution : '',
   }
 }

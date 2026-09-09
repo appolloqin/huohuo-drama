@@ -14,6 +14,7 @@ export interface AIConfig {
   baseUrl: string
   apiKey: string
   model: string
+  settings?: string | Record<string, unknown> | null
 }
 
 export interface TtsAudioPayload {

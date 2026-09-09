@@ -5,6 +5,7 @@ import { getVideoAdapter } from '../ai/adapters/registry.js'
 import { logTaskError, logTaskProgress, logTaskSuccess, logTaskWarn, redactUrl } from '../../common/task/task-logger.js'
 import { finalizeVideoFromUrl } from '../drama/generation-finalizer.js'
 import { formatVideoApiError } from '../../common/media/video-api-errors.js'
+import { resolveRelativeMediaUrl } from '../ai/adapters/comfyui-workflow.js'
 
 const VIDEO_POLL_INTERVAL_MS = 10_000
 const VIDEO_POLL_MAX_ATTEMPTS = 300
@@ -46,8 +47,9 @@ export async function pollVideoGeneration(
       const pollResp = adapter.parsePollResponse(payload)
 
       if (pollResp.status === 'completed' && pollResp.videoUrl) {
-        logTaskSuccess('VideoTask', 'poll-complete', { id, taskId, videoUrl: pollResp.videoUrl })
-        await finalizeVideoFromUrl(id, pollResp.videoUrl, null, storyboardId)
+        const videoUrl = resolveRelativeMediaUrl(config.baseUrl, pollResp.videoUrl) || pollResp.videoUrl
+        logTaskSuccess('VideoTask', 'poll-complete', { id, taskId, videoUrl })
+        await finalizeVideoFromUrl(id, videoUrl, null, storyboardId)
         return
       }
 

@@ -35,6 +35,8 @@ export interface VideoPollResponse {
 
 export interface VideoProviderAdapter {
   provider: string
+  /** 可选：提交前上传素材等；旧适配器不实现 */
+  prepareGenerate?(config: AIConfig, record: VideoGenerationRecord): Promise<void>
   buildGenerateRequest(config: AIConfig, record: VideoGenerationRecord): ProviderRequest
   parseGenerateResponse(result: any): VideoGenResponse
   buildPollRequest(config: AIConfig, taskId: string): ProviderRequest

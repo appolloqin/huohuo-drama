@@ -38,6 +38,7 @@
     "verify:ai-detect-calib": "tsx scripts/verify-ai-detect-calib-fixture.ts",
     "verify:ai-detect-calib-constants": "tsx scripts/verify-ai-detect-calib-constants.ts",
     "verify:ai-detect-hub": "tsx scripts/verify-ai-detect-hub-fallback.ts",
+    "verify:media-adapters": "tsx --test src/services/ai/adapters/minimax-h3-video.test.ts src/services/ai/adapters/comfyui-workflow.test.ts",
     "ai-detect:collect-samples": "tsx scripts/collect-ai-detect-samples.ts",
     "ai-detect:train": "tsx scripts/train-ai-detect-calibration.ts",
     "ai-detect:train-calibration": "tsx scripts/train-ai-detect-calibration.ts",
