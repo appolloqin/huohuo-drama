@@ -4,7 +4,8 @@
 
 | 模式 | 说明 |
 |------|------|
-| **本地（默认）** | 启动内嵌 Node，运行编译后的 workbench-server；SQLite 数据在用户目录；内嵌 FFmpeg |
+| **本地（默认）** | 启动内嵌 Node，运行编译后的 workbench-server；SQLite 数据在用户目录；**优先用系统 FFmpeg**，没有再回退到安装包内嵌 |
+
 | **远程** | 不启本地进程，打开配置的控制台 URL（默认 seeddrama.com） |
 
 菜单：**模式 → 本地（SQLite） / 远程 URL**
@@ -64,3 +65,4 @@ npm run dev
 - 仅 **同站点** origin 的链接在窗口内打开；其它 http(s) 用系统浏览器
 - 单实例；退出时结束本地 Node 子进程
 - 本地日志：`userData/logs/local-server.log`
+- FFmpeg：启动时检测 PATH；已安装则直接用系统版。本地 `prepare:runtime` 若检测到系统 FFmpeg 会跳过内嵌；GitHub Actions 仍会内嵌一份，给没有 FFmpeg 的用户兜底

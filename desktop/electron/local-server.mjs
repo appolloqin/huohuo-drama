@@ -1,5 +1,5 @@
 import { app } from 'electron'
-import { spawn } from 'child_process'
+import { spawn, spawnSync } from 'child_process'
 import fs from 'fs'
 import path from 'path'
 import http from 'http'
@@ -126,14 +126,50 @@ function nodeBinary(runtimeRoot) {
   return process.platform === 'win32' ? 'node.exe' : 'node'
 }
 
+/** 在 PATH 中解析可执行文件（已安装则优先用系统 FFmpeg） */
+function resolveOnPath(binaryName) {
+  const cmd = process.platform === 'win32' ? 'where' : 'which'
+  const r = spawnSync(cmd, [binaryName], { encoding: 'utf8', windowsHide: true })
+  if (r.status !== 0) return null
+  const line = String(r.stdout || '')
+    .split(/\r?\n/)
+    .map((s) => s.trim())
+    .find(Boolean)
+  if (!line || !fs.existsSync(line)) return null
+  return line
+}
+
 function ffmpegPaths(runtimeRoot) {
+  // 1) 系统已安装 → 用系统路径（无需再装/不必依赖内嵌）
+  const systemFfmpeg =
+    resolveOnPath(process.platform === 'win32' ? 'ffmpeg.exe' : 'ffmpeg') || resolveOnPath('ffmpeg')
+  const systemFfprobe =
+    resolveOnPath(process.platform === 'win32' ? 'ffprobe.exe' : 'ffprobe') || resolveOnPath('ffprobe')
+
+  if (systemFfmpeg) {
+    console.log(`[desktop] using system ffmpeg: ${systemFfmpeg}`)
+    return {
+      FFMPEG_PATH: systemFfmpeg,
+      FFPROBE_PATH: systemFfprobe || undefined,
+      source: 'system',
+    }
+  }
+
+  // 2) 回退到安装包内嵌
   const dir = path.join(runtimeRoot, 'ffmpeg')
   const ffmpeg = path.join(dir, process.platform === 'win32' ? 'ffmpeg.exe' : 'ffmpeg')
   const ffprobe = path.join(dir, process.platform === 'win32' ? 'ffprobe.exe' : 'ffprobe')
-  return {
-    FFMPEG_PATH: fs.existsSync(ffmpeg) ? ffmpeg : undefined,
-    FFPROBE_PATH: fs.existsSync(ffprobe) ? ffprobe : undefined,
+  if (fs.existsSync(ffmpeg)) {
+    console.log(`[desktop] using bundled ffmpeg: ${ffmpeg}`)
+    return {
+      FFMPEG_PATH: ffmpeg,
+      FFPROBE_PATH: fs.existsSync(ffprobe) ? ffprobe : undefined,
+      source: 'bundled',
+    }
   }
+
+  console.warn('[desktop] ffmpeg not found on PATH or in runtime bundle')
+  return { source: 'none' }
 }
 
 function waitHealth(port, timeoutMs = 60000) {
