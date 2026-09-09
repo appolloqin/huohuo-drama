@@ -12,11 +12,22 @@
 
 数据目录（升级不丢）：
 
-- Windows: `%APPDATA%/huohuo-drama/workbench-data/`
-- macOS: `~/Library/Application Support/huohuo-drama/workbench-data/`
-- Linux: `~/.config/huohuo-drama/workbench-data/`
+- Windows: `%APPDATA%/huohuo-drama-desktop/workbench-data/`
+- macOS: `~/Library/Application Support/huohuo-drama-desktop/workbench-data/`
+- Linux: `~/.config/huohuo-drama-desktop/workbench-data/`
 
 设置文件：同目录上级的 `desktop-settings.json`（`mode` / `remoteUrl`）。
+
+### 本地模式登录
+
+本地 SQLite **独立于**线上账号。首次启动会自动创建管理员：
+
+| 字段 | 默认值 |
+|------|--------|
+| 用户名 | `admin` |
+| 密码 | `admin123` |
+
+可用环境变量覆盖：`BOOTSTRAP_ADMIN_USERNAME` / `BOOTSTRAP_ADMIN_PASSWORD`（启动前设置；已存在同名用户时不会改密码，除非再设 `BOOTSTRAP_ADMIN_OVERWRITE=true`）。
 
 **不**修改 `workbench` / `workbench-server` 源码；安装包内为编译产物。
 
@@ -67,3 +78,5 @@ npm run dev
 - 本地日志：`userData/logs/local-server.log`
 - FFmpeg：启动时检测 PATH；已安装则直接用系统版。本地 `prepare:runtime` 若检测到系统 FFmpeg 会跳过内嵌；GitHub Actions 仍会内嵌一份，给没有 FFmpeg 的用户兜底
 - 静态资源：`prepare:runtime` 会把 Nuxt 产物镜像到 `workbench/dist/console/`，以匹配 `/console/_nuxt/...`（桌面无 nginx 改写，否则 JS 会被回落成 HTML 导致白屏）
+- Windows 安装：辅助安装向导仍会显示目录页，但会预填上次安装路径（注册表 `InstallLocation`）；完全卸载后再装则需重新选择
+- 应用图标：`desktop/build/icon.ico`（Windows 安装包/快捷方式）与 `icon.png`（窗口/Mac/Linux），由 `workbench/app/assets/huohuo-logo.png` 生成；改 logo 后需重新生成并 `npm run dist:win`
