@@ -10,6 +10,9 @@ import { startLocalServer, stopLocalServer } from './local-server.mjs'
 /** @type {BrowserWindow | null} */
 let mainWindow = null
 let allowedOrigin = ''
+/** @type {Promise<void> | null} */
+let bootPromise = null
+let currentMode = 'local'
 
 const gotLock = app.requestSingleInstanceLock()
 if (!gotLock) {
@@ -33,28 +36,42 @@ function isAllowedNavigation(targetUrl) {
   }
 }
 
-async function resolveStartUrl() {
-  const settings = loadSettings()
-  if (settings.mode === 'remote') {
-    return resolveRemoteConsoleUrl(settings.remoteUrl)
-  }
-  const { port } = await startLocalServer()
-  return `http://127.0.0.1:${port}/console/`
+function attachWindowHandlers(win) {
+  win.webContents.setWindowOpenHandler(({ url }) => {
+    if (isAllowedNavigation(url)) {
+      return { action: 'allow' }
+    }
+    shell.openExternal(url)
+    return { action: 'deny' }
+  })
+
+  win.webContents.on('will-navigate', (event, url) => {
+    if (!isAllowedNavigation(url)) {
+      event.preventDefault()
+      shell.openExternal(url)
+    }
+  })
+
+  win.webContents.on('did-fail-load', (_event, code, desc, url, isMainFrame) => {
+    if (!isMainFrame || code === -3) return // -3 = aborted
+    console.warn(`[desktop] did-fail-load code=${code} desc=${desc} url=${url}`)
+    const certHint =
+      /CERT|cert|SSL|TLS|ERR_CERT/i.test(String(desc)) || code === -202 || code === -200 || code === -201
+        ? '\n\n若提示证书错误，多半是远程站点 HTTPS 证书过期/不受信，需更新服务器证书；与本地模式无关。'
+        : ''
+    dialog.showErrorBox(
+      currentMode === 'remote' ? '远程页面加载失败' : '页面加载失败',
+      `${desc}\n\nURL: ${url}\ncode: ${code}${certHint}`,
+    )
+  })
+
+  win.on('closed', () => {
+    if (mainWindow === win) mainWindow = null
+  })
 }
 
-async function createWindow() {
-  let startUrl
-  try {
-    startUrl = await resolveStartUrl()
-  } catch (err) {
-    const message = err instanceof Error ? err.message : String(err)
-    dialog.showErrorBox('本地服务启动失败', `${message}\n\n可在菜单「模式」切换到远程控制台。`)
-    saveSettings({ mode: 'remote' })
-    startUrl = resolveRemoteConsoleUrl(loadSettings().remoteUrl)
-  }
-
-  allowedOrigin = allowedOriginFor(startUrl)
-
+function ensureWindow() {
+  if (mainWindow && !mainWindow.isDestroyed()) return mainWindow
   mainWindow = new BrowserWindow({
     width: 1440,
     height: 900,
@@ -67,53 +84,93 @@ async function createWindow() {
       sandbox: true,
     },
   })
+  attachWindowHandlers(mainWindow)
+  return mainWindow
+}
 
-  mainWindow.loadURL(startUrl)
+async function loadLocalConsole() {
+  const { port } = await startLocalServer()
+  return `http://127.0.0.1:${port}/console/`
+}
 
-  mainWindow.webContents.setWindowOpenHandler(({ url }) => {
-    if (isAllowedNavigation(url)) {
-      return { action: 'allow' }
+async function navigateToMode(mode, { announceLocalFailure = false } = {}) {
+  currentMode = mode === 'remote' ? 'remote' : 'local'
+  saveSettings({ mode: currentMode })
+  buildMenu()
+
+  const win = ensureWindow()
+  let url
+
+  if (currentMode === 'remote') {
+    stopLocalServer()
+    url = resolveRemoteConsoleUrl(loadSettings().remoteUrl)
+  } else {
+    try {
+      url = await loadLocalConsole()
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err)
+      if (announceLocalFailure) {
+        const { response } = await dialog.showMessageBox(win, {
+          type: 'error',
+          title: '本地服务启动失败',
+          message: '本地模式无法启动',
+          detail: `${message}\n\n是否切换到远程控制台？`,
+          buttons: ['切换到远程', '保持本地（关闭）'],
+          defaultId: 0,
+          cancelId: 1,
+        })
+        if (response === 0) {
+          return navigateToMode('remote', { announceLocalFailure: false })
+        }
+        return
+      }
+      throw err
     }
-    shell.openExternal(url)
-    return { action: 'deny' }
-  })
+  }
 
-  mainWindow.webContents.on('will-navigate', (event, url) => {
-    if (!isAllowedNavigation(url)) {
-      event.preventDefault()
-      shell.openExternal(url)
+  allowedOrigin = allowedOriginFor(url)
+  console.log(`[desktop] navigate mode=${currentMode} url=${url}`)
+  await win.loadURL(url)
+}
+
+async function boot() {
+  if (bootPromise) return bootPromise
+  bootPromise = (async () => {
+    const settings = loadSettings()
+    currentMode = settings.mode === 'remote' ? 'remote' : 'local'
+    buildMenu()
+    ensureWindow()
+    try {
+      await navigateToMode(currentMode, { announceLocalFailure: currentMode === 'local' })
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err)
+      dialog.showErrorBox('启动失败', message)
     }
-  })
-
-  mainWindow.on('closed', () => {
-    mainWindow = null
-  })
+  })()
+  try {
+    await bootPromise
+  } finally {
+    bootPromise = null
+  }
 }
 
 async function switchMode(mode) {
-  const settings = saveSettings({ mode })
-  if (mode === 'remote') {
-    stopLocalServer()
+  // 避免与 boot/create 并发：串行等待
+  while (bootPromise) {
+    await bootPromise
   }
-  if (!mainWindow) {
-    await createWindow()
-    return
-  }
-  try {
-    const url =
-      settings.mode === 'remote'
-        ? resolveRemoteConsoleUrl(settings.remoteUrl)
-        : `http://127.0.0.1:${(await startLocalServer()).port}/console/`
-    allowedOrigin = allowedOriginFor(url)
-    await mainWindow.loadURL(url)
-  } catch (err) {
-    const message = err instanceof Error ? err.message : String(err)
-    dialog.showErrorBox('切换失败', message)
-  }
+  bootPromise = navigateToMode(mode, { announceLocalFailure: mode === 'local' })
+    .catch((err) => {
+      const message = err instanceof Error ? err.message : String(err)
+      dialog.showErrorBox('切换失败', message)
+    })
+    .finally(() => {
+      bootPromise = null
+    })
+  await bootPromise
 }
 
 async function setRemoteUrlInteractive() {
-  // Electron 无简单 prompt；用 dialog + 默认值说明，进阶可用自定义窗体
   const settings = loadSettings()
   const { response } = await dialog.showMessageBox(mainWindow || undefined, {
     type: 'question',
@@ -132,6 +189,7 @@ async function setRemoteUrlInteractive() {
 
 function buildMenu() {
   const settings = loadSettings()
+  const mode = settings.mode === 'remote' ? 'remote' : 'local'
   const template = [
     {
       label: '模式',
@@ -139,7 +197,7 @@ function buildMenu() {
         {
           label: '本地（SQLite）',
           type: 'radio',
-          checked: settings.mode === 'local',
+          checked: mode === 'local',
           click: () => {
             void switchMode('local')
           },
@@ -147,7 +205,7 @@ function buildMenu() {
         {
           label: '远程 URL',
           type: 'radio',
-          checked: settings.mode === 'remote',
+          checked: mode === 'remote',
           click: () => {
             void switchMode('remote')
           },
@@ -182,9 +240,8 @@ function buildMenu() {
   Menu.setApplicationMenu(Menu.buildFromTemplate(template))
 }
 
-app.whenReady().then(async () => {
-  buildMenu()
-  await createWindow()
+app.whenReady().then(() => {
+  void boot()
 })
 
 app.on('window-all-closed', () => {
@@ -197,5 +254,5 @@ app.on('before-quit', () => {
 })
 
 app.on('activate', () => {
-  if (BrowserWindow.getAllWindows().length === 0) void createWindow()
+  if (BrowserWindow.getAllWindows().length === 0) void boot()
 })

@@ -8,6 +8,7 @@
   "scripts": {
     "dev": "electron .",
     "prepare:runtime": "node scripts/prepare-runtime.mjs",
+    "smoke:modes": "node scripts/smoke-modes.mjs",
     "dist": "npm run prepare:runtime && electron-builder",
     "dist:win": "npm run prepare:runtime && electron-builder --win",
     "dist:mac": "npm run prepare:runtime && electron-builder --mac",
