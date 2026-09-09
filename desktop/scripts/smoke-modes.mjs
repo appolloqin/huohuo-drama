@@ -19,12 +19,21 @@ const userRuntime = path.join(
 )
 const repoRoot = path.resolve(desktopRoot, '..')
 
-function fetchStatus(url, timeoutMs = 20000) {
+function fetchMeta(url, timeoutMs = 20000) {
   return new Promise((resolve, reject) => {
     const lib = url.startsWith('https') ? https : http
     const req = lib.get(url, { timeout: timeoutMs, headers: { 'user-agent': 'huohuo-desktop-smoke' } }, (res) => {
-      res.resume()
-      resolve({ status: res.statusCode || 0, url })
+      const chunks = []
+      res.on('data', (c) => chunks.push(c))
+      res.on('end', () => {
+        const buf = Buffer.concat(chunks)
+        resolve({
+          status: res.statusCode || 0,
+          url,
+          contentType: String(res.headers['content-type'] || ''),
+          body: buf,
+        })
+      })
     })
     req.on('error', reject)
     req.on('timeout', () => {
@@ -32,6 +41,10 @@ function fetchStatus(url, timeoutMs = 20000) {
       reject(new Error(`timeout ${url}`))
     })
   })
+}
+
+function fetchStatus(url, timeoutMs = 20000) {
+  return fetchMeta(url, timeoutMs).then((r) => ({ status: r.status, url: r.url }))
 }
 
 function waitHealth(port, timeoutMs = 60000) {
@@ -139,8 +152,34 @@ async function smokeLocal() {
   try {
     const body = await waitHealth(port)
     console.log('[smoke] local health', body)
-    const page = await fetchStatus(`http://127.0.0.1:${port}/console/`)
-    console.log('[smoke] local console status', page.status)
+    const page = await fetchMeta(`http://127.0.0.1:${port}/console/`)
+    console.log('[smoke] local console status', page.status, page.contentType)
+    if (!/text\/html/i.test(page.contentType)) {
+      throw new Error(`console page unexpected type ${page.contentType}`)
+    }
+    const html = page.body.toString('utf8')
+    const jsMatch = html.match(/src="(\/console\/_nuxt\/[^"]+\.js)"/)
+    if (!jsMatch) {
+      throw new Error('console HTML missing /console/_nuxt/*.js script')
+    }
+    const assetUrl = `http://127.0.0.1:${port}${jsMatch[1]}`
+    const asset = await fetchMeta(assetUrl)
+    console.log('[smoke] local asset', jsMatch[1], asset.status, asset.contentType, 'len=' + asset.body.length)
+    if (asset.status !== 200) {
+      throw new Error(`asset status ${asset.status}`)
+    }
+    if (/text\/html/i.test(asset.contentType)) {
+      throw new Error(
+        `asset returned HTML (SPA fallback) — /console static mirror missing: ${assetUrl}`,
+      )
+    }
+    if (!/javascript|ecmascript|octet-stream/i.test(asset.contentType) && !asset.body.slice(0, 40).toString().includes('import')) {
+      // accept JS even if content-type is loose, but reject HTML payloads
+      const head = asset.body.slice(0, 64).toString('utf8')
+      if (head.includes('<!DOCTYPE') || head.includes('<html')) {
+        throw new Error('asset body looks like HTML')
+      }
+    }
   } finally {
     if (process.platform === 'win32') {
       spawn('taskkill', ['/pid', String(child.pid), '/T', '/F'], { stdio: 'ignore', windowsHide: true })

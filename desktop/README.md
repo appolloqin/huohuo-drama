@@ -66,3 +66,4 @@ npm run dev
 - 单实例；退出时结束本地 Node 子进程
 - 本地日志：`userData/logs/local-server.log`
 - FFmpeg：启动时检测 PATH；已安装则直接用系统版。本地 `prepare:runtime` 若检测到系统 FFmpeg 会跳过内嵌；GitHub Actions 仍会内嵌一份，给没有 FFmpeg 的用户兜底
+- 静态资源：`prepare:runtime` 会把 Nuxt 产物镜像到 `workbench/dist/console/`，以匹配 `/console/_nuxt/...`（桌面无 nginx 改写，否则 JS 会被回落成 HTML 导致白屏）

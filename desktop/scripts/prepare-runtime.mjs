@@ -192,8 +192,14 @@ function prepareWorkbench() {
   if (!existsSync(generated)) {
     throw new Error(`Missing workbench generate output: ${generated}`)
   }
+  // 桌面无 nginx /console 前缀改写：HTML 引用 /console/_nuxt/...，需同时提供
+  //   workbench/dist/_nuxt/...          （兼容）
+  //   workbench/dist/console/_nuxt/...  （与 baseURL=/console/ 一致，避免 JS 被 SPA 回落成 HTML 白屏）
   cpSync(generated, webOut, { recursive: true })
-  console.log(`[prepare-runtime] workbench dist → ${webOut}`)
+  const consoleOut = path.join(webOut, 'console')
+  ensureDir(consoleOut)
+  cpSync(generated, consoleOut, { recursive: true })
+  console.log(`[prepare-runtime] workbench dist → ${webOut} (+ console/ mirror)`)
 }
 
 function prepareServer() {
