@@ -46,12 +46,18 @@ jobs:
           if [[ "$on_trunk" == true ]] && \
              [[ "${GITHUB_EVENT_NAME}" == push || "${GITHUB_EVENT_NAME}" == workflow_dispatch ]]; then
             git fetch --tags --force
-            latest="$(git tag -l 'v[0-9]*' --sort=-v:refname | head -n1 || true)"
-            if [[ -z "${latest}" ]]; then
-              next="v0.1.0"
+            # 兼容历史 tag：`1.0.1` 与 `v1.0.1`；取数值最大者再 patch+1
+            # 旧逻辑只匹配 v[0-9]*，会忽略 1.0.x，导致错误落到 v0.1.0
+            latest_norm="$(
+              {
+                git tag -l 'v[0-9]*'
+                git tag -l '[0-9]*.[0-9]*.[0-9]*'
+              } | sed 's/^v//' | grep -E '^[0-9]+\.[0-9]+\.[0-9]+$' | sort -V | tail -n1 || true
+            )"
+            if [[ -z "${latest_norm}" ]]; then
+              next="v1.0.0"
             else
-              ver="${latest#v}"
-              IFS=. read -r maj min pat <<< "${ver}"
+              IFS=. read -r maj min pat <<< "${latest_norm}"
               maj="${maj:-0}"; min="${min:-0}"; pat="${pat:-0}"
               pat=$((10#${pat} + 1))
               next="v${maj}.${min}.${pat}"
@@ -60,7 +66,7 @@ jobs:
             echo "tag=${next}" >> "$GITHUB_OUTPUT"
             echo "desktop_ver=${next#v}" >> "$GITHUB_OUTPUT"
             echo "do_release=true" >> "$GITHUB_OUTPUT"
-            echo "Release version: ${next} (prev=${latest:-none})"
+            echo "Release version: ${next} (prev_norm=${latest_norm:-none})"
           else
             echo "pkg_ver=${short}" >> "$GITHUB_OUTPUT"
             echo "tag=" >> "$GITHUB_OUTPUT"
