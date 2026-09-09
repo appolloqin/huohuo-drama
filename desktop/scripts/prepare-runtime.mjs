@@ -216,6 +216,14 @@ function prepareServer() {
   if (!existsSync(distSrc)) throw new Error('workbench-server dist missing after build')
 
   cpSync(distSrc, path.join(serverOut, 'dist'), { recursive: true })
+  // tsc 不复制非 TS 资源；SQLite/MySQL 建表 DDL 运行时从 dist/db/sql 读取
+  const sqlSrc = path.join(serverSrc, 'src', 'db', 'sql')
+  const sqlDest = path.join(serverOut, 'dist', 'db', 'sql')
+  if (existsSync(sqlSrc)) {
+    cpSync(sqlSrc, sqlDest, { recursive: true })
+  } else {
+    throw new Error(`Missing SQL DDL directory: ${sqlSrc}`)
+  }
   cpSync(path.join(serverSrc, 'package.json'), path.join(serverOut, 'package.json'))
   if (existsSync(path.join(serverSrc, 'package-lock.json'))) {
     cpSync(path.join(serverSrc, 'package-lock.json'), path.join(serverOut, 'package-lock.json'))
