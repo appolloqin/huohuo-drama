@@ -302,7 +302,17 @@ export async function startLocalServer() {
     await waitHealth(port)
   } catch (err) {
     stopLocalServer()
-    throw err
+    let hint = ''
+    try {
+      if (fs.existsSync(logFile)) {
+        const tail = fs.readFileSync(logFile, 'utf8').trim().split(/\r?\n/).slice(-12).join('\n')
+        if (tail) hint = `\n\n--- local-server.log ---\n${tail}`
+      }
+    } catch {
+      /* ignore */
+    }
+    const message = err instanceof Error ? err.message : String(err)
+    throw new Error(`${message}${hint}`)
   }
 
   runningPort = port
