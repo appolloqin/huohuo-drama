@@ -37,11 +37,12 @@
       }
     ],
     "asar": true,
+    "afterPack": "scripts/after-pack-icon.cjs",
     "win": {
       "target": [
         "nsis"
       ],
-      "icon": "build/icon.ico",
+      "executableName": "HuohuoDrama",
       "artifactName": "Huohuo-Drama-${version}-win-${arch}.${ext}"
     },
     "mac": {
@@ -68,10 +69,11 @@
       "deleteAppDataOnUninstall": false,
       "createDesktopShortcut": true,
       "createStartMenuShortcut": true,
+      "shortcutName": "火火短剧",
       "uninstallDisplayName": "火火短剧",
-      "installerIcon": "build/icon.ico",
-      "uninstallerIcon": "build/icon.ico",
-      "installerHeaderIcon": "build/icon.ico",
+      "installerIcon": "build/icon-win-rcedit.ico",
+      "uninstallerIcon": "build/icon-win-rcedit.ico",
+      "installerHeaderIcon": "build/icon-win-rcedit.ico",
       "include": "build/installer.nsh"
     }
   },
