@@ -114,10 +114,37 @@ async function prepareNode() {
   console.log(`[prepare-runtime] node → ${destBin}`)
 }
 
+function systemHasFfmpeg() {
+  const cmd = platform === 'win32' ? 'where' : 'which'
+  const ffmpeg = spawnSync(cmd, [platform === 'win32' ? 'ffmpeg.exe' : 'ffmpeg'], {
+    encoding: 'utf8',
+    windowsHide: true,
+  })
+  const ffprobe = spawnSync(cmd, [platform === 'win32' ? 'ffprobe.exe' : 'ffprobe'], {
+    encoding: 'utf8',
+    windowsHide: true,
+  })
+  const ffmpegOk = ffmpeg.status === 0 && String(ffmpeg.stdout || '').trim()
+  const ffprobeOk = ffprobe.status === 0 && String(ffprobe.stdout || '').trim()
+  return Boolean(ffmpegOk && ffprobeOk)
+}
+
 async function prepareFfmpeg() {
   const ffmpegDir = path.join(runtimeRoot, 'ffmpeg')
   rmSync(ffmpegDir, { recursive: true, force: true })
   ensureDir(ffmpegDir)
+
+  // 本机已安装且非强制内嵌 → 跳过下载（CI 默认 FORCE_EMBED_FFMPEG / GITHUB_ACTIONS 仍会内嵌，方便无 FFmpeg 的用户）
+  const forceEmbed =
+    process.env.FORCE_EMBED_FFMPEG === '1' || process.env.GITHUB_ACTIONS === 'true'
+  if (!forceEmbed && systemHasFfmpeg()) {
+    writeFileSync(
+      path.join(ffmpegDir, 'USE_SYSTEM'),
+      'system ffmpeg/ffprobe detected; bundle skipped\n',
+    )
+    console.log('[prepare-runtime] system ffmpeg found — skip embedding')
+    return
+  }
 
   // 使用 npm 可选依赖解析当前平台二进制（prepare 时在 desktop 目录安装）
   run('npm', ['install', '--no-save', '--no-package-lock', 'ffmpeg-static@5.2.0', 'ffprobe-static@3.1.0'], desktopRoot)
