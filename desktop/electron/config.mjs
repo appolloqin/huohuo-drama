@@ -1,16 +1,20 @@
-/** 桌面壳默认打开的线上控制台地址（可通过环境变量 HUOHUO_CONSOLE_URL 覆盖） */
+/** 桌面远程模式默认控制台地址（可通过 HUOHUO_CONSOLE_URL 或 settings.remoteUrl 覆盖） */
 export const DEFAULT_CONSOLE_URL = 'https://www.seeddrama.com/console/login'
 
-export function resolveConsoleUrl() {
+export function resolveRemoteConsoleUrl(preferred) {
   const fromEnv = process.env.HUOHUO_CONSOLE_URL?.trim()
-  if (fromEnv) {
-    try {
-      return new URL(fromEnv).href
-    } catch {
-      console.warn('[desktop] Invalid HUOHUO_CONSOLE_URL, using default')
-    }
+  const candidate = (fromEnv || preferred || DEFAULT_CONSOLE_URL).trim()
+  try {
+    return new URL(candidate).href
+  } catch {
+    console.warn('[desktop] Invalid console URL, using default')
+    return DEFAULT_CONSOLE_URL
   }
-  return DEFAULT_CONSOLE_URL
+}
+
+/** @deprecated 使用 resolveRemoteConsoleUrl */
+export function resolveConsoleUrl() {
+  return resolveRemoteConsoleUrl()
 }
 
 /** 允许在应用内跳转的 origin（与起始 URL 一致，避免外链在 WebView 内打开） */
