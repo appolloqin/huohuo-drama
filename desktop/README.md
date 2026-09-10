@@ -43,6 +43,8 @@ npm run prepare:runtime
 npm run dev
 ```
 
+Node 内嵌包优先从 `nodejs.org` 拉取；失败时回退 `npmmirror`（可用 `HUOHUO_NODE_DIST_BASE` 指定首选源）。
+
 未执行 `prepare:runtime` 时，开发态会尝试用**仓库根**作为 runtime（需本机已能跑 server，且 PATH 有 node；FFmpeg 可选）。完整本地体验请先 `prepare:runtime`。
 
 ## 打安装包
