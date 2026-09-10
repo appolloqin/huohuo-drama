@@ -49,6 +49,46 @@ async function download(url, dest) {
   await pipeline(res.body, createWriteStream(dest))
 }
 
+async function downloadWithMirrors(urls, dest) {
+  let lastErr
+  for (const url of urls) {
+    for (let attempt = 1; attempt <= 2; attempt++) {
+      try {
+        await download(url, dest)
+        return
+      } catch (err) {
+        lastErr = err
+        console.warn(
+          `[prepare-runtime] download failed attempt=${attempt} (${url}):`,
+          err instanceof Error ? err.message : err,
+        )
+        try {
+          if (existsSync(dest)) rmSync(dest, { force: true })
+        } catch {
+          /* ignore */
+        }
+        if (attempt < 2) {
+          await new Promise((r) => setTimeout(r, 1500 * attempt))
+        }
+      }
+    }
+  }
+  throw lastErr || new Error('All download mirrors failed')
+}
+
+function nodeDistUrls(archiveName) {
+  const ver = `v${NODE_VERSION}`
+  const primary = process.env.HUOHUO_NODE_DIST_BASE || 'https://nodejs.org/dist'
+  const mirrors = [
+    primary,
+    'https://npmmirror.com/mirrors/node',
+    'https://cdn.npmmirror.com/binaries/node',
+  ]
+  // de-dupe while preserving order
+  const bases = [...new Set(mirrors.map((b) => b.replace(/\/+$/, '')))]
+  return bases.map((base) => `${base}/${ver}/${archiveName}`)
+}
+
 function unpackZip(zipPath, destDir) {
   ensureDir(destDir)
   if (platform === 'win32') {
@@ -69,28 +109,24 @@ async function prepareNode() {
   const cache = path.join(desktopRoot, '.cache')
   ensureDir(cache)
 
-  let url
   let archiveName
   let binaryRel
   if (platform === 'win32') {
     archiveName = `node-v${NODE_VERSION}-win-${arch}.zip`
-    url = `https://nodejs.org/dist/v${NODE_VERSION}/${archiveName}`
     binaryRel = `node-v${NODE_VERSION}-win-${arch}/node.exe`
   } else if (platform === 'darwin') {
     const nodeArch = arch === 'arm64' ? 'arm64' : 'x64'
     archiveName = `node-v${NODE_VERSION}-darwin-${nodeArch}.tar.gz`
-    url = `https://nodejs.org/dist/v${NODE_VERSION}/${archiveName}`
     binaryRel = `node-v${NODE_VERSION}-darwin-${nodeArch}/bin/node`
   } else {
     const nodeArch = arch === 'arm64' ? 'arm64' : 'x64'
     archiveName = `node-v${NODE_VERSION}-linux-${nodeArch}.tar.gz`
-    url = `https://nodejs.org/dist/v${NODE_VERSION}/${archiveName}`
     binaryRel = `node-v${NODE_VERSION}-linux-${nodeArch}/bin/node`
   }
 
   const archivePath = path.join(cache, archiveName)
   if (!existsSync(archivePath)) {
-    await download(url, archivePath)
+    await downloadWithMirrors(nodeDistUrls(archiveName), archivePath)
   }
 
   const extractDir = path.join(cache, `node-extract-${platform}-${arch}`)
