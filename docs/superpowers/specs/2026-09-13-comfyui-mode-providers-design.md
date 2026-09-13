@@ -84,28 +84,35 @@ Spec: `GET {baseUrl}/system_stats`, optional Bearer from `api_key`. Do not alter
 - Per-config `settings.workflow` JSON override still keyed by node **title**.
 - **New validation** in `prepareGenerate` / build path: for the active mode provider, throw if required titled nodes are missing (today only `positive` throws; `load_image` / `first_frame` must become hard errors for i2i/i2v).
 
-### Mode detection (job signals)
+### Mode detection + style vs content refs
 
-Callers often prepend drama style via `applyStyleReferenceTo*`. Style-only must not flip mode.
+Callers often prepend drama style via `applyStyleReferenceTo*`. Style must not flip mode **and** must not be uploaded as the primary i2i/i2v conditioning image.
 
-**Image → `i2i` iff** after removing `styleReferenceUrl` (when known) from `referenceImages`, at least one URL remains. Otherwise `t2i`.
+**Central plumbing (preferred):** extend `applyStyleReferenceToImageGeneration` / `applyStyleReferenceToVideoGeneration` to stamp `styleReferenceUrl` on the params object whenever a style image is prepended. Downstream `generateImage` / `generateVideo` / Comfy adapters read that field — avoid relying on every route to remember an extra argument. Raw API callers that omit it: treat all listed refs as content.
+
+**Content refs** = listed URLs with `styleReferenceUrl` removed (when set).
+
+**Image → `i2i` iff** content refs length ≥ 1. Otherwise `t2i`.
 
 **Video → `i2v` iff** any of:
 
 - `firstFrameUrl` or `lastFrameUrl` set
 - `imageUrl` set
-- `referenceImageUrls` after removing `styleReferenceUrl` is non-empty  
+- content `referenceImageUrls` non-empty  
 
 Otherwise `t2v`.
 
-`generateImage` / `generateVideo` (or reconcile helper) accept optional `styleReferenceUrl` from route/drama layers when available; if omitted, treat all listed refs as content (safer for raw API callers).
+**Image input mapping (adapter `prepareGenerate`):**
+
+- **t2i:** do not upload style or content refs to `load_image` (graph has no required image input). Style remains prompt-prefix only unless a future optional titled node is added (out of scope).
+- **i2i:** upload the **first content ref** to `load_image` — never `referenceImages[0]` when that slot is the style URL. If multiple content refs exist, v1 uses the first only (same as today’s single-upload behavior).
 
 **Video input mapping (i2v):**
 
 - Prefer `firstFrameUrl` → upload/`first_frame`
-- Else `imageUrl` or first content `referenceImageUrls[]` → upload as `first_frame` (and also `load_image` if that title exists in the graph)
+- Else `imageUrl` or first **content** `referenceImageUrls[]` → upload as `first_frame` (and also `load_image` if that title exists in the graph)
 - `lastFrameUrl` → `last_frame` when present
-- Style-only URL is not required to upload for t2v; for i2v content frames take priority
+- **t2v:** do not upload style-only refs as frames; prompt-prefix only
 
 ### Runtime config selection (Comfy reconcile)
 
