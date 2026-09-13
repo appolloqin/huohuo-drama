@@ -22,7 +22,27 @@ export type ComfyHistoryMedia = {
   error?: string
 }
 
-const DEFAULT_IMAGE_WORKFLOW: ComfyGraph = {
+export type ComfyMode = 't2i' | 'i2i' | 't2v' | 'i2v'
+
+const DEFAULT_T2I_WORKFLOW: ComfyGraph = {
+  '6': {
+    class_type: 'CLIPTextEncode',
+    _meta: { title: 'positive' },
+    inputs: { text: '', clip: ['4', 1] },
+  },
+  '7': {
+    class_type: 'CLIPTextEncode',
+    _meta: { title: 'negative' },
+    inputs: { text: '', clip: ['4', 1] },
+  },
+  '9': {
+    class_type: 'SaveImage',
+    _meta: { title: 'save_image' },
+    inputs: { filename_prefix: 'huohuo', images: ['6', 0] },
+  },
+}
+
+const DEFAULT_I2I_WORKFLOW: ComfyGraph = {
   '6': {
     class_type: 'CLIPTextEncode',
     _meta: { title: 'positive' },
@@ -45,7 +65,30 @@ const DEFAULT_IMAGE_WORKFLOW: ComfyGraph = {
   },
 }
 
-const DEFAULT_VIDEO_WORKFLOW: ComfyGraph = {
+const DEFAULT_T2V_WORKFLOW: ComfyGraph = {
+  '6': {
+    class_type: 'CLIPTextEncode',
+    _meta: { title: 'positive' },
+    inputs: { text: '', clip: ['4', 1] },
+  },
+  '7': {
+    class_type: 'CLIPTextEncode',
+    _meta: { title: 'negative' },
+    inputs: { text: '', clip: ['4', 1] },
+  },
+  '14': {
+    class_type: 'PrimitiveInt',
+    _meta: { title: 'duration' },
+    inputs: { value: 5 },
+  },
+  '9': {
+    class_type: 'SaveImage',
+    _meta: { title: 'save_video' },
+    inputs: { filename_prefix: 'huohuo', images: ['6', 0] },
+  },
+}
+
+const DEFAULT_I2V_WORKFLOW: ComfyGraph = {
   '6': {
     class_type: 'CLIPTextEncode',
     _meta: { title: 'positive' },
@@ -83,6 +126,20 @@ const DEFAULT_VIDEO_WORKFLOW: ComfyGraph = {
   },
 }
 
+const DEFAULT_WORKFLOWS: Record<ComfyMode, ComfyGraph> = {
+  t2i: DEFAULT_T2I_WORKFLOW,
+  i2i: DEFAULT_I2I_WORKFLOW,
+  t2v: DEFAULT_T2V_WORKFLOW,
+  i2v: DEFAULT_I2V_WORKFLOW,
+}
+
+const REQUIRED_COMFY_TITLES: Record<ComfyMode, string[]> = {
+  t2i: ['positive'],
+  i2i: ['positive', 'load_image'],
+  t2v: ['positive'],
+  i2v: ['positive', 'first_frame'],
+}
+
 function nodeTitle(node: ComfyNode): string {
   return String(node._meta?.title || node.title || '').trim().toLowerCase()
 }
@@ -116,8 +173,10 @@ function parseWorkflowJson(raw: unknown): ComfyGraph | null {
 
 export function resolveComfyuiWorkflow(
   settings: string | Record<string, unknown> | null | undefined,
-  kind: 'image' | 'video',
+  mode: ComfyMode | 'image' | 'video',
 ): ComfyGraph {
+  const normalized: ComfyMode =
+    mode === 'image' ? 't2i' : mode === 'video' ? 't2v' : mode
   let parsed: Record<string, unknown> = {}
   if (typeof settings === 'string' && settings.trim()) {
     try {
@@ -129,7 +188,25 @@ export function resolveComfyuiWorkflow(
     parsed = settings as Record<string, unknown>
   }
   const custom = parseWorkflowJson(parsed.workflow)
-  return cloneGraph(custom || (kind === 'video' ? DEFAULT_VIDEO_WORKFLOW : DEFAULT_IMAGE_WORKFLOW))
+  return cloneGraph(custom || DEFAULT_WORKFLOWS[normalized])
+}
+
+export function assertComfyRequiredTitles(graph: ComfyGraph, mode: ComfyMode): void {
+  const titles = new Set(Object.values(graph).map((n) => nodeTitle(n)))
+  for (const need of REQUIRED_COMFY_TITLES[mode]) {
+    if (!titles.has(need)) {
+      throw new Error(`ComfyUI workflow 缺少标题为 ${need} 的节点（模式 ${mode}）`)
+    }
+  }
+}
+
+export function comfyModeFromProvider(provider: string, fallback: ComfyMode): ComfyMode {
+  const p = provider.toLowerCase()
+  if (p === 'comfyui-t2i') return 't2i'
+  if (p === 'comfyui-i2i') return 'i2i'
+  if (p === 'comfyui-t2v') return 't2v'
+  if (p === 'comfyui-i2v') return 'i2v'
+  return fallback
 }
 
 export function applyComfyuiTitleInputs(graph: ComfyGraph, values: ComfyTitleInputs): ComfyGraph {
