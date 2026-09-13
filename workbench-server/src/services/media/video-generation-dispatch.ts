@@ -28,6 +28,17 @@ async function resolveRecordVideoGenOptions(record: NonNullable<Awaited<ReturnTy
   return readVideoGenOptionsFromMetadata(ep?.metadata)
 }
 
+function parseStyleReferenceUrl(style: string | null | undefined): string | undefined {
+  if (!style) return undefined
+  try {
+    const parsed = JSON.parse(style)
+    if (parsed && typeof parsed.style_reference_url === 'string' && parsed.style_reference_url) {
+      return parsed.style_reference_url
+    }
+  } catch {}
+  return undefined
+}
+
 export async function runVideoGenerationJob(id: number, config: AIConfig) {
   const adapter = getVideoAdapter(config.provider)
 
@@ -59,6 +70,7 @@ export async function runVideoGenerationJob(id: number, config: AIConfig) {
       aspectRatio: record.aspectRatio,
       generateAudio: videoGenOptions.generate_audio,
       generateSubtitles: videoGenOptions.generate_subtitles,
+      styleReferenceUrl: parseStyleReferenceUrl(record.style) ?? null,
     }
     if (adapter.prepareGenerate) {
       await adapter.prepareGenerate(config, clip)
