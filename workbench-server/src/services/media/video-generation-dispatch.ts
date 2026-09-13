@@ -7,7 +7,11 @@ import { getVideoAdapter } from '../ai/adapters/registry.js'
 import { resolveRelativeMediaUrl } from '../ai/adapters/comfyui-workflow.js'
 import type { AIConfig } from '../ai/adapters/types.js'
 import { logTaskError, logTaskPayload, logTaskProgress, redactUrl } from '../../common/task/task-logger.js'
-import { normalizeMediaReference, normalizeMediaReferenceList } from './media-reference.js'
+import {
+  normalizeMediaReference,
+  normalizeMediaReferenceList,
+  stripStyleReferenceFromListJson,
+} from './media-reference.js'
 import { finalizeVideoFromUrl } from '../drama/generation-finalizer.js'
 import { formatVideoApiError } from '../../common/media/video-api-errors.js'
 import { pollVideoGeneration } from './video-generation-poll.js'
@@ -55,6 +59,8 @@ export async function runVideoGenerationJob(id: number, config: AIConfig) {
       referenceMode: record.referenceMode,
     })
 
+    const styleReferenceUrl = parseStyleReferenceUrl(record.style) ?? null
+    const contentRefsJson = stripStyleReferenceFromListJson(record.referenceImageUrls, styleReferenceUrl)
     const clip = {
       id: record.id,
       model: record.model,
@@ -64,13 +70,14 @@ export async function runVideoGenerationJob(id: number, config: AIConfig) {
       firstFrameUrl: await normalizeMediaReference(record.firstFrameUrl, 'VideoTask'),
       lastFrameUrl: await normalizeMediaReference(record.lastFrameUrl, 'VideoTask'),
       referenceImageUrls: JSON.stringify(
-        await normalizeMediaReferenceList(record.referenceImageUrls, 'VideoTask'),
+        await normalizeMediaReferenceList(contentRefsJson, 'VideoTask'),
       ),
       duration: record.duration,
       aspectRatio: record.aspectRatio,
       generateAudio: videoGenOptions.generate_audio,
       generateSubtitles: videoGenOptions.generate_subtitles,
-      styleReferenceUrl: parseStyleReferenceUrl(record.style) ?? null,
+      // Style already stripped from reference list before normalize (static/ → data URL).
+      styleReferenceUrl: null,
     }
     if (adapter.prepareGenerate) {
       await adapter.prepareGenerate(config, clip)

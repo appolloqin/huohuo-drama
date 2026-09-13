@@ -30,6 +30,26 @@ export async function normalizeMediaReference(value: string | null | undefined, 
   return raw
 }
 
+/**
+ * Drop the drama style URL from a JSON ref list **before** normalizeMediaReferenceList.
+ * After normalize, static/ paths become data URLs and can no longer match styleReferenceUrl.
+ */
+export function stripStyleReferenceFromListJson(
+  raw: string | null | undefined,
+  styleReferenceUrl?: string | null,
+): string | null {
+  if (!raw) return null
+  if (!styleReferenceUrl) return raw
+  try {
+    const parsed = JSON.parse(raw)
+    if (!Array.isArray(parsed)) return raw
+    const next = parsed.map((item) => String(item || '').trim()).filter((u) => u && u !== styleReferenceUrl)
+    return next.length ? JSON.stringify(next) : null
+  } catch {
+    return raw
+  }
+}
+
 export async function normalizeMediaReferenceList(
   raw: string | null | undefined,
   scope: string,
