@@ -1208,10 +1208,10 @@
             placeholder="768P"
           />
         </label>
-        <label v-if="serviceConfigFormState.provider === 'comfyui'" class="field">
+        <label v-if="isComfyFamilyProvider(serviceConfigFormState.provider)" class="field">
           <span class="field-label">{{ tm.settings.comfyuiWorkflow }}</span>
           <textarea v-model="serviceConfigFormState.workflow" class="input" rows="8" :placeholder="tm.settings.comfyuiWorkflowPlaceholder" />
-          <p class="field-hint">{{ tm.settings.comfyuiWorkflowHint }}</p>
+          <p class="field-hint">{{ comfyuiWorkflowHintText }}</p>
         </label>
         <div v-if="serviceConfigFormState.service_type === 'text'" class="field-row">
           <label class="field">
@@ -1877,8 +1877,8 @@ const serviceTypes = computed(() => [
 ])
 const providersByServiceType = {
   text: ['ali', 'deepseek', 'huohuo', 'gemini', 'minimax', 'openai', 'openrouter', 'volcengine'],
-  image: ['ali', 'huohuo', 'gemini', 'minimax', 'openai', 'openrouter', 'vidu', 'volcengine', 'comfyui'],
-  video: ['ali', 'huohuo', 'gemini', 'minimax', 'minimax-h3', 'openai', 'openrouter', 'vidu', 'volcengine', 'comfyui'],
+  image: ['ali', 'huohuo', 'gemini', 'minimax', 'openai', 'openrouter', 'vidu', 'volcengine', 'comfyui-t2i', 'comfyui-i2i'],
+  video: ['ali', 'huohuo', 'gemini', 'minimax', 'minimax-h3', 'openai', 'openrouter', 'vidu', 'volcengine', 'comfyui-t2v', 'comfyui-i2v'],
   audio: ['ali', 'huohuo', 'gemini', 'minimax', 'openai', 'openrouter', 'volcengine'],
 }
 const providerLabelKeys = {
@@ -1893,14 +1893,33 @@ const providerLabelKeys = {
   volcengine: 'providerVolcengine',
   vidu: 'providerVidu',
   comfyui: 'providerComfyui',
+  'comfyui-t2i': 'providerComfyuiT2i',
+  'comfyui-i2i': 'providerComfyuiI2i',
+  'comfyui-t2v': 'providerComfyuiT2v',
+  'comfyui-i2v': 'providerComfyuiI2v',
+}
+function isComfyFamilyProvider(p: string) {
+  const x = (p || '').toLowerCase()
+  return x === 'comfyui' || x.startsWith('comfyui-')
 }
 function formatProviderLabel(provider) {
   const key = providerLabelKeys[provider]
   return key ? (tm.value.settings[key] || provider) : provider
 }
 const providerPickerOptions = computed(() => {
-  const list = providersByServiceType[serviceConfigFormState.service_type] || providersByServiceType.text
+  const list = [...(providersByServiceType[serviceConfigFormState.service_type] || providersByServiceType.text)]
+  const current = serviceConfigFormState.provider
+  if (current && !list.includes(current)) list.push(current)
   return list.map(p => ({ label: formatProviderLabel(p), value: p }))
+})
+const comfyuiWorkflowHintText = computed(() => {
+  const s = tm.value.settings
+  const p = (serviceConfigFormState.provider || '').toLowerCase()
+  if (p === 'comfyui-t2i') return s.comfyuiWorkflowHintT2i
+  if (p === 'comfyui-i2i') return s.comfyuiWorkflowHintI2i
+  if (p === 'comfyui-t2v') return s.comfyuiWorkflowHintT2v
+  if (p === 'comfyui-i2v') return s.comfyuiWorkflowHintI2v
+  return s.comfyuiWorkflowHint
 })
 const serviceTypeMeta = computed(() => ({
   text: { label: tm.value.settings.serviceMetaTextLabel, desc: tm.value.settings.serviceMetaTextDesc },
@@ -1925,13 +1944,15 @@ const providerPresetCatalog = computed(() => {
       { provider: 'volcengine', label: s.arkDirect, baseUrl: 'https://ark.cn-beijing.volces.com', models: ['doubao-seedream-4-0-250828'], creditCost: 10 },
       { provider: 'huohuo', label: s.geminiRecommended, baseUrl: 'https://huo.hcpzy.com/v1', models: ['gemini-3-pro-image-preview'], creditCost: 10 },
       { provider: 'minimax', label: s.minimaxOfficial, baseUrl: 'https://api.minimaxi.com', models: ['image-01'], creditCost: 10 },
-      { provider: 'comfyui', label: s.comfyuiLocal, baseUrl: 'http://127.0.0.1:8188', models: ['comfyui'], creditCost: 0 },
+      { provider: 'comfyui-t2i', label: s.comfyuiT2i, baseUrl: 'http://127.0.0.1:8188', models: ['comfyui-t2i'], creditCost: 0 },
+      { provider: 'comfyui-i2i', label: s.comfyuiI2i, baseUrl: 'http://127.0.0.1:8188', models: ['comfyui-i2i'], creditCost: 0 },
     ],
     video: {
       huohuo: { label: s.huohuoVideo, baseUrl: 'https://huo.hcpzy.com/v1', models: ['doubao-seedance-2-0-fast-260128', 'doubao-seedance-2-0-260128', 'doubao-seedance-1-5-pro-251215'], creditCost: 30 },
       minimax: { label: s.minimaxOfficial, baseUrl: 'https://api.minimaxi.com', models: ['MiniMax-Hailuo-2.3'], creditCost: 30 },
       'minimax-h3': { label: s.minimaxH3Official, baseUrl: 'https://api.minimaxi.com', models: ['MiniMax-H3'], creditCost: 30 },
-      comfyui: { label: s.comfyuiLocal, baseUrl: 'http://127.0.0.1:8188', models: ['comfyui'], creditCost: 0 },
+      'comfyui-t2v': { label: s.comfyuiT2v, baseUrl: 'http://127.0.0.1:8188', models: ['comfyui-t2v'], creditCost: 0 },
+      'comfyui-i2v': { label: s.comfyuiI2v, baseUrl: 'http://127.0.0.1:8188', models: ['comfyui-i2v'], creditCost: 0 },
       vidu: { label: s.viduRecommended, baseUrl: 'https://api.vidu.com', models: ['viduq3-turbo'], creditCost: 30 },
       ali: { label: s.aliRecommended, baseUrl: 'https://dashscope.aliyuncs.com', models: ['wan2.6-i2v-flash'], creditCost: 30 },
     },
@@ -2402,7 +2423,7 @@ function buildServiceConfigPayload() {
   }
   const extra = {
     credit_cost: serviceConfigFormState.credit_cost || 0,
-    workflow: serviceConfigFormState.provider === 'comfyui' ? (serviceConfigFormState.workflow?.trim() || '') : undefined,
+    workflow: isComfyFamilyProvider(serviceConfigFormState.provider) ? (serviceConfigFormState.workflow?.trim() || '') : undefined,
     resolution: serviceConfigFormState.provider === 'minimax-h3' ? (serviceConfigFormState.resolution || '768P') : undefined,
   }
   return { ...base, ...extra }
