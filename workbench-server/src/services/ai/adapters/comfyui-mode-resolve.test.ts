@@ -4,10 +4,12 @@ import {
   contentRefUrls,
   detectComfyImageMode,
   detectComfyVideoMode,
+  firstContentImageRef,
   isComfyFamilyProvider,
   preferredComfyProvider,
   pickComfySiblingConfig,
   reconcileComfyDecision,
+  resolveComfyVideoUploadSources,
   resolveRuntimeComfyMode,
   throwIfReconcileError,
 } from './comfyui-mode-resolve.js'
@@ -111,5 +113,52 @@ describe('comfyui-mode-resolve', () => {
     assert.equal(resolveRuntimeComfyMode('comfyui-i2v', 't2v'), 'i2v')
     assert.equal(resolveRuntimeComfyMode('comfyui', 'i2i'), 'i2i')
     assert.equal(resolveRuntimeComfyMode('comfyui', 't2v'), 't2v')
+  })
+
+  it('firstContentImageRef skips style URL at [0]', () => {
+    assert.equal(firstContentImageRef(['style.png', 'face.png'], 'style.png'), 'face.png')
+  })
+
+  it('firstContentImageRef returns undefined for style-only', () => {
+    assert.equal(firstContentImageRef(['style.png'], 'style.png'), undefined)
+  })
+
+  it('resolveComfyVideoUploadSources prefers firstFrameUrl without loadImage', () => {
+    assert.deepEqual(
+      resolveComfyVideoUploadSources({
+        firstFrameUrl: 'first.png',
+        imageUrl: 'img.png',
+        referenceImageUrls: ['style.png', 'face.png'],
+        styleReferenceUrl: 'style.png',
+      }),
+      { firstFrame: 'first.png' },
+    )
+  })
+
+  it('resolveComfyVideoUploadSources uses imageUrl as first_frame + load_image', () => {
+    assert.deepEqual(
+      resolveComfyVideoUploadSources({ imageUrl: 'img.png', lastFrameUrl: 'last.png' }),
+      { firstFrame: 'img.png', loadImage: 'img.png', lastFrame: 'last.png' },
+    )
+  })
+
+  it('resolveComfyVideoUploadSources uses first content ref, not style', () => {
+    assert.deepEqual(
+      resolveComfyVideoUploadSources({
+        referenceImageUrls: ['style.png', 'face.png'],
+        styleReferenceUrl: 'style.png',
+      }),
+      { firstFrame: 'face.png', loadImage: 'face.png' },
+    )
+  })
+
+  it('resolveComfyVideoUploadSources is empty for style-only refs', () => {
+    assert.deepEqual(
+      resolveComfyVideoUploadSources({
+        referenceImageUrls: ['style.png'],
+        styleReferenceUrl: 'style.png',
+      }),
+      {},
+    )
   })
 })

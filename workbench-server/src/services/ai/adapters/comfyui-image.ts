@@ -10,6 +10,7 @@ import type {
 } from './image-contracts.js'
 import {
   applyComfyuiTitleInputs,
+  assertComfyRequiredTitles,
   comfyAuthHeaders,
   formatComfyNodeErrors,
   joinComfyUrl,
@@ -17,6 +18,11 @@ import {
   resolveComfyuiWorkflow,
 } from './comfyui-workflow.js'
 import { consumeComfyUploads, uploadComfyuiImageFromUrl } from './comfyui-upload.js'
+import {
+  detectComfyImageMode,
+  firstContentImageRef,
+  resolveRuntimeComfyMode,
+} from './comfyui-mode-resolve.js'
 
 function parseRefList(raw?: string | null): string[] {
   if (!raw) return []
@@ -28,6 +34,11 @@ function parseRefList(raw?: string | null): string[] {
   }
 }
 
+function resolveImageMode(cfg: AIConfig, record: ImageGenerationRecord) {
+  const detected = detectComfyImageMode(parseRefList(record.referenceImages), record.styleReferenceUrl)
+  return resolveRuntimeComfyMode(cfg.provider, detected)
+}
+
 export class ComfyUIImageAdapter implements ImageProviderAdapter {
   readonly provider: string
 
@@ -36,15 +47,22 @@ export class ComfyUIImageAdapter implements ImageProviderAdapter {
   }
 
   async prepareGenerate(cfg: AIConfig, record: ImageGenerationRecord): Promise<void> {
-    const refs = parseRefList(record.referenceImages)
-    if (!refs[0]) return
-    const name = await uploadComfyuiImageFromUrl(cfg, refs[0], `huohuo-img-${record.id}.png`)
+    const mode = resolveImageMode(cfg, record)
+    if (mode === 't2i') return
+    const src = firstContentImageRef(parseRefList(record.referenceImages), record.styleReferenceUrl)
+    if (!src) throw new Error('图生图需要内容参考图')
+    const name = await uploadComfyuiImageFromUrl(cfg, src, `huohuo-img-${record.id}.png`)
     consumeComfyUploads(record.id, { loadImage: name }, 'write')
   }
 
   buildGenerateRequest(cfg: AIConfig, record: ImageGenerationRecord): ProviderRequest {
+    const mode = resolveImageMode(cfg, record)
     const uploads = consumeComfyUploads(record.id, {}, 'read')
-    const graph = applyComfyuiTitleInputs(resolveComfyuiWorkflow(cfg.settings, 'image'), {
+    const graph = resolveComfyuiWorkflow(cfg.settings, mode)
+    if (cfg.provider.toLowerCase() !== 'comfyui') {
+      assertComfyRequiredTitles(graph, mode)
+    }
+    const promptGraph = applyComfyuiTitleInputs(graph, {
       prompt: record.prompt || '',
       loadImage: uploads.loadImage,
     })
@@ -52,7 +70,7 @@ export class ComfyUIImageAdapter implements ImageProviderAdapter {
       url: joinComfyUrl(cfg.baseUrl, '/prompt'),
       method: 'POST',
       headers: comfyAuthHeaders(cfg.apiKey, true),
-      body: { prompt: graph, client_id: 'huohuo-drama' },
+      body: { prompt: promptGraph, client_id: 'huohuo-drama' },
     }
   }
 
