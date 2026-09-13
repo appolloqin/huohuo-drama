@@ -10,6 +10,7 @@ import type {
 } from './video-contracts.js'
 import {
   applyComfyuiTitleInputs,
+  assertComfyRequiredTitles,
   comfyAuthHeaders,
   formatComfyNodeErrors,
   joinComfyUrl,
@@ -17,6 +18,11 @@ import {
   resolveComfyuiWorkflow,
 } from './comfyui-workflow.js'
 import { consumeComfyUploads, uploadComfyuiImageFromUrl } from './comfyui-upload.js'
+import {
+  detectComfyVideoMode,
+  resolveComfyVideoUploadSources,
+  resolveRuntimeComfyMode,
+} from './comfyui-mode-resolve.js'
 
 function parseRefList(raw?: string | null): string[] {
   if (!raw) return []
@@ -28,6 +34,17 @@ function parseRefList(raw?: string | null): string[] {
   }
 }
 
+function resolveVideoMode(cfg: AIConfig, record: VideoGenerationRecord) {
+  const detected = detectComfyVideoMode({
+    imageUrl: record.imageUrl,
+    firstFrameUrl: record.firstFrameUrl,
+    lastFrameUrl: record.lastFrameUrl,
+    referenceImageUrls: parseRefList(record.referenceImageUrls),
+    styleReferenceUrl: record.styleReferenceUrl,
+  })
+  return resolveRuntimeComfyMode(cfg.provider, detected)
+}
+
 export class ComfyUIVideoAdapter implements VideoProviderAdapter {
   readonly provider: string
 
@@ -36,24 +53,48 @@ export class ComfyUIVideoAdapter implements VideoProviderAdapter {
   }
 
   async prepareGenerate(cfg: AIConfig, record: VideoGenerationRecord): Promise<void> {
-    const refs = parseRefList(record.referenceImageUrls)
-    const loadSrc = record.imageUrl || refs[0]
+    const mode = resolveVideoMode(cfg, record)
+    if (mode === 't2v') return
+
+    const sources = resolveComfyVideoUploadSources({
+      imageUrl: record.imageUrl,
+      firstFrameUrl: record.firstFrameUrl,
+      lastFrameUrl: record.lastFrameUrl,
+      referenceImageUrls: parseRefList(record.referenceImageUrls),
+      styleReferenceUrl: record.styleReferenceUrl,
+    })
+    if (!sources.firstFrame && !sources.lastFrame) {
+      throw new Error('图生视频需要首帧或内容参考图')
+    }
+
     const uploads: { loadImage?: string; firstFrame?: string; lastFrame?: string } = {}
-    if (loadSrc) {
-      uploads.loadImage = await uploadComfyuiImageFromUrl(cfg, loadSrc, `huohuo-vid-${record.id}.png`)
+    if (sources.firstFrame) {
+      const name = await uploadComfyuiImageFromUrl(
+        cfg,
+        sources.firstFrame,
+        `huohuo-vid-${record.id}-first.png`,
+      )
+      uploads.firstFrame = name
+      if (sources.loadImage) uploads.loadImage = name
     }
-    if (record.firstFrameUrl) {
-      uploads.firstFrame = await uploadComfyuiImageFromUrl(cfg, record.firstFrameUrl, `huohuo-vid-${record.id}-first.png`)
-    }
-    if (record.lastFrameUrl) {
-      uploads.lastFrame = await uploadComfyuiImageFromUrl(cfg, record.lastFrameUrl, `huohuo-vid-${record.id}-last.png`)
+    if (sources.lastFrame) {
+      uploads.lastFrame = await uploadComfyuiImageFromUrl(
+        cfg,
+        sources.lastFrame,
+        `huohuo-vid-${record.id}-last.png`,
+      )
     }
     consumeComfyUploads(record.id, uploads, 'write')
   }
 
   buildGenerateRequest(cfg: AIConfig, record: VideoGenerationRecord): ProviderRequest {
+    const mode = resolveVideoMode(cfg, record)
     const uploads = consumeComfyUploads(record.id, {}, 'read')
-    const graph = applyComfyuiTitleInputs(resolveComfyuiWorkflow(cfg.settings, 'video'), {
+    const graph = resolveComfyuiWorkflow(cfg.settings, mode)
+    if (cfg.provider.toLowerCase() !== 'comfyui') {
+      assertComfyRequiredTitles(graph, mode)
+    }
+    const promptGraph = applyComfyuiTitleInputs(graph, {
       prompt: record.prompt || '',
       loadImage: uploads.loadImage,
       firstFrame: uploads.firstFrame,
@@ -64,7 +105,7 @@ export class ComfyUIVideoAdapter implements VideoProviderAdapter {
       url: joinComfyUrl(cfg.baseUrl, '/prompt'),
       method: 'POST',
       headers: comfyAuthHeaders(cfg.apiKey, true),
-      body: { prompt: graph, client_id: 'huohuo-drama' },
+      body: { prompt: promptGraph, client_id: 'huohuo-drama' },
     }
   }
 

@@ -36,6 +36,45 @@ export function contentRefUrls(
   return list.filter((u) => u !== styleReferenceUrl)
 }
 
+/** First non-style reference URL for i2i / i2v conditioning uploads. */
+export function firstContentImageRef(
+  urls: string[] | undefined,
+  styleReferenceUrl?: string | null,
+): string | undefined {
+  return contentRefUrls(urls, styleReferenceUrl)[0]
+}
+
+export type ComfyVideoUploadSources = {
+  firstFrame?: string
+  lastFrame?: string
+  /** Set when first frame comes from imageUrl / content ref (not explicit firstFrameUrl). */
+  loadImage?: string
+}
+
+/** Pure source URLs for i2v uploads (before Comfy /upload). */
+export function resolveComfyVideoUploadSources(input: {
+  imageUrl?: string | null
+  firstFrameUrl?: string | null
+  lastFrameUrl?: string | null
+  referenceImageUrls?: string[]
+  styleReferenceUrl?: string | null
+}): ComfyVideoUploadSources {
+  const out: ComfyVideoUploadSources = {}
+  if (input.firstFrameUrl) {
+    out.firstFrame = input.firstFrameUrl
+  } else {
+    const src = input.imageUrl || firstContentImageRef(input.referenceImageUrls, input.styleReferenceUrl)
+    if (src) {
+      out.firstFrame = src
+      out.loadImage = src
+    }
+  }
+  if (input.lastFrameUrl) {
+    out.lastFrame = input.lastFrameUrl
+  }
+  return out
+}
+
 export function detectComfyImageMode(
   referenceImages: string[] | undefined,
   styleReferenceUrl?: string | null,
