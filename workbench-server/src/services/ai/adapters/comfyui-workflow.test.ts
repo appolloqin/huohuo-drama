@@ -2,6 +2,7 @@ import assert from 'node:assert/strict'
 import { describe, it } from 'node:test'
 import {
   applyComfyuiTitleInputs,
+  assertComfyRequiredTitles,
   parseComfyuiHistoryMedia,
   resolveComfyuiWorkflow,
 } from './comfyui-workflow.js'
@@ -42,6 +43,50 @@ describe('comfyui-workflow', () => {
     const graph = resolveComfyuiWorkflow(null, 'image')
     const titles = Object.values(graph).map((n) => String(n._meta?.title || n.title || ''))
     assert.equal(titles.includes('positive'), true)
+    assert.equal(titles.includes('load_image'), false)
+  })
+
+  it('t2i default has positive but not load_image', () => {
+    const titles = Object.values(resolveComfyuiWorkflow(null, 't2i')).map((n) =>
+      String(n._meta?.title || ''),
+    )
+    assert.equal(titles.includes('positive'), true)
+    assert.equal(titles.includes('load_image'), false)
+  })
+
+  it('i2i default includes load_image', () => {
+    const titles = Object.values(resolveComfyuiWorkflow(null, 'i2i')).map((n) =>
+      String(n._meta?.title || ''),
+    )
+    assert.equal(titles.includes('load_image'), true)
+  })
+
+  it('t2v default has no first_frame', () => {
+    const titles = Object.values(resolveComfyuiWorkflow(null, 't2v')).map((n) =>
+      String(n._meta?.title || ''),
+    )
+    assert.equal(titles.includes('first_frame'), false)
+  })
+
+  it('i2v default includes first_frame', () => {
+    const titles = Object.values(resolveComfyuiWorkflow(null, 'i2v')).map((n) =>
+      String(n._meta?.title || ''),
+    )
+    assert.equal(titles.includes('first_frame'), true)
+  })
+
+  it('assertComfyRequiredTitles fails i2i without load_image', () => {
+    assert.throws(
+      () => assertComfyRequiredTitles({ '1': { _meta: { title: 'positive' }, inputs: {} } }, 'i2i'),
+      /load_image/,
+    )
+  })
+
+  it('assertComfyRequiredTitles fails i2v without first_frame', () => {
+    assert.throws(
+      () => assertComfyRequiredTitles({ '1': { _meta: { title: 'positive' }, inputs: {} } }, 'i2v'),
+      /first_frame/,
+    )
   })
 
   it('builds a /view URL from history outputs', () => {
