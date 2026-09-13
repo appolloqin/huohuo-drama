@@ -46,7 +46,9 @@ class VendorAdapterRegistry {
       volcengine: new VolcEngineImageAdapter(),
       ali: new AliImageAdapter(),
       huohuo: new OpenAIImageAdapter(),
-      comfyui: new ComfyUIImageAdapter(),
+      comfyui: new ComfyUIImageAdapter('comfyui'),
+      'comfyui-t2i': new ComfyUIImageAdapter('comfyui-t2i'),
+      'comfyui-i2i': new ComfyUIImageAdapter('comfyui-i2i'),
     })
   }
 
@@ -57,7 +59,9 @@ class VendorAdapterRegistry {
       vidu: new ViduVideoAdapter(),
       ali: new AliVideoAdapter(),
       'minimax-h3': new MiniMaxH3VideoAdapter(),
-      comfyui: new ComfyUIVideoAdapter(),
+      comfyui: new ComfyUIVideoAdapter('comfyui'),
+      'comfyui-t2v': new ComfyUIVideoAdapter('comfyui-t2v'),
+      'comfyui-i2v': new ComfyUIVideoAdapter('comfyui-i2v'),
     })
   }
 

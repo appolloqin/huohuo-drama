@@ -111,4 +111,17 @@ describe('comfyui-workflow', () => {
     assert.equal(getVideoAdapter('comfyui').provider, 'comfyui')
     assert.equal(getImageAdapter('minimax').provider, 'minimax')
   })
+
+  it('registers all ComfyUI mode image adapters', () => {
+    for (const p of ['comfyui', 'comfyui-t2i', 'comfyui-i2i']) {
+      assert.equal(getImageAdapter(p).provider, p)
+    }
+    assert.notEqual(getImageAdapter('comfyui-t2i').provider, 'minimax')
+  })
+
+  it('registers all ComfyUI mode video adapters', () => {
+    for (const p of ['comfyui', 'comfyui-t2v', 'comfyui-i2v']) {
+      assert.equal(getVideoAdapter(p).provider, p)
+    }
+  })
 })
