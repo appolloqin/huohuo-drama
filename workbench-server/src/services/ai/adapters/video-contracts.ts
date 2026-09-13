@@ -15,6 +15,7 @@ export interface VideoGenerationRecord {
   aspectRatio?: string | null
   generateAudio?: boolean | null
   generateSubtitles?: boolean | null
+  styleReferenceUrl?: string | null
 }
 
 // ── 厂商响应解析结果 ───────────────────────────────────────────

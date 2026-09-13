@@ -9,6 +9,7 @@ export interface ImageGenerationRecord {
   size?: string | null
   frameType?: string | null
   referenceImages?: string | null
+  styleReferenceUrl?: string | null
 }
 
 // ── 厂商响应解析结果 ───────────────────────────────────────────

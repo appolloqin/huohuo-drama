@@ -2,9 +2,14 @@ import * as videoGenerationsRepo from '../../db/repos/video-generations/index.js
 import { now } from '../../common/http/response.js'
 import { resolveUserServiceConfig, shouldChargeServiceGeneration, type ConfigResolveOpts } from '../ai/ai.js'
 import type { AIConfig } from '../ai/ai.js'
-import { logTaskError, logTaskPayload, logTaskStart } from '../../common/task/task-logger.js'
+import { logTaskError, logTaskPayload, logTaskProgress, logTaskStart } from '../../common/task/task-logger.js'
 import { consumeCredits, resolveCreditCostFromConfig } from '../credits/credits.js'
 import { runVideoGenerationJob } from './video-generation-dispatch.js'
+import {
+  detectComfyVideoMode,
+  isComfyFamilyProvider,
+} from '../ai/adapters/comfyui-mode-resolve.js'
+import { reconcileComfyServiceConfig } from '../ai/comfyui-mode-reconcile.js'
 
 export interface GenerateVideoParams {
   userId?: number
@@ -18,6 +23,7 @@ export interface GenerateVideoParams {
   firstFrameUrl?: string
   lastFrameUrl?: string
   referenceImageUrls?: string[]
+  styleReferenceUrl?: string
   duration?: number
   aspectRatio?: string
   configId?: number
@@ -43,6 +49,7 @@ async function insertVideoJob(params: GenerateVideoParams, config: AIConfig): Pr
     style: JSON.stringify({
       generate_audio: params.generateAudio !== false,
       generate_subtitles: params.generateSubtitles === true,
+      ...(params.styleReferenceUrl ? { style_reference_url: params.styleReferenceUrl } : {}),
     }),
     status: 'processing',
     createdAt: timestamp,
@@ -57,10 +64,24 @@ export async function generateVideo(params: GenerateVideoParams): Promise<number
     ? { userId: params.userId, role: params.userRole }
     : undefined
 
-  const { config, source } = await resolveUserServiceConfig('video', {
+  let { config, source } = await resolveUserServiceConfig('video', {
     ...configOpts,
     configId: params.configId,
   })
+  const before = config.provider
+  if (isComfyFamilyProvider(config.provider)) {
+    const mode = detectComfyVideoMode({
+      imageUrl: params.imageUrl,
+      firstFrameUrl: params.firstFrameUrl,
+      lastFrameUrl: params.lastFrameUrl,
+      referenceImageUrls: params.referenceImageUrls,
+      styleReferenceUrl: params.styleReferenceUrl,
+    })
+    config = await reconcileComfyServiceConfig(config, mode)
+    if (config.provider !== before) {
+      logTaskProgress('VideoTask', 'comfy-mode-switch', { from: before, to: config.provider })
+    }
+  }
 
   const creditCost = resolveCreditCostFromConfig(config, 0)
   if (params.userId) {

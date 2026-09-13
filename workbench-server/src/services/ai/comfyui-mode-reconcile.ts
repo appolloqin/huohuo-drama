@@ -20,7 +20,15 @@ export async function reconcileComfyServiceConfig(
   const sibling = pickComfySiblingConfig(
     { ...current, serviceType },
     mode,
-    rows,
+    rows
+      .filter((r): r is typeof r & { provider: string } => !!r.provider)
+      .map((r) => ({
+        id: r.id,
+        provider: r.provider,
+        baseUrl: r.baseUrl,
+        isActive: r.isActive ?? undefined,
+        serviceType: r.serviceType,
+      })),
   )
   const decision = reconcileComfyDecision(
     { ...current, serviceType },
@@ -28,7 +36,7 @@ export async function reconcileComfyServiceConfig(
     sibling,
   )
   throwIfReconcileError(decision)
-  if (decision.action === 'keep') return current
+  if (decision.action !== 'switch') return current
   const row = await aiConfigsRepo.findServiceConfigById(decision.id)
   if (!row || !row.isActive) {
     throw new UserAiConfigError(

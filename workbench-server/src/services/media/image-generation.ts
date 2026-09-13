@@ -10,6 +10,11 @@ import { finalizeImageFromBase64, finalizeImageFromUrl, markLinkedSceneFailed } 
 import { pollImageGeneration } from './image-generation-poll.js'
 import { defaultAspectRatioForScope } from '../../common/media/image-aspect-presets.js'
 import { resolveRelativeMediaUrl } from '../ai/adapters/comfyui-workflow.js'
+import {
+  detectComfyImageMode,
+  isComfyFamilyProvider,
+} from '../ai/adapters/comfyui-mode-resolve.js'
+import { reconcileComfyServiceConfig } from '../ai/comfyui-mode-reconcile.js'
 
 interface GenerateImageParams {
   userId?: number
@@ -24,8 +29,20 @@ interface GenerateImageParams {
   model?: string
   size?: string
   referenceImages?: string[]
+  styleReferenceUrl?: string
   frameType?: string
   configId?: number
+}
+
+function parseStyleReferenceUrl(style: string | null | undefined): string | undefined {
+  if (!style) return undefined
+  try {
+    const parsed = JSON.parse(style)
+    if (parsed && typeof parsed.style_reference_url === 'string' && parsed.style_reference_url) {
+      return parsed.style_reference_url
+    }
+  } catch {}
+  return undefined
 }
 
 async function insertImageGenerationRow(params: GenerateImageParams, config: AIConfig) {
@@ -43,6 +60,9 @@ async function insertImageGenerationRow(params: GenerateImageParams, config: AIC
     size: params.size || defaultAspectRatioForScope('shot'),
     frameType: params.frameType,
     referenceImages: params.referenceImages ? JSON.stringify(params.referenceImages) : null,
+    style: params.styleReferenceUrl
+      ? JSON.stringify({ style_reference_url: params.styleReferenceUrl })
+      : null,
     status: 'processing',
     createdAt: timestamp,
     updatedAt: timestamp,
@@ -75,6 +95,7 @@ async function runImageGenerationWorker(id: number, config: AIConfig) {
       size: record.size,
       frameType: record.frameType,
       referenceImages: references.length ? JSON.stringify(references) : null,
+      styleReferenceUrl: parseStyleReferenceUrl(record.style) ?? null,
     }
     if (adapter.prepareGenerate) {
       await adapter.prepareGenerate(config, frameJob)
@@ -150,10 +171,18 @@ export async function generateImage(params: GenerateImageParams): Promise<number
     ? { userId: params.userId, role: params.userRole }
     : undefined
 
-  const { config, source } = await resolveUserServiceConfig('image', {
+  let { config, source } = await resolveUserServiceConfig('image', {
     ...configOpts,
     configId: params.configId,
   })
+  const before = config.provider
+  if (isComfyFamilyProvider(config.provider)) {
+    const mode = detectComfyImageMode(params.referenceImages, params.styleReferenceUrl)
+    config = await reconcileComfyServiceConfig(config, mode)
+    if (config.provider !== before) {
+      logTaskProgress('ImageTask', 'comfy-mode-switch', { from: before, to: config.provider })
+    }
+  }
 
   const creditCost = resolveCreditCostFromConfig(config, 0)
 

@@ -24,7 +24,7 @@ export async function resolveDramaStyleReference(dramaId: number): Promise<Drama
   }
 }
 
-export function applyStyleReferenceToImageGeneration<T extends { prompt: string; referenceImages?: string[] }>(
+export function applyStyleReferenceToImageGeneration<T extends { prompt: string; referenceImages?: string[]; styleReferenceUrl?: string }>(
   params: T,
   styleRef: DramaStyleReferenceApply,
 ): T {
@@ -35,10 +35,11 @@ export function applyStyleReferenceToImageGeneration<T extends { prompt: string;
       ? `${styleRef.promptPrefix}\n\n${params.prompt}`
       : params.prompt,
     referenceImages: [styleRef.referenceImage, ...(params.referenceImages || [])],
+    styleReferenceUrl: styleRef.referenceImage,
   }
 }
 
-export function applyStyleReferenceToVideoGeneration<T extends { prompt: string; referenceImageUrls?: string[] }>(
+export function applyStyleReferenceToVideoGeneration<T extends { prompt: string; referenceImageUrls?: string[]; styleReferenceUrl?: string }>(
   params: T,
   styleRef: DramaStyleReferenceApply,
 ): T {
@@ -49,5 +50,6 @@ export function applyStyleReferenceToVideoGeneration<T extends { prompt: string;
       ? `${styleRef.promptPrefix}\n\n${params.prompt}`
       : params.prompt,
     referenceImageUrls: [styleRef.referenceImage, ...(params.referenceImageUrls || [])],
+    styleReferenceUrl: styleRef.referenceImage,
   }
 }
