@@ -178,7 +178,8 @@ Update `provision-sqlite.ts` / `provision-mysql.ts`:
 - `workbench-server/src/services/ai/adapters/comfyui-*.ts` / `comfyui-workflow.ts`
 - New small helper e.g. `comfyui-mode-resolve.ts` used by media generation
 - `workbench-server/src/services/media/image-generation.ts` / `video-generation.ts` (reconcile **before** credits)
-- Drama/route call sites: pass `styleReferenceUrl` into generate params when style was applied (minimal plumbing)
+- `workbench-server/src/services/drama/drama-style-reference.ts` (stamp `styleReferenceUrl` on apply; prefer this over per-route plumbing)
+- Persist `styleReferenceUrl` on the in-flight generation record if adapters need it after enqueue
 - `workbench-server/src/db/provision-sqlite.ts` / `provision-mysql.ts`
 - `workbench/app/pages/settings.vue` + i18n message files
 - `workbench-server` verify/media-adapters tests
@@ -188,6 +189,6 @@ Update `provision-sqlite.ts` / `provision-mysql.ts`:
 - ComfyUI「测试配置」no longer hits chat completions; probes `/system_stats`.
 - Four selectable presets with independent workflows and credit costs.
 - Mixed t2i/i2i (and video) works with a single episode Comfy binding when both mode presets exist.
-- Style-only reference does not force image/video “to-image” modes.
+- Style-only reference does not force image/video “to-image” modes; i2i/i2v uploads use content refs, not the prepended style URL.
 - Credits follow the final post-reconcile config.
 - Existing OpenAI / MiniMax / Hailuo behavior unchanged.
