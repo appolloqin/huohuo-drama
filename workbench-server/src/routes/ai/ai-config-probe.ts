@@ -52,6 +52,18 @@ export function buildProviderProbeSpec(
   apiKey?: string,
 ): ConnectivityProbeSpec {
   const p = provider.toLowerCase()
+  const COMFY_PROVIDERS = new Set([
+    'comfyui', 'comfyui-t2i', 'comfyui-i2i', 'comfyui-t2v', 'comfyui-i2v',
+  ])
+  if (COMFY_PROVIDERS.has(p)) {
+    const base = (baseUrl || '').replace(/\/+$/, '')
+    return {
+      method: 'GET',
+      url: `${base}/system_stats`,
+      headers: bearerAuthHeaders(apiKey),
+      body: undefined,
+    }
+  }
   const m = model || ''
   const textModel = m || 'gpt-4o-mini'
   const imageModel = m || 'qwen-image-max'
