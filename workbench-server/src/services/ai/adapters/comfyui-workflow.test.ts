@@ -35,8 +35,55 @@ describe('comfyui-workflow', () => {
   it('fails when the positive title is missing', () => {
     assert.throws(
       () => applyComfyuiTitleInputs({ '1': { class_type: 'SaveImage', inputs: {} } }, { prompt: 'x' }),
-      /positive/,
+      /positive|提示词/,
     )
+  })
+
+  it('injects Comfy export titles: Positive Prompt + 加载图像 + Qwen prompt field', () => {
+    const exportGraph = {
+      '41': {
+        class_type: 'LoadImage',
+        _meta: { title: '加载图像' },
+        inputs: { image: 'e66.jpg' },
+      },
+      '151': {
+        class_type: 'TextEncodeQwenImageEditPlus',
+        _meta: { title: 'TextEncodeQwenImageEditPlus (Positive)' },
+        inputs: { prompt: 'old', clip: ['1', 0], image1: ['41', 0] },
+      },
+      '149': {
+        class_type: 'TextEncodeQwenImageEditPlus',
+        _meta: { title: '文本编码（QwenImageEditPlus）' },
+        inputs: { prompt: 'other', clip: ['1', 0], image1: ['41', 0] },
+      },
+    }
+    assertComfyRequiredTitles(exportGraph, 'i2i')
+    const next = applyComfyuiTitleInputs(exportGraph, {
+      prompt: 'hero stands',
+      loadImage: 'uploaded.png',
+    })
+    assert.equal(next['151'].inputs.prompt, 'hero stands')
+    assert.equal(next['149'].inputs.prompt, 'other')
+    assert.equal(next['41'].inputs.image, 'uploaded.png')
+  })
+
+  it('injects CLIP Text Encode (Positive Prompt) text field', () => {
+    const exportGraph = {
+      '6': {
+        class_type: 'CLIPTextEncode',
+        _meta: { title: 'CLIP Text Encode (Positive Prompt)' },
+        inputs: { text: 'old', clip: ['4', 1] },
+      },
+      '7': {
+        class_type: 'CLIPTextEncode',
+        _meta: { title: 'CLIP Text Encode (Negative Prompt)' },
+        inputs: { text: '', clip: ['4', 1] },
+      },
+    }
+    assertComfyRequiredTitles(exportGraph, 't2i')
+    const next = applyComfyuiTitleInputs(exportGraph, { prompt: 'scene', negative: 'blur' })
+    assert.equal(next['6'].inputs.text, 'scene')
+    assert.equal(next['7'].inputs.text, 'blur')
   })
 
   it('uses the built-in default workflow when settings are empty', () => {
