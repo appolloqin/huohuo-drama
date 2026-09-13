@@ -140,8 +140,86 @@ const REQUIRED_COMFY_TITLES: Record<ComfyMode, string[]> = {
   i2v: ['positive', 'first_frame'],
 }
 
+export type ComfyNodeRole = 'positive' | 'negative' | 'load_image' | 'first_frame' | 'last_frame' | 'duration'
+
+/** Exact / substring aliases for real ComfyUI export titles (EN + ZH). */
+const ROLE_TITLE_ALIASES: Record<ComfyNodeRole, string[]> = {
+  positive: ['positive', '正向', '正面提示'],
+  negative: ['negative', '负向', '负面提示'],
+  load_image: ['load_image', 'load image', '加载图像', '加载图片'],
+  first_frame: ['first_frame', 'first frame', '首帧'],
+  last_frame: ['last_frame', 'last frame', '尾帧'],
+  duration: ['duration', '时长'],
+}
+
 function nodeTitle(node: ComfyNode): string {
   return String(node._meta?.title || node.title || '').trim().toLowerCase()
+}
+
+function titleMatchesRole(title: string, role: ComfyNodeRole): boolean {
+  const t = title.trim().toLowerCase()
+  if (!t) return false
+  if (t === role) return true
+  return ROLE_TITLE_ALIASES[role].some((alias) => {
+    const a = alias.toLowerCase()
+    return t === a || t.includes(a)
+  })
+}
+
+function isTextEncodeClass(classType: string): boolean {
+  return /textencode|cliptextencode/i.test(classType)
+}
+
+/**
+ * Resolve a workflow node by role: fuzzy title first, then class_type heuristics.
+ * Supports Comfy exports like "CLIP Text Encode (Positive Prompt)" / "加载图像".
+ */
+export function findComfyNodeByRole(graph: ComfyGraph, role: ComfyNodeRole): ComfyNode | null {
+  const nodes = Object.values(graph)
+  const titled = nodes.filter((n) => titleMatchesRole(nodeTitle(n), role))
+  if (titled.length === 1) return titled[0]
+  if (titled.length > 1) {
+    const exact = titled.find((n) => nodeTitle(n) === role)
+    if (exact) return exact
+    // Prefer shorter / more specific title containing the alias (e.g. "(Positive)" over bare encode)
+    return titled.sort((a, b) => nodeTitle(a).length - nodeTitle(b).length)[0]
+  }
+
+  if (role === 'load_image' || role === 'first_frame' || role === 'last_frame') {
+    const loads = nodes.filter((n) => String(n.class_type || '') === 'LoadImage')
+    if (role === 'load_image') return loads[0] || null
+    if (role === 'first_frame') return loads[0] || null
+    return loads[1] || loads[0] || null
+  }
+
+  if (role === 'positive' || role === 'negative') {
+    const encoders = nodes.filter((n) => isTextEncodeClass(String(n.class_type || '')))
+    if (role === 'negative') {
+      const byNegTitle = encoders.filter((n) => titleMatchesRole(nodeTitle(n), 'negative'))
+      return byNegTitle[0] || encoders[1] || null
+    }
+    const nonNeg = encoders.filter((n) => !titleMatchesRole(nodeTitle(n), 'negative'))
+    return nonNeg[0] || encoders[0] || null
+  }
+
+  if (role === 'duration') {
+    return nodes.find((n) => /primitiveint|int/i.test(String(n.class_type || ''))) || null
+  }
+
+  return null
+}
+
+function setPromptOnNode(node: ComfyNode, prompt: string): void {
+  const original = node.inputs || {}
+  if ('prompt' in original && !('text' in original)) {
+    node.inputs = { ...original, prompt }
+  } else if ('text' in original) {
+    node.inputs = { ...original, text: prompt }
+  } else if ('prompt' in original) {
+    node.inputs = { ...original, prompt }
+  } else {
+    node.inputs = { ...original, text: prompt }
+  }
 }
 
 function cloneGraph(graph: ComfyGraph): ComfyGraph {
@@ -192,9 +270,8 @@ export function resolveComfyuiWorkflow(
 }
 
 export function assertComfyRequiredTitles(graph: ComfyGraph, mode: ComfyMode): void {
-  const titles = new Set(Object.values(graph).map((n) => nodeTitle(n)))
   for (const need of REQUIRED_COMFY_TITLES[mode]) {
-    if (!titles.has(need)) {
+    if (!findComfyNodeByRole(graph, need as ComfyNodeRole)) {
       throw new Error(`ComfyUI workflow 缺少标题为 ${need} 的节点（模式 ${mode}）`)
     }
   }
@@ -211,37 +288,32 @@ export function comfyModeFromProvider(provider: string, fallback: ComfyMode): Co
 
 export function applyComfyuiTitleInputs(graph: ComfyGraph, values: ComfyTitleInputs): ComfyGraph {
   const next = cloneGraph(graph)
-  const byTitle = new Map<string, ComfyNode>()
-  for (const node of Object.values(next)) {
-    const title = nodeTitle(node)
-    if (title) byTitle.set(title, node)
+
+  const positive = findComfyNodeByRole(next, 'positive')
+  if (!positive) throw new Error('ComfyUI workflow 缺少可注入提示词的节点（positive / Positive Prompt / 文本编码等）')
+  setPromptOnNode(positive, values.prompt || '')
+
+  const negative = findComfyNodeByRole(next, 'negative')
+  if (negative && values.negative != null) {
+    setPromptOnNode(negative, values.negative || '')
   }
 
-  const positive = byTitle.get('positive')
-  if (!positive) throw new Error('ComfyUI workflow 缺少标题为 positive 的节点')
-  positive.inputs = { ...(positive.inputs || {}), text: values.prompt || '' }
-
-  const negative = byTitle.get('negative')
-  if (negative) {
-    negative.inputs = { ...(negative.inputs || {}), text: values.negative || '' }
-  }
-
-  const loadImage = byTitle.get('load_image')
+  const loadImage = findComfyNodeByRole(next, 'load_image')
   if (loadImage && values.loadImage) {
     loadImage.inputs = { ...(loadImage.inputs || {}), image: values.loadImage }
   }
 
-  const firstFrame = byTitle.get('first_frame')
+  const firstFrame = findComfyNodeByRole(next, 'first_frame')
   if (firstFrame && values.firstFrame) {
     firstFrame.inputs = { ...(firstFrame.inputs || {}), image: values.firstFrame }
   }
 
-  const lastFrame = byTitle.get('last_frame')
+  const lastFrame = findComfyNodeByRole(next, 'last_frame')
   if (lastFrame && values.lastFrame) {
     lastFrame.inputs = { ...(lastFrame.inputs || {}), image: values.lastFrame }
   }
 
-  const duration = byTitle.get('duration')
+  const duration = findComfyNodeByRole(next, 'duration')
   if (duration && values.duration != null) {
     const n = Number(values.duration)
     duration.inputs = {
