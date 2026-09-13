@@ -29,7 +29,11 @@ function parseRefList(raw?: string | null): string[] {
 }
 
 export class ComfyUIVideoAdapter implements VideoProviderAdapter {
-  readonly provider = 'comfyui'
+  readonly provider: string
+
+  constructor(provider = 'comfyui') {
+    this.provider = provider
+  }
 
   async prepareGenerate(cfg: AIConfig, record: VideoGenerationRecord): Promise<void> {
     const refs = parseRefList(record.referenceImageUrls)

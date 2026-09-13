@@ -29,7 +29,11 @@ function parseRefList(raw?: string | null): string[] {
 }
 
 export class ComfyUIImageAdapter implements ImageProviderAdapter {
-  readonly provider = 'comfyui'
+  readonly provider: string
+
+  constructor(provider = 'comfyui') {
+    this.provider = provider
+  }
 
   async prepareGenerate(cfg: AIConfig, record: ImageGenerationRecord): Promise<void> {
     const refs = parseRefList(record.referenceImages)
