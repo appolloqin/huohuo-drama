@@ -5,7 +5,7 @@ import { getImageAdapter } from '../ai/adapters/registry.js'
 import type { AIConfig } from '../ai/ai.js'
 import { logTaskError, logTaskPayload, logTaskProgress, logTaskStart, redactUrl } from '../../common/task/task-logger.js'
 import { consumeCredits, resolveCreditCostFromConfig } from '../credits/credits.js'
-import { normalizeMediaReferenceList } from './media-reference.js'
+import { normalizeMediaReferenceList, stripStyleReferenceFromListJson } from './media-reference.js'
 import { finalizeImageFromBase64, finalizeImageFromUrl, markLinkedSceneFailed } from '../drama/generation-finalizer.js'
 import { pollImageGeneration } from './image-generation-poll.js'
 import { defaultAspectRatioForScope } from '../../common/media/image-aspect-presets.js'
@@ -87,7 +87,10 @@ async function runImageGenerationWorker(id: number, config: AIConfig) {
       frameType: record.frameType,
     })
 
-    const references = await normalizeMediaReferenceList(record.referenceImages, 'ImageTask')
+    // Strip style URL before normalize — static/ paths become data URLs and won't match.
+    const styleReferenceUrl = parseStyleReferenceUrl(record.style) ?? null
+    const contentRefsJson = stripStyleReferenceFromListJson(record.referenceImages, styleReferenceUrl)
+    const references = await normalizeMediaReferenceList(contentRefsJson, 'ImageTask')
     const frameJob = {
       id: record.id,
       model: record.model,
@@ -95,7 +98,8 @@ async function runImageGenerationWorker(id: number, config: AIConfig) {
       size: record.size,
       frameType: record.frameType,
       referenceImages: references.length ? JSON.stringify(references) : null,
-      styleReferenceUrl: parseStyleReferenceUrl(record.style) ?? null,
+      // Already removed from the list; keep stamp only if we still need it (empty).
+      styleReferenceUrl: null,
     }
     if (adapter.prepareGenerate) {
       await adapter.prepareGenerate(config, frameJob)
