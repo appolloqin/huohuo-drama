@@ -5,10 +5,12 @@ import { getVideoAdapter } from '../ai/adapters/registry.js'
 import { logTaskError, logTaskProgress, logTaskSuccess, logTaskWarn, redactUrl } from '../../common/task/task-logger.js'
 import { finalizeVideoFromUrl } from '../drama/generation-finalizer.js'
 import { formatVideoApiError } from '../../common/media/video-api-errors.js'
-import { resolveRelativeMediaUrl } from '../ai/adapters/comfyui-workflow.js'
+import { resolveRelativeMediaUrl, isPromptIdInComfyQueue, joinComfyUrl, comfyAuthHeaders } from '../ai/adapters/comfyui-workflow.js'
+import { isComfyFamilyProvider } from '../ai/adapters/comfyui-mode-resolve.js'
 
 const VIDEO_POLL_INTERVAL_MS = 10_000
 const VIDEO_POLL_MAX_ATTEMPTS = 300
+const COMFY_ORPHAN_EMPTY_ATTEMPTS = 4
 
 async function markVideoFailed(id: number, message: string) {
   await videoGenerationsRepo.updateVideoGeneration(id, {
@@ -18,6 +20,20 @@ async function markVideoFailed(id: number, message: string) {
   })
 }
 
+async function comfyVideoPromptStillActive(config: AIConfig, taskId: string): Promise<boolean | null> {
+  try {
+    const resp = await fetch(joinComfyUrl(config.baseUrl, '/queue'), {
+      method: 'GET',
+      headers: comfyAuthHeaders(config.apiKey),
+      signal: AbortSignal.timeout(10_000),
+    })
+    if (!resp.ok) return null
+    return isPromptIdInComfyQueue(await resp.json(), taskId)
+  } catch {
+    return null
+  }
+}
+
 export async function pollVideoGeneration(
   id: number,
   config: AIConfig,
@@ -25,6 +41,8 @@ export async function pollVideoGeneration(
   storyboardId?: number | null,
 ) {
   const adapter = getVideoAdapter(config.provider)
+  const comfy = isComfyFamilyProvider(config.provider)
+  let emptyHistoryStreak = 0
 
   for (let attempt = 0; attempt < VIDEO_POLL_MAX_ATTEMPTS; attempt++) {
     await new Promise(resolve => setTimeout(resolve, VIDEO_POLL_INTERVAL_MS))
@@ -44,12 +62,35 @@ export async function pollVideoGeneration(
       if (!response.ok) continue
 
       const payload = await response.json()
+      const historyKeys = payload && typeof payload === 'object' ? Object.keys(payload) : []
+      if (comfy && historyKeys.length === 0) {
+        emptyHistoryStreak += 1
+        if (emptyHistoryStreak >= COMFY_ORPHAN_EMPTY_ATTEMPTS) {
+          const active = await comfyVideoPromptStillActive(config, taskId)
+          if (active === false) {
+            const message =
+              'ComfyUI 队列中已无此任务且 history 为空（工作流可能执行失败、被中断或 history 已清理）'
+            logTaskError('VideoTask', 'poll-orphan', { id, taskId, error: message })
+            await markVideoFailed(id, message)
+            return
+          }
+          emptyHistoryStreak = Math.max(0, COMFY_ORPHAN_EMPTY_ATTEMPTS - 2)
+        }
+      } else {
+        emptyHistoryStreak = 0
+      }
+
       const pollResp = adapter.parsePollResponse(payload)
 
       if (pollResp.status === 'completed' && pollResp.videoUrl) {
         const videoUrl = resolveRelativeMediaUrl(config.baseUrl, pollResp.videoUrl) || pollResp.videoUrl
         logTaskSuccess('VideoTask', 'poll-complete', { id, taskId, videoUrl })
         await finalizeVideoFromUrl(id, videoUrl, null, storyboardId)
+        return
+      }
+
+      if (pollResp.status === 'completed' && !pollResp.videoUrl) {
+        await markVideoFailed(id, 'ComfyUI 任务已完成但未解析到视频 URL')
         return
       }
 
