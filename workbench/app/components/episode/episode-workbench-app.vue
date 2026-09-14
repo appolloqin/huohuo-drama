@@ -3039,7 +3039,14 @@ async function syncWorkbenchFromApi() {
       try { propList.value = await episodeAPI.props(ep.id) } catch { propList.value = [] }
       try { locationRowsForEpisode.value = await episodeAPI.scenes(ep.id) } catch { locationRowsForEpisode.value = [] }
       shotRowsForEpisode.value = await episodeAPI.storyboards(ep.id)
-      if (shotRowsForEpisode.value.length && !focusedShotRow.value) focusedShotRow.value = shotRowsForEpisode.value[0]
+      if (shotRowsForEpisode.value.length) {
+        const focusId = focusedShotRow.value?.id
+        focusedShotRow.value = (focusId
+          ? shotRowsForEpisode.value.find(s => s.id === focusId)
+          : null) || shotRowsForEpisode.value[0]
+      } else {
+        focusedShotRow.value = null
+      }
 
       if (!screenplayStepBootstrapped.value) {
         applyScreenplayStepFromEpisodeState()
@@ -3449,9 +3456,7 @@ function collectShotReferenceAssets(sb) {
     if (!value || refs.includes(value) || refs.length >= 6) return
     refs.push(value)
   }
-  const sceneId = sb?.scene_id || sb?.sceneId
-  const scene = locationRowsForEpisode.value.find(item => item.id === sceneId)
-  pushRef(scene?.image_url || scene?.imageUrl)
+  // Characters first — Seedream multi-ref follows image order (图1 / 图2).
   for (const charId of readShotLinkedCastIds(sb)) {
     const formId = readShotFormIdForChar(sb, charId)
     if (formId) {
@@ -3461,6 +3466,9 @@ function collectShotReferenceAssets(sb) {
     const char = castList.value.find(item => item.id === charId)
     pushRef(char?.image_url || char?.imageUrl)
   }
+  const sceneId = sb?.scene_id || sb?.sceneId
+  const scene = locationRowsForEpisode.value.find(item => item.id === sceneId)
+  pushRef(scene?.image_url || scene?.imageUrl)
   for (const propId of readShotPropIds(sb)) {
     const prop = propList.value.find(item => item.id === propId)
     pushRef(prop?.image_url || prop?.imageUrl)
@@ -3468,10 +3476,8 @@ function collectShotReferenceAssets(sb) {
   for (const ref of tokenizeShotReferenceList(sb)) {
     pushRef(ref)
   }
-  const first = readShotLeadFrameUrl(sb)
-  const last = readShotTrailFrameUrl(sb)
-  pushRef(first)
-  pushRef(last)
+  // Do not pass existing first/last frames — regenerate otherwise copies old frames
+  // and drifts away from character portraits (same rule as sequence-frame refs).
   return refs.filter(Boolean).slice(0, 6)
 }
 
@@ -3782,17 +3788,25 @@ async function pollShotImageJob(generationId, storyboardId, frameType, pendingKe
   const clearPending = () => {
     if (pendingKey) frameRenderPendingKeys.value = frameRenderPendingKeys.value.filter(item => item !== pendingKey)
   }
-  const frameReady = () => {
+  const readFrameUrl = () => {
     const target = shotRowsForEpisode.value.find(s => s.id === storyboardId)
-    return frameType === 'first_frame' ? !!readShotLeadFrameUrl(target) : !!readShotTrailFrameUrl(target)
+    return frameType === 'first_frame' ? readShotLeadFrameUrl(target) : readShotTrailFrameUrl(target)
+  }
+  // Capture pre-regenerate path so "already has frame" is not treated as success.
+  const beforeUrl = readFrameUrl()
+  const frameUpdated = () => {
+    const url = readFrameUrl()
+    if (!url) return false
+    // First-time: any URL is enough. Regenerate: must differ from the old path.
+    return !beforeUrl || url !== beforeUrl
   }
 
   if (!generationId) {
-    // No job id: keep syncing until frame appears (no hard timeout).
+    // No job id: keep syncing until frame appears / changes (no hard timeout).
     while (true) {
       await pauseMillis(4000)
       await syncWorkbenchFromApi()
-      if (frameReady()) {
+      if (frameUpdated()) {
         clearPending()
         toast.success(frameType === 'first_frame' ? '首帧生成完成' : '尾帧生成完成')
         return
@@ -3805,7 +3819,12 @@ async function pollShotImageJob(generationId, storyboardId, frameType, pendingKe
     try {
       const res = await imageAPI.get(generationId)
       await syncWorkbenchFromApi()
-      if (res?.status === 'completed' || frameReady()) {
+      // Do not OR with "frame already present" — that exits early on regenerate.
+      if (res?.status === 'completed') {
+        if (!frameUpdated()) {
+          await pauseMillis(2000)
+          await syncWorkbenchFromApi()
+        }
         clearPending()
         toast.success(frameType === 'first_frame' ? '首帧生成完成' : '尾帧生成完成')
         return

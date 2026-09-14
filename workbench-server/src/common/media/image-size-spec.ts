@@ -8,6 +8,9 @@ import {
   isValidAspectRatio,
 } from './image-aspect-presets.js'
 
+/** 豆包 Seedream 要求总像素 ≥ 3686400（约 1920²） */
+export const SEEDREAM_MIN_PIXELS = 3_686_400
+
 export function isPixelSizeSpec(value?: string | null): boolean {
   if (!value || typeof value !== 'string') return false
   return /^\d+x\d+$/i.test(value.trim())
@@ -53,27 +56,80 @@ export function mapAspectRatioToDalleSize(ratio: ImageAspectRatio): string {
   }
 }
 
-/** 火山 Seedream 等需要 width/height 时，按比例给出合理默认值 */
-export function mapAspectRatioToPixelDims(ratio: ImageAspectRatio): { width: number; height: number } {
-  switch (ratio) {
-    case '1:1':
-      return { width: 1280, height: 1280 }
-    case '2:3':
-      return { width: 1024, height: 1536 }
-    case '3:4':
-      return { width: 960, height: 1280 }
-    case '4:3':
-      return { width: 1280, height: 960 }
-    case '9:16':
-      return { width: 1080, height: 1920 }
-    case '16:9':
-    default:
-      return { width: 1920, height: 1080 }
+function evenCeil(n: number): number {
+  const v = Math.ceil(n)
+  return v % 2 === 0 ? v : v + 1
+}
+
+/** Scale width/height up so area meets Seedream minimum, keeping aspect ratio. */
+export function ensureMinPixelArea(
+  width: number,
+  height: number,
+  minPixels = SEEDREAM_MIN_PIXELS,
+): { width: number; height: number } {
+  const w = Math.max(1, Math.floor(width))
+  const h = Math.max(1, Math.floor(height))
+  const area = w * h
+  if (area >= minPixels) return { width: w, height: h }
+  const scale = Math.sqrt(minPixels / area)
+  return {
+    width: evenCeil(w * scale),
+    height: evenCeil(h * scale),
   }
 }
 
+/** 火山 Seedream / 火火网关豆包：按比例给出满足最小像素的默认值 */
+export function mapAspectRatioToPixelDims(ratio: ImageAspectRatio): { width: number; height: number } {
+  let base: { width: number; height: number }
+  switch (ratio) {
+    case '1:1':
+      base = { width: 1920, height: 1920 }
+      break
+    case '2:3':
+      base = { width: 1536, height: 2304 }
+      break
+    case '3:4':
+      base = { width: 1728, height: 2304 }
+      break
+    case '4:3':
+      base = { width: 2304, height: 1728 }
+      break
+    case '9:16':
+      base = { width: 1440, height: 2560 }
+      break
+    case '16:9':
+    default:
+      base = { width: 2560, height: 1440 }
+      break
+  }
+  return ensureMinPixelArea(base.width, base.height)
+}
+
+/** OpenAI-compatible `size` string for Seedream via huohuo gateway */
+export function mapAspectRatioToSeedreamSize(ratio: ImageAspectRatio): string {
+  const dims = mapAspectRatioToPixelDims(ratio)
+  return `${dims.width}x${dims.height}`
+}
+
+export function resolveSeedreamSizeSpec(size?: string | null): string {
+  if (isAspectRatioSpec(size)) return mapAspectRatioToSeedreamSize(size)
+  if (size && isPixelSizeSpec(size)) {
+    const { width, height } = splitPixelSizeSpec(size)
+    if (width && height) {
+      const dims = ensureMinPixelArea(width, height)
+      return `${dims.width}x${dims.height}`
+    }
+  }
+  return mapAspectRatioToSeedreamSize('16:9')
+}
+
+export function isSeedreamLikeImageModel(model?: string | null): boolean {
+  const m = String(model || '').toLowerCase()
+  return m.includes('seedream') || m.includes('doubao')
+}
+
 export function splitPixelSizeSpec(value: string): { width?: number; height?: number } {
-  const [w, h] = value.split('x').map(Number)
+  const [w, h] = value.split(/[x*]/i).map(Number)
   if (!w || !h) return {}
   return { width: w, height: h }
 }
