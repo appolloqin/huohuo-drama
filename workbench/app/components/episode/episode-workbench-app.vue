@@ -3584,13 +3584,12 @@ async function ensureShotSequenceRefsMigrated(sb) {
 }
 
 async function waitForShotSequenceFrameGrowth(sb, beforeCount) {
-  for (let i = 0; i < 90; i++) {
+  while (true) {
     await pauseMillis(4000)
     await syncWorkbenchFromApi()
     const refreshed = shotRowsForEpisode.value.find(s => s.id === sb.id)
     if (readShotSlideshowSequencePaths(refreshed).length > beforeCount) return true
   }
-  return false
 }
 
 async function trimShotSequenceRefsToTarget(sb) {
@@ -3636,7 +3635,7 @@ async function requestShotReferenceFrameRender(sb, frameIndex) {
     toast.success(replaceMode ? `序列帧 ${frameIndex + 1} 重新生成中` : `序列帧 ${frameIndex + 1} 生成中`)
     let done = false
     if (generation?.id) {
-      for (let i = 0; i < 150; i++) {
+      while (true) {
         await pauseMillis(4000)
         try {
           const res = await imageAPI.get(generation.id)
@@ -3778,7 +3777,7 @@ async function requestShotFrameRender(sb, frameType) {
   }
 }
 
-/** Poll image generation until terminal status (Comfy local jobs can exceed 60s UI wait). */
+/** Poll image generation until terminal status (Comfy local jobs have no time ceiling). */
 async function pollShotImageJob(generationId, storyboardId, frameType, pendingKey) {
   const clearPending = () => {
     if (pendingKey) frameRenderPendingKeys.value = frameRenderPendingKeys.value.filter(item => item !== pendingKey)
@@ -3789,7 +3788,8 @@ async function pollShotImageJob(generationId, storyboardId, frameType, pendingKe
   }
 
   if (!generationId) {
-    for (let i = 0; i < 120; i++) {
+    // No job id: keep syncing until frame appears (no hard timeout).
+    while (true) {
       await pauseMillis(4000)
       await syncWorkbenchFromApi()
       if (frameReady()) {
@@ -3798,12 +3798,9 @@ async function pollShotImageJob(generationId, storyboardId, frameType, pendingKe
         return
       }
     }
-    clearPending()
-    toast.error(frameType === 'first_frame' ? '首帧生成超时' : '尾帧生成超时')
-    return
   }
 
-  for (let i = 0; i < 150; i++) {
+  while (true) {
     await pauseMillis(4000)
     try {
       const res = await imageAPI.get(generationId)
@@ -3820,8 +3817,6 @@ async function pollShotImageJob(generationId, storyboardId, frameType, pendingKe
       }
     } catch {}
   }
-  clearPending()
-  toast.error(frameType === 'first_frame' ? '首帧生成超时' : '尾帧生成超时')
 }
 
 async function requestShotClipRender(sb) {
@@ -3854,15 +3849,19 @@ async function requestShotClipRender(sb) {
 }
 async function pollShotClipJob(generationId, storyboardId) {
   if (!generationId) {
-    pollUntilWorkbenchReady(() => {
+    while (true) {
+      await pauseMillis(4000)
+      await syncWorkbenchFromApi()
       const target = shotRowsForEpisode.value.find(s => s.id === storyboardId)
       const done = !!(target?.video_url || target?.videoUrl)
-      if (done) clipRenderPendingIds.value = clipRenderPendingIds.value.filter(item => item !== storyboardId)
-      return done
-    }, 60, 4000)
-    return
+      if (done) {
+        clipRenderPendingIds.value = clipRenderPendingIds.value.filter(item => item !== storyboardId)
+        toast.success('视频生成完成')
+        return
+      }
+    }
   }
-  for (let i = 0; i < 120; i++) {
+  while (true) {
     await pauseMillis(4000)
     try {
       const res = await videoAPI.get(generationId)
@@ -3884,12 +3883,6 @@ async function pollShotClipJob(generationId, storyboardId) {
       }
     } catch {}
   }
-  clipRenderPendingIds.value = clipRenderPendingIds.value.filter(item => item !== storyboardId)
-  clipFailureMessages.value = {
-    ...clipFailureMessages.value,
-    [storyboardId]: '视频生成超时',
-  }
-  toast.error('视频生成超时')
 }
 async function requestShotClipCompose(sb) {
   try {
