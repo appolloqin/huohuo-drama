@@ -14,8 +14,10 @@ import {
 import { isComfyFamilyProvider } from '../ai/adapters/comfyui-mode-resolve.js'
 
 const IMAGE_POLL_INTERVAL_MS = 5_000
+/** Non-Comfy cloud providers keep a hard ceiling. */
 const IMAGE_POLL_MAX_MS = 600_000
 const IMAGE_POLL_MAX_ATTEMPTS = 120
+const IMAGE_POLL_FETCH_TIMEOUT_MS = 30_000
 /** Empty history while not in queue — fail after this many consecutive empty polls. */
 const COMFY_ORPHAN_EMPTY_ATTEMPTS = 6
 
@@ -89,16 +91,22 @@ export async function pollImageGeneration(id: number, config: AIConfig, taskId: 
   const startedAt = Date.now()
   const comfy = isComfyFamilyProvider(config.provider)
   let emptyHistoryStreak = 0
+  let attempt = 0
 
-  for (let attempt = 0; attempt < IMAGE_POLL_MAX_ATTEMPTS; attempt++) {
-    if (Date.now() - startedAt >= IMAGE_POLL_MAX_MS) {
+  // ComfyUI (local, variable runtime): wait until completed / failed / orphaned.
+  // Other providers: keep the existing time + attempt ceiling.
+  while (comfy || attempt < IMAGE_POLL_MAX_ATTEMPTS) {
+    attempt += 1
+
+    if (!comfy && Date.now() - startedAt >= IMAGE_POLL_MAX_MS) {
       logTaskError('ImageTask', 'poll-timeout', { id, taskId, error: 'Polling exceeded 10 minutes' })
       await markImageFailed(id, 'Timeout: Polling exceeded 10 minutes')
       return
     }
 
     await new Promise(resolve => setTimeout(resolve, IMAGE_POLL_INTERVAL_MS))
-    if (Date.now() - startedAt >= IMAGE_POLL_MAX_MS) {
+
+    if (!comfy && Date.now() - startedAt >= IMAGE_POLL_MAX_MS) {
       await markImageFailed(id, 'Timeout: Polling exceeded 10 minutes')
       return
     }
@@ -111,17 +119,19 @@ export async function pollImageGeneration(id: number, config: AIConfig, taskId: 
         provider: config.provider,
         method: request.method,
         url: redactUrl(request.url),
-        attempt: attempt + 1,
+        attempt,
       })
 
-      const remainingMs = Math.max(1_000, IMAGE_POLL_MAX_MS - (Date.now() - startedAt))
+      const fetchTimeoutMs = comfy
+        ? IMAGE_POLL_FETCH_TIMEOUT_MS
+        : Math.max(1_000, IMAGE_POLL_MAX_MS - (Date.now() - startedAt))
       const response = await fetch(request.url, {
         method: request.method,
         headers: request.headers,
-        signal: AbortSignal.timeout(remainingMs),
+        signal: AbortSignal.timeout(fetchTimeoutMs),
       })
       if (!response.ok) {
-        logTaskWarn('ImageTask', 'poll-http', { id, taskId, status: response.status, attempt: attempt + 1 })
+        logTaskWarn('ImageTask', 'poll-http', { id, taskId, status: response.status, attempt })
         continue
       }
 
@@ -138,7 +148,7 @@ export async function pollImageGeneration(id: number, config: AIConfig, taskId: 
             await markImageFailed(id, message)
             return
           }
-          // Still running or queue unreachable — keep waiting, don't re-check every tick.
+          // Still running or queue unreachable — keep waiting.
           emptyHistoryStreak = Math.max(0, COMFY_ORPHAN_EMPTY_ATTEMPTS - 2)
         }
       } else {
@@ -149,13 +159,15 @@ export async function pollImageGeneration(id: number, config: AIConfig, taskId: 
       const finished = await handlePollOutcome(id, config, taskId, adapter, payload, pollResp)
       if (finished) return
     } catch (err: any) {
-      const timedOut = attempt === IMAGE_POLL_MAX_ATTEMPTS - 1 || Date.now() - startedAt >= IMAGE_POLL_MAX_MS
-      if (timedOut) {
-        logTaskError('ImageTask', 'poll-timeout', { id, taskId, error: err.message })
-        await markImageFailed(id, `Timeout: ${err.message}`)
-        return
+      if (!comfy) {
+        const timedOut = attempt >= IMAGE_POLL_MAX_ATTEMPTS || Date.now() - startedAt >= IMAGE_POLL_MAX_MS
+        if (timedOut) {
+          logTaskError('ImageTask', 'poll-timeout', { id, taskId, error: err.message })
+          await markImageFailed(id, `Timeout: ${err.message}`)
+          return
+        }
       }
-      logTaskWarn('ImageTask', 'poll-retry', { id, taskId, attempt: attempt + 1, error: err.message })
+      logTaskWarn('ImageTask', 'poll-retry', { id, taskId, attempt, error: err.message })
     }
   }
 

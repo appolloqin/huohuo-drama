@@ -9,6 +9,7 @@ import { resolveRelativeMediaUrl, isPromptIdInComfyQueue, joinComfyUrl, comfyAut
 import { isComfyFamilyProvider } from '../ai/adapters/comfyui-mode-resolve.js'
 
 const VIDEO_POLL_INTERVAL_MS = 10_000
+/** Non-Comfy cloud providers keep a hard ceiling (~50 min). */
 const VIDEO_POLL_MAX_ATTEMPTS = 300
 const COMFY_ORPHAN_EMPTY_ATTEMPTS = 4
 
@@ -43,8 +44,11 @@ export async function pollVideoGeneration(
   const adapter = getVideoAdapter(config.provider)
   const comfy = isComfyFamilyProvider(config.provider)
   let emptyHistoryStreak = 0
+  let attempt = 0
 
-  for (let attempt = 0; attempt < VIDEO_POLL_MAX_ATTEMPTS; attempt++) {
+  // ComfyUI: wait until completed / failed / orphaned. Others: attempt ceiling.
+  while (comfy || attempt < VIDEO_POLL_MAX_ATTEMPTS) {
+    attempt += 1
     await new Promise(resolve => setTimeout(resolve, VIDEO_POLL_INTERVAL_MS))
 
     try {
@@ -55,7 +59,7 @@ export async function pollVideoGeneration(
         provider: config.provider,
         method: request.method,
         url: redactUrl(request.url),
-        attempt: attempt + 1,
+        attempt,
       })
 
       const response = await fetch(request.url, { method: request.method, headers: request.headers })
@@ -101,12 +105,12 @@ export async function pollVideoGeneration(
         return
       }
     } catch (err: any) {
-      if (attempt === VIDEO_POLL_MAX_ATTEMPTS - 1) {
+      if (!comfy && attempt >= VIDEO_POLL_MAX_ATTEMPTS) {
         logTaskError('VideoTask', 'poll-timeout', { id, taskId, error: err.message })
         await markVideoFailed(id, `Timeout: ${err.message}`)
         return
       }
-      logTaskWarn('VideoTask', 'poll-retry', { id, taskId, attempt: attempt + 1, error: err.message })
+      logTaskWarn('VideoTask', 'poll-retry', { id, taskId, attempt, error: err.message })
     }
   }
 }
