@@ -12,7 +12,9 @@ import type {
 import {
   isAspectRatioSpec,
   isPixelSizeSpec,
+  isSeedreamLikeImageModel,
   mapAspectRatioToDalleSize,
+  resolveSeedreamSizeSpec,
 } from '../../../common/media/image-size-spec.js'
 import { joinProviderUrl } from './url.js'
 
@@ -24,10 +26,40 @@ export class OpenAIImageAdapter implements ImageProviderAdapter {
   // ── 提交生成 ───────────────────────────────────────────────
 
   buildGenerateRequest(cfg: AIConfig, frameJob: ImageGenerationRecord): ProviderRequest {
+    const model = frameJob.model || cfg.model || 'dall-e-3'
     const sizeSpec = frameJob.size
-    const size = isAspectRatioSpec(sizeSpec)
-      ? mapAspectRatioToDalleSize(sizeSpec)
-      : (isPixelSizeSpec(sizeSpec) ? sizeSpec : DALLE_FALLBACK_DIMENSION)
+    const seedream = isSeedreamLikeImageModel(model)
+    const size = seedream
+      ? resolveSeedreamSizeSpec(sizeSpec)
+      : isAspectRatioSpec(sizeSpec)
+        ? mapAspectRatioToDalleSize(sizeSpec)
+        : (isPixelSizeSpec(sizeSpec) ? sizeSpec : DALLE_FALLBACK_DIMENSION)
+
+    const refs = seedream
+      ? OpenAIImageAdapter.parseReferenceGallery(frameJob.referenceImages)
+      : undefined
+    const basePrompt = String(frameJob.prompt || '').trim()
+    const prompt = refs?.length
+      ? [
+          `请严格参考提供的 ${refs.length} 张参考图（按顺序为图1…图${refs.length}）。`,
+          '人物外貌以角色形象参考图为准（通常靠前），保持脸型、发型、五官、服装一致；场景/道具图只约束环境，不得改变人物长相。',
+          '不要生成与角色形象参考图明显不同的新面孔。',
+          basePrompt,
+        ].join('\n')
+      : basePrompt
+
+    const body: Record<string, unknown> = {
+      model,
+      prompt,
+      size,
+      n: 1,
+      response_format: 'url',
+    }
+    // Seedream i2i / multi-ref (huohuo gateway): extension field beyond OpenAI DALL·E.
+    if (refs?.length) {
+      body.image = refs.length === 1 ? refs[0] : refs
+      body.sequential_image_generation = 'disabled'
+    }
 
     return {
       url: joinProviderUrl(cfg.baseUrl, '/v1', '/images/generations'),
@@ -36,13 +68,7 @@ export class OpenAIImageAdapter implements ImageProviderAdapter {
         'Content-Type': 'application/json',
         Authorization: `Bearer ${cfg.apiKey}`,
       },
-      body: {
-        model: frameJob.model || 'dall-e-3',
-        prompt: frameJob.prompt,
-        size,
-        n: 1,
-        response_format: 'url',
-      },
+      body,
     }
   }
 
@@ -103,5 +129,17 @@ export class OpenAIImageAdapter implements ImageProviderAdapter {
 
   private resolveEmbeddedB64Blob(vendorJson: any): string | null {
     return vendorJson?.data?.[0]?.b64_json || null
+  }
+
+  private static parseReferenceGallery(raw?: string | null): string[] | undefined {
+    if (!raw) return undefined
+    try {
+      const parsed = JSON.parse(raw)
+      if (!Array.isArray(parsed)) return undefined
+      const refs = parsed.map((item) => String(item || '').trim()).filter(Boolean).slice(0, 10)
+      return refs.length ? refs : undefined
+    } catch {
+      return undefined
+    }
   }
 }

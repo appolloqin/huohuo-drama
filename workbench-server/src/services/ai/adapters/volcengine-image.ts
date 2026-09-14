@@ -5,6 +5,7 @@ import type { AIConfig, ProviderRequest } from './adapter-shared.js'
 import type { ImageGenResponse, ImagePollResponse, ImageProviderAdapter } from './image-contracts.js'
 import type { ImageGenerationRecord } from './image-contracts.js'
 import {
+  ensureMinPixelArea,
   isAspectRatioSpec,
   isPixelSizeSpec,
   mapAspectRatioToPixelDims,
@@ -100,7 +101,12 @@ export class VolcEngineImageAdapter implements ImageProviderAdapter {
 
   private static resolveCanvasDims(size?: string | null): { width?: number; height?: number } {
     if (isAspectRatioSpec(size)) return mapAspectRatioToPixelDims(size)
-    if (size && isPixelSizeSpec(size)) return splitPixelSizeSpec(size)
+    if (size && isPixelSizeSpec(size)) {
+      const parsed = splitPixelSizeSpec(size)
+      if (parsed.width && parsed.height) {
+        return ensureMinPixelArea(parsed.width, parsed.height)
+      }
+    }
     return mapAspectRatioToPixelDims('16:9')
   }
 
