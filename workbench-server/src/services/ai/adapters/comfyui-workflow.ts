@@ -332,10 +332,17 @@ function firstOutputFile(outputs: Record<string, any> | undefined): { filename: 
     if (!node || typeof node !== 'object') continue
     for (const key of ['images', 'gifs', 'videos', 'files']) {
       const arr = (node as Record<string, unknown>)[key]
-      if (!Array.isArray(arr) || !arr[0] || typeof arr[0] !== 'object') continue
-      const file = arr[0] as { filename?: string; subfolder?: string; type?: string }
-      if (typeof file.filename === 'string' && file.filename) {
-        return { filename: file.filename, subfolder: file.subfolder, type: file.type }
+      if (!Array.isArray(arr) || !arr.length) continue
+      const first = arr[0]
+      if (typeof first === 'string' && first.trim()) {
+        return { filename: first.trim(), subfolder: '', type: 'output' }
+      }
+      if (first && typeof first === 'object') {
+        const file = first as { filename?: string; subfolder?: string; type?: string; name?: string }
+        const filename = file.filename || file.name
+        if (typeof filename === 'string' && filename) {
+          return { filename, subfolder: file.subfolder, type: file.type }
+        }
       }
     }
   }
@@ -351,6 +358,18 @@ export function comfyViewPath(file: { filename: string; subfolder?: string; type
   return `/view?${params.toString()}`
 }
 
+function formatComfyStatusError(entry: any): string {
+  const messages = entry?.status?.messages
+  if (Array.isArray(messages) && messages.length) {
+    const last = messages[messages.length - 1]
+    if (Array.isArray(last) && last[1]) {
+      return typeof last[1] === 'string' ? last[1] : JSON.stringify(last[1])
+    }
+    return JSON.stringify(messages[messages.length - 1])
+  }
+  return 'ComfyUI 生成失败'
+}
+
 export function parseComfyuiHistoryMedia(
   history: Record<string, any>,
   promptId: string,
@@ -362,18 +381,38 @@ export function parseComfyuiHistoryMedia(
 
   const statusStr = String(entry.status?.status_str || entry.status || '').toLowerCase()
   if (statusStr === 'error' || statusStr === 'failed') {
-    return { status: 'failed', error: entry.status?.messages?.[0]?.[1] || 'ComfyUI 生成失败' }
+    return { status: 'failed', error: formatComfyStatusError(entry) }
+  }
+
+  // Outputs are the source of truth — some Comfy builds omit status.completed.
+  const file = firstOutputFile(entry.outputs)
+  if (file) {
+    return {
+      status: 'completed',
+      mediaUrl: resolveRelativeMediaUrl(_baseUrl || '', comfyViewPath(file)),
+    }
   }
 
   const completed = entry.status?.completed === true || statusStr === 'success'
-  const file = firstOutputFile(entry.outputs)
-  if (completed && file) {
-    return { status: 'completed', mediaUrl: resolveRelativeMediaUrl(_baseUrl || '', comfyViewPath(file)) }
-  }
-  if (completed && !file) {
-    return { status: 'failed', error: 'ComfyUI history 没有输出文件' }
+  if (completed) {
+    return { status: 'failed', error: 'ComfyUI history 没有输出文件（请确认工作流含 SaveImage / SaveImageAdvanced）' }
   }
   return { status: 'processing' }
+}
+
+/** True when prompt_id is still queued or executing on the Comfy server. */
+export function isPromptIdInComfyQueue(queueJson: any, promptId: string): boolean {
+  if (!queueJson || typeof queueJson !== 'object') return false
+  const buckets = [queueJson.queue_running, queueJson.queue_pending, queueJson.running, queueJson.pending]
+  for (const bucket of buckets) {
+    if (!Array.isArray(bucket)) continue
+    for (const item of bucket) {
+      // Typical row: [number, promptId, ...]
+      if (Array.isArray(item) && item.some((x) => String(x) === promptId)) return true
+      if (item && typeof item === 'object' && String((item as any).prompt_id || '') === promptId) return true
+    }
+  }
+  return false
 }
 
 export function joinComfyUrl(baseUrl: string, path: string): string {

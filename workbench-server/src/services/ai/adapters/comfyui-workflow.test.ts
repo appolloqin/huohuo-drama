@@ -3,6 +3,7 @@ import { describe, it } from 'node:test'
 import {
   applyComfyuiTitleInputs,
   assertComfyRequiredTitles,
+  isPromptIdInComfyQueue,
   parseComfyuiHistoryMedia,
   resolveComfyuiWorkflow,
 } from './comfyui-workflow.js'
@@ -151,6 +152,36 @@ describe('comfyui-workflow', () => {
     )
     assert.equal(href.status, 'completed')
     assert.equal(href.mediaUrl, 'http://127.0.0.1:8188/view?filename=out.png&subfolder=&type=output')
+  })
+
+  it('completes when outputs have images even without status.completed', () => {
+    const href = parseComfyuiHistoryMedia(
+      {
+        'pid-2': {
+          outputs: {
+            '195': { images: [{ filename: 'adv.png', subfolder: '', type: 'output' }] },
+          },
+        },
+      },
+      'pid-2',
+      'http://192.168.1.10:8188',
+    )
+    assert.equal(href.status, 'completed')
+    assert.equal(href.mediaUrl, 'http://192.168.1.10:8188/view?filename=adv.png&subfolder=&type=output')
+  })
+
+  it('isPromptIdInComfyQueue finds prompt in queue_running', () => {
+    assert.equal(
+      isPromptIdInComfyQueue(
+        { queue_running: [[0, 'abc-123', {}]], queue_pending: [] },
+        'abc-123',
+      ),
+      true,
+    )
+    assert.equal(
+      isPromptIdInComfyQueue({ queue_running: [], queue_pending: [] }, 'abc-123'),
+      false,
+    )
   })
 
   it('registers comfyui image and video adapters', () => {

@@ -3584,8 +3584,8 @@ async function ensureShotSequenceRefsMigrated(sb) {
 }
 
 async function waitForShotSequenceFrameGrowth(sb, beforeCount) {
-  for (let i = 0; i < 24; i++) {
-    await pauseMillis(2500)
+  for (let i = 0; i < 90; i++) {
+    await pauseMillis(4000)
     await syncWorkbenchFromApi()
     const refreshed = shotRowsForEpisode.value.find(s => s.id === sb.id)
     if (readShotSlideshowSequencePaths(refreshed).length > beforeCount) return true
@@ -3625,7 +3625,7 @@ async function requestShotReferenceFrameRender(sb, frameIndex) {
   const beforeCount = refsBefore.length
   try {
     if (!frameRenderPendingKeys.value.includes(key)) frameRenderPendingKeys.value.push(key)
-    await imageAPI.generate({
+    const generation = await imageAPI.generate({
       storyboard_id: sb.id,
       drama_id: dramaId,
       prompt,
@@ -3634,7 +3634,26 @@ async function requestShotReferenceFrameRender(sb, frameIndex) {
       aspect_ratio: readImageAspectForScope('shot'),
     })
     toast.success(replaceMode ? `序列帧 ${frameIndex + 1} 重新生成中` : `序列帧 ${frameIndex + 1} 生成中`)
-    const done = await waitForShotSequenceFrameGrowth(sb, beforeCount)
+    let done = false
+    if (generation?.id) {
+      for (let i = 0; i < 150; i++) {
+        await pauseMillis(4000)
+        try {
+          const res = await imageAPI.get(generation.id)
+          await syncWorkbenchFromApi()
+          if (res?.status === 'completed') {
+            done = true
+            break
+          }
+          if (res?.status === 'failed') {
+            toast.error(res?.error_msg || res?.errorMsg || `序列帧 ${frameIndex + 1} 生成失败`)
+            return false
+          }
+        } catch {}
+      }
+    } else {
+      done = await waitForShotSequenceFrameGrowth(sb, beforeCount)
+    }
     if (!done) {
       toast.warning(`序列帧 ${frameIndex + 1} 生成超时，请稍后刷新或重试`)
       return false
@@ -3749,19 +3768,60 @@ async function requestShotFrameRender(sb, frameType) {
       reference_images: referenceImages.length ? referenceImages : undefined,
       aspect_ratio: readImageAspectForScope('shot'),
     }
-    await imageAPI.generate(body)
+    const generation = await imageAPI.generate(body)
     toast.success(frameType === 'first_frame' ? '首帧生成中' : '尾帧生成中')
     await syncWorkbenchFromApi()
-    pollUntilWorkbenchReady(() => {
-      const target = shotRowsForEpisode.value.find(s => s.id === sb.id)
-      const done = frameType === 'first_frame' ? !!readShotLeadFrameUrl(target) : !!readShotTrailFrameUrl(target)
-      if (done) frameRenderPendingKeys.value = frameRenderPendingKeys.value.filter(item => item !== key)
-      return done
-    })
+    await pollShotImageJob(generation?.id, sb.id, frameType, key)
   } catch (e) {
     frameRenderPendingKeys.value = frameRenderPendingKeys.value.filter(item => item !== key)
     toast.error(e.message)
   }
+}
+
+/** Poll image generation until terminal status (Comfy local jobs can exceed 60s UI wait). */
+async function pollShotImageJob(generationId, storyboardId, frameType, pendingKey) {
+  const clearPending = () => {
+    if (pendingKey) frameRenderPendingKeys.value = frameRenderPendingKeys.value.filter(item => item !== pendingKey)
+  }
+  const frameReady = () => {
+    const target = shotRowsForEpisode.value.find(s => s.id === storyboardId)
+    return frameType === 'first_frame' ? !!readShotLeadFrameUrl(target) : !!readShotTrailFrameUrl(target)
+  }
+
+  if (!generationId) {
+    for (let i = 0; i < 120; i++) {
+      await pauseMillis(4000)
+      await syncWorkbenchFromApi()
+      if (frameReady()) {
+        clearPending()
+        toast.success(frameType === 'first_frame' ? '首帧生成完成' : '尾帧生成完成')
+        return
+      }
+    }
+    clearPending()
+    toast.error(frameType === 'first_frame' ? '首帧生成超时' : '尾帧生成超时')
+    return
+  }
+
+  for (let i = 0; i < 150; i++) {
+    await pauseMillis(4000)
+    try {
+      const res = await imageAPI.get(generationId)
+      await syncWorkbenchFromApi()
+      if (res?.status === 'completed' || frameReady()) {
+        clearPending()
+        toast.success(frameType === 'first_frame' ? '首帧生成完成' : '尾帧生成完成')
+        return
+      }
+      if (res?.status === 'failed') {
+        clearPending()
+        toast.error(res?.error_msg || res?.errorMsg || (frameType === 'first_frame' ? '首帧生成失败' : '尾帧生成失败'))
+        return
+      }
+    } catch {}
+  }
+  clearPending()
+  toast.error(frameType === 'first_frame' ? '首帧生成超时' : '尾帧生成超时')
 }
 
 async function requestShotClipRender(sb) {

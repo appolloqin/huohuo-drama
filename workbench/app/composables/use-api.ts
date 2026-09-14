@@ -945,6 +945,7 @@ export const sceneAPI = {
 
 export const imageAPI = {
   generate: (d: any) => api.post('/images', d),
+  get: (id: number) => api.get(`/images/${id}`),
   list: (params?: { drama_id?: number; storyboard_id?: number }) => {
     const query = new URLSearchParams()
     if (params?.drama_id) query.set('drama_id', String(params.drama_id))
