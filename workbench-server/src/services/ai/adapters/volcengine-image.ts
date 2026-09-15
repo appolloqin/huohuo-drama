@@ -29,6 +29,7 @@ export class VolcEngineImageAdapter implements ImageProviderAdapter {
       ? [
           '请严格参考提供的人物/场景参考图，保持人物脸型、发型、五官、服装与场景风格一致。',
           '不要生成与参考图明显不同的新角色或环境。',
+          '画面禁止出现文字、对白气泡、字幕或水印；参考图里若有文字也不要抄到成图。',
           basePrompt,
         ].join('\n')
       : basePrompt

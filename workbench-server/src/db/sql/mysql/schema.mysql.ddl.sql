@@ -135,6 +135,7 @@ CREATE TABLE IF NOT EXISTS dramas (
     dialogue_blob_path TEXT,
     bgm_prompt TEXT,
     sound_effect TEXT,
+    bgm_url TEXT,
     dialogue TEXT,
     description TEXT,
     duration INT DEFAULT 0,

@@ -885,6 +885,19 @@ export const episodeAPI = {
   pipelineStatus: (id: number) => api.get(`/episodes/${id}/pipeline-status`),
 }
 
+export const uploadAPI = {
+  image: (file: File) => {
+    const fd = new FormData()
+    fd.append('file', file)
+    return uploadMultipart<{ url: string; path: string }>('/upload/image', fd)
+  },
+  audio: (file: File) => {
+    const fd = new FormData()
+    fd.append('file', file)
+    return uploadMultipart<{ url: string; path: string }>('/upload/audio', fd)
+  },
+}
+
 export const storyboardAPI = {
   create: (data: any) => api.post('/storyboards', data),
   update: (id: number, data: any) => api.put(`/storyboards/${id}`, data),
@@ -970,6 +983,13 @@ export const composeAPI = {
     api.post(`/compose/episodes/${epId}/compose-all${motionPipeline ? `?motion_pipeline=${motionPipeline}` : ''}`),
   status: (epId: number, motionPipeline?: string) =>
     api.get(`/compose/episodes/${epId}/compose-status${motionPipeline ? `?motion_pipeline=${motionPipeline}` : ''}`),
+  bgmPresets: () => api.get<{ presets: Array<{
+    id: string
+    label: string
+    description: string
+    relativePath: string
+    preview_url: string
+  }> }>('/compose/bgm-presets'),
 }
 export const slideshowAPI = {
   shot: (id: number) => api.post(`/slideshow/storyboards/${id}/slideshow`),

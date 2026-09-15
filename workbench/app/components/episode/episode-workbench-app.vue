@@ -839,8 +839,38 @@
                 />
                   <FieldHelp :text="currentAspectHelpText" />
               </div>
-              <div class="ml-auto flex gap-1">
+              <div class="ml-auto flex gap-1 items-center">
                 <BaseSelect v-if="isAiPipeline && resourcePaneKey === 'shots'" v-model="shotFrameCaptureMode" :options="shotFrameModeOptions" placeholder="帧模式" searchable style="width:100px" />
+                <template v-if="isAiPipeline && resourcePaneKey === 'shots'">
+                  <button
+                    v-if="!shotFrameSelectMode"
+                    class="btn btn-sm"
+                    :disabled="!shotRowsForEpisode.length || shotFrameBatchBusy"
+                    @click="confirmRegenerateAllShotFrames"
+                  >
+                    重新生成全部
+                  </button>
+                  <button
+                    v-if="!shotFrameSelectMode"
+                    class="btn btn-sm"
+                    :disabled="!shotRowsForEpisode.length"
+                    @click="shotFrameSelectMode = true"
+                  >
+                    选择生成
+                  </button>
+                  <template v-else>
+                    <span class="tag mono">已选 {{ selectedShotFrameKeys.length }}</span>
+                    <button class="btn btn-sm" @click="selectAllVisibleShotFrames">全选</button>
+                    <button class="btn btn-sm" @click="clearShotFrameSelection">取消</button>
+                    <button
+                      class="btn btn-sm btn-primary"
+                      :disabled="!selectedShotFrameKeys.length || shotFrameBatchBusy"
+                      @click="generateSelectedShotFrames"
+                    >
+                      生成所选
+                    </button>
+                  </template>
+                </template>
                 <template v-if="isFramePipeline && resourcePaneKey === 'keyframes'">
                   <button class="btn btn-sm btn-primary" @click="batchRequestShotSequenceFrames">
                     <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="8.5" r="1.5"/><polyline points="21 15 16 10 5 21"/></svg>
@@ -934,8 +964,19 @@
             <div v-else class="keyframe-scroll">
               <div class="keyframe-grid">
                 <div v-for="(sb, i) in shotRowsForEpisode" :key="sb.id"
-                  :class="['keyframe-row', 'card', { active: focusedShotRow?.id === sb.id }]"
+                  :class="['keyframe-row', 'card', { active: focusedShotRow?.id === sb.id, 'is-selecting': shotFrameSelectMode }]"
                   @click="focusedShotRow = sb">
+                  <label
+                    v-if="shotFrameSelectMode"
+                    class="keyframe-row-check"
+                    @click.stop
+                  >
+                    <input
+                      type="checkbox"
+                      :checked="isShotRowFullySelected(sb)"
+                      @change="toggleShotRowSelection(sb, $event.target.checked)"
+                    >
+                  </label>
                   <!-- Info: number + type + desc -->
                   <div class="keyframe-info">
                     <div class="keyframe-top">
@@ -955,7 +996,22 @@
                   <!-- Thumbnails -->
                   <div class="keyframe-thumbs">
                     <div class="keyframe-thumb-wrap">
-                      <div class="keyframe-thumb" @click.stop="!shotFrameBusy(sb.id, 'first_frame') && requestShotFrameRender(sb, 'first_frame')">
+                      <div
+                        class="keyframe-thumb"
+                        :class="{ selected: isShotFrameSelected(sb.id, 'first_frame') }"
+                        @click.stop="onShotFrameThumbClick(sb, 'first_frame')"
+                      >
+                        <label
+                          v-if="shotFrameSelectMode"
+                          class="keyframe-thumb-check"
+                          @click.stop
+                        >
+                          <input
+                            type="checkbox"
+                            :checked="isShotFrameSelected(sb.id, 'first_frame')"
+                            @change="toggleShotFrameSelection(sb.id, 'first_frame', $event.target.checked)"
+                          >
+                        </label>
                         <img
                           v-if="readShotLeadFrameUrl(sb)"
                           :src="'/' + readShotLeadFrameUrl(sb)"
@@ -966,14 +1022,29 @@
                           <Loader2 v-if="shotFrameBusy(sb.id, 'first_frame')" :size="14" class="animate-spin" />
                           <svg v-else width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
                         </div>
-                        <span v-if="readShotLeadFrameUrl(sb)" class="keyframe-re">
+                        <span v-if="readShotLeadFrameUrl(sb) && !shotFrameSelectMode" class="keyframe-re">
                           <svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg>
                         </span>
                       </div>
                       <span class="keyframe-thumb-label">{{ shotFrameBusy(sb.id, 'first_frame') ? '首帧生成中' : '首帧' }}</span>
                     </div>
                     <div v-if="shotFrameCaptureMode === 'first_last'" class="keyframe-thumb-wrap">
-                      <div class="keyframe-thumb" @click.stop="!shotFrameBusy(sb.id, 'last_frame') && requestShotFrameRender(sb, 'last_frame')">
+                      <div
+                        class="keyframe-thumb"
+                        :class="{ selected: isShotFrameSelected(sb.id, 'last_frame') }"
+                        @click.stop="onShotFrameThumbClick(sb, 'last_frame')"
+                      >
+                        <label
+                          v-if="shotFrameSelectMode"
+                          class="keyframe-thumb-check"
+                          @click.stop
+                        >
+                          <input
+                            type="checkbox"
+                            :checked="isShotFrameSelected(sb.id, 'last_frame')"
+                            @change="toggleShotFrameSelection(sb.id, 'last_frame', $event.target.checked)"
+                          >
+                        </label>
                         <img
                           v-if="readShotTrailFrameUrl(sb)"
                           :src="'/' + readShotTrailFrameUrl(sb)"
@@ -984,7 +1055,7 @@
                           <Loader2 v-if="shotFrameBusy(sb.id, 'last_frame')" :size="14" class="animate-spin" />
                           <svg v-else width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
                         </div>
-                        <span v-if="readShotTrailFrameUrl(sb)" class="keyframe-re">
+                        <span v-if="readShotTrailFrameUrl(sb) && !shotFrameSelectMode" class="keyframe-re">
                           <svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg>
                         </span>
                       </div>
@@ -1344,6 +1415,21 @@
               <span class="text-muted" style="font-size:12px">{{ shotRowsForEpisode.length }} 个镜头</span>
               <span class="tag mono">{{ mergedClipShotCount }}/{{ shotRowsForEpisode.length }} 已合成</span>
               <FieldHelp :text="shotComposeHelpText" />
+              <div class="compose-options-trigger">
+                <label class="compose-opt compose-opt-volume">
+                  <span>BGM 音量</span>
+                  <input
+                    type="range"
+                    min="0.05"
+                    max="0.4"
+                    step="0.01"
+                    :value="episodeComposeOptions.bgm_volume"
+                    @change="persistEpisodeComposeOption('bgm_volume', Number($event.target.value))"
+                  />
+                  <span class="mono" style="font-size:10px">{{ Math.round(episodeComposeOptions.bgm_volume * 100) }}%</span>
+                </label>
+                <FieldHelp :text="composeBgmHelpText" />
+              </div>
               <div class="ml-auto flex gap-1">
                 <button class="btn btn-sm" @click="batchRequestShotComposes">
                   <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/></svg>
@@ -1389,6 +1475,56 @@
                     <span :class="['status-dot', shotOwnsMotionClip(sb) && 'ok']" /><span style="font-size:10px">{{ isFramePipeline ? '静帧' : '视频' }}</span>
                     <span :class="['status-dot', shotHasRenderedTts(sb) && 'ok']" /><span style="font-size:10px">配音</span>
                     <span :class="['status-dot', shotOwnsMergedClip(sb) && 'ok', episodeMergeBusy(sb.id) && 'pending']" /><span style="font-size:10px">{{ episodeMergeBusy(sb.id) ? '合成中' : '合成' }}</span>
+                  </div>
+                  <div class="shot-bgm-panel">
+                    <div class="shot-bgm-top">
+                      <label class="shot-bgm-toggle">
+                        <input
+                          type="checkbox"
+                          :checked="shotBgmEnabled(sb)"
+                          @change="toggleShotBgm(sb, $event.target.checked)"
+                        />
+                        <span>BGM</span>
+                      </label>
+                      <span v-if="shotBgmEnabled(sb)" class="shot-bgm-mode">{{ shotBgmIsCustom(sb) ? '自定义' : '内置' }}</span>
+                    </div>
+                    <div v-if="shotBgmEnabled(sb)" class="shot-bgm-controls">
+                      <select
+                        v-if="!shotBgmIsCustom(sb) && builtinBgmPresets.length"
+                        class="shot-bgm-select"
+                        :value="parseShotBuiltinBgmId(sb) || DEFAULT_BUILTIN_BGM_ID"
+                        :title="shotBuiltinBgmDescription(sb)"
+                        @change="onShotBuiltinBgmPicked(sb, $event.target.value)"
+                      >
+                        <option v-for="preset in builtinBgmPresets" :key="preset.id" :value="preset.id">
+                          {{ preset.label }}
+                        </option>
+                      </select>
+                      <button
+                        v-if="!shotBgmIsCustom(sb)"
+                        class="btn btn-sm"
+                        type="button"
+                        :disabled="!shotBuiltinPreviewUrl(sb)"
+                        @click="previewShotBuiltinBgm(sb)"
+                      >
+                        试听
+                      </button>
+                      <label class="btn btn-sm">
+                        上传
+                        <input type="file" accept="audio/*,.mp3,.wav,.m4a,.aac,.ogg,.flac" hidden @change="onShotBgmFilePicked(sb, $event)" />
+                      </label>
+                      <button
+                        v-if="shotBgmIsCustom(sb)"
+                        class="btn btn-sm"
+                        type="button"
+                        @click="setShotBgmBuiltin(sb)"
+                      >
+                        改内置
+                      </button>
+                    </div>
+                    <p v-if="shotBgmEnabled(sb) && !shotBgmIsCustom(sb)" class="shot-bgm-desc">
+                      {{ shotBuiltinBgmDescription(sb) }}
+                    </p>
                   </div>
                   <div v-if="episodeMergeErrorHint(sb.id)" class="clip-error">{{ episodeMergeErrorHint(sb.id) }}</div>
                 </div>
@@ -1520,7 +1656,7 @@ import EpisodeAssetCreateModal from '~/components/episode/shared/episode-asset-c
 import { useAgent } from '~/composables/useAgent'
 import {
   dramaAPI, episodeAPI, storyboardAPI, characterAPI, characterFormAPI, propAPI, sceneAPI,
-  imageAPI, videoAPI, composeAPI, slideshowAPI, mergeAPI, gridAPI, aiConfigAPI, voicesAPI, templatesAPI,
+  imageAPI, videoAPI, composeAPI, slideshowAPI, mergeAPI, gridAPI, aiConfigAPI, voicesAPI, templatesAPI, uploadAPI,
 } from '~/composables/use-api'
 import {
   Users, MapPin, Video, ImageIcon, Layers, Mic2, FileText, FolderKanban, Clapperboard, Download, Film,
@@ -1540,6 +1676,19 @@ import {
   readEpisodeVideoGenOptions,
   videoGenOptionsHelpText,
 } from '~/common/media/videoGenOptions'
+import {
+  builtinBgmRef,
+  composeBgmHelpText,
+  DEFAULT_BUILTIN_BGM_ID,
+  FALLBACK_BUILTIN_BGM_PRESETS,
+  mergeEpisodeComposeOptions,
+  parseShotBuiltinBgmId,
+  readEpisodeComposeOptions,
+  resolveBuiltinBgmPresets,
+  shotBgmEnabled,
+  shotBgmIsCustom,
+  STORYBOARD_BGM_BUILTIN,
+} from '~/common/media/composeOptions'
 import {
   normalizeProductionPipeline,
   pipelineLabel,
@@ -1656,6 +1805,24 @@ function persistShotFrameCaptureMode(mode) {
 }
 
 watch(shotFrameCaptureMode, (mode) => persistShotFrameCaptureMode(mode))
+
+const shotFrameSelectMode = ref(false)
+const selectedShotFrameKeys = ref([])
+const shotFrameBatchBusy = ref(false)
+
+watch(shotFrameCaptureMode, () => {
+  selectedShotFrameKeys.value = selectedShotFrameKeys.value.filter((key) => {
+    if (shotFrameCaptureMode.value === 'first') return key.endsWith(':first_frame')
+    return true
+  })
+})
+
+watch(resourcePaneKey, (key) => {
+  if (key !== 'shots') {
+    shotFrameSelectMode.value = false
+    selectedShotFrameKeys.value = []
+  }
+})
 const defaultVoiceCatalogSeed = [
   { id: 'alloy', label: 'Alloy', gender: '中性', traits: '平衡、自然、克制', suitable: '通用叙述、旁白、需要稳定输出的角色' },
   { id: 'echo', label: 'Echo', gender: '男声', traits: '低沉、稳重、冷静', suitable: '成熟男性、父辈、旁白、压迫感角色' },
@@ -1750,6 +1917,10 @@ onMounted(() => {
 onBeforeUnmount(() => {
   window.removeEventListener('keydown', onAssetPreviewKeydown)
   stopEpisodeMergePoll()
+  if (bgmPreviewAudio.value) {
+    bgmPreviewAudio.value.pause()
+    bgmPreviewAudio.value = null
+  }
 })
 
 function locationBackdropBusy(id) {
@@ -1897,6 +2068,9 @@ const imageConfigLocked = computed(() => !!boundImageConfigId.value)
 
 const episodeImageSizes = ref({})
 const episodeVideoGenOptions = ref(readEpisodeVideoGenOptions())
+const episodeComposeOptions = ref(readEpisodeComposeOptions())
+const builtinBgmPresets = ref(resolveBuiltinBgmPresets())
+const bgmPreviewAudio = ref(null)
 const imageAspectPickerOptions = imageAspectSelectOptions()
 const imageAspectScope = computed(() => {
   if (resourcePaneKey.value === 'castList' || resourcePaneKey.value === 'characterForms' || resourcePaneKey.value === 'props') return 'character'
@@ -1946,6 +2120,109 @@ async function persistEpisodeVideoGenOption(key, checked) {
   }
 }
 
+async function persistEpisodeComposeOption(key, value) {
+  episodeComposeOptions.value = { ...episodeComposeOptions.value, [key]: value }
+  if (!activeEpisodeId.value) return
+  try {
+    await episodeAPI.update(activeEpisodeId.value, { compose_options: episodeComposeOptions.value })
+    if (episodeWorkbenchRow.value) {
+      episodeWorkbenchRow.value.metadata = mergeEpisodeComposeOptions(
+        episodeWorkbenchRow.value.metadata,
+        { [key]: value },
+      )
+    }
+  } catch (e) {
+    toast.error(e.message)
+  }
+}
+
+async function loadBuiltinBgmPresets() {
+  try {
+    const res = await composeAPI.bgmPresets()
+    builtinBgmPresets.value = resolveBuiltinBgmPresets(res?.presets)
+  } catch {
+    builtinBgmPresets.value = resolveBuiltinBgmPresets(FALLBACK_BUILTIN_BGM_PRESETS)
+  }
+}
+
+async function persistShotBgmUrl(sb, bgmUrl) {
+  if (!sb?.id) return
+  try {
+    await storyboardAPI.update(sb.id, { bgm_url: bgmUrl })
+    sb.bgm_url = bgmUrl
+    sb.bgmUrl = bgmUrl
+    const row = shotRowsForEpisode.value.find(item => item.id === sb.id)
+    if (row) {
+      row.bgm_url = bgmUrl
+      row.bgmUrl = bgmUrl
+    }
+  } catch (e) {
+    toast.error(e?.message || 'BGM 更新失败')
+  }
+}
+
+async function toggleShotBgm(sb, enabled) {
+  await persistShotBgmUrl(sb, enabled ? STORYBOARD_BGM_BUILTIN : null)
+}
+
+async function onShotBuiltinBgmPicked(sb, presetId) {
+  await persistShotBgmUrl(sb, builtinBgmRef(presetId || DEFAULT_BUILTIN_BGM_ID))
+}
+
+async function setShotBgmBuiltin(sb) {
+  await persistShotBgmUrl(sb, STORYBOARD_BGM_BUILTIN)
+  toast.success('已改用内置 BGM')
+}
+
+function shotBuiltinPreset(sb) {
+  const id = parseShotBuiltinBgmId(sb) || DEFAULT_BUILTIN_BGM_ID
+  return builtinBgmPresets.value.find(p => p.id === id)
+    || FALLBACK_BUILTIN_BGM_PRESETS.find(p => p.id === id)
+    || FALLBACK_BUILTIN_BGM_PRESETS[0]
+}
+
+function shotBuiltinBgmDescription(sb) {
+  return shotBuiltinPreset(sb)?.description || ''
+}
+
+function shotBuiltinPreviewUrl(sb) {
+  return shotBuiltinPreset(sb)?.preview_url || ''
+}
+
+async function previewShotBuiltinBgm(sb) {
+  await loadBuiltinBgmPresets()
+  const preset = shotBuiltinPreset(sb)
+  if (!preset?.preview_url) {
+    toast.error('暂无试听文件')
+    return
+  }
+  try {
+    if (bgmPreviewAudio.value) {
+      bgmPreviewAudio.value.pause()
+      bgmPreviewAudio.value = null
+    }
+    const audio = new Audio(preset.preview_url)
+    bgmPreviewAudio.value = audio
+    await audio.play()
+  } catch (e) {
+    toast.error('试听失败：请先重启后端以生成内置曲目文件')
+  }
+}
+
+async function onShotBgmFilePicked(sb, event) {
+  const file = event?.target?.files?.[0]
+  if (event?.target) event.target.value = ''
+  if (!file || !sb?.id) return
+  try {
+    const uploaded = await uploadAPI.audio(file)
+    const path = uploaded.path || String(uploaded.url || '').replace(/^\//, '')
+    await persistShotBgmUrl(sb, path)
+    toast.success(`镜头 #${sb.storyboard_number || sb.storyboardNumber || sb.id} BGM 已上传`)
+  } catch (e) {
+    toast.error(e?.message || 'BGM 上传失败')
+  }
+}
+
 async function persistEpisodeVideoConfig(configId) {
   if (!activeEpisodeId.value || !configId) return
   try {
@@ -1977,8 +2254,11 @@ async function persistEpisodeImageConfig(configId) {
 // ── 分镜拼图工作流状态 ───────────────────────────────────────
 const storyboardPuzzleHelpText =
   '将多个镜头生成一张风格统一的拼图大图，切分后分配到各镜头首帧、尾帧或参考图；比逐个生成更省时，画风更一致。'
-const shotComposeHelpText =
-  '「视频生成」产出的是 AI 原始镜头。「开始合成」会按镜头台词生成 TTS 配音与字幕，再用 ffmpeg 混流为成片；无对白则只处理视频与字幕。导出整集时拼接的是合成后的镜头。'
+const shotComposeHelpText = computed(() =>
+  isFramePipeline.value
+    ? '静帧管线：「开始合成」按分镜规划时长对齐画面，用 TTS 配音与后期字幕混流；可勾选低音量 BGM。导出整集时拼接的是合成后的镜头。'
+    : 'AI 管线：视频模型按对白生成口语音频（默认不烧屏字幕）。「开始合成」保留模型音轨并后期叠字幕；可勾选低音量 BGM。导出整集时拼接的是合成后的镜头。',
+)
 const mosaicPanelVisible = ref(false)
 const gridSplitWizardCursor = ref(0)
 const selectedCellGridLayout = ref('3x3')
@@ -3034,6 +3314,7 @@ async function syncWorkbenchFromApi() {
       episodeWorkbenchRow.value = ep
       episodeImageSizes.value = readEpisodeImageSizes(ep.metadata)
       episodeVideoGenOptions.value = readEpisodeVideoGenOptions(ep.metadata)
+      episodeComposeOptions.value = readEpisodeComposeOptions(ep.metadata)
       try { castList.value = await episodeAPI.characters(ep.id) } catch { castList.value = [] }
       try { characterFormList.value = await episodeAPI.characterForms(ep.id) } catch { characterFormList.value = [] }
       try { propList.value = await episodeAPI.props(ep.id) } catch { propList.value = [] }
@@ -3508,6 +3789,8 @@ function composeShotFramePrompt(sb, frameType) {
     action ? `动作：${action}` : '',
     atmosphere ? `氛围：${atmosphere}` : '',
     frameHint,
+    // Image models garble CJK; dialogue is added later via TTS/subtitles.
+    '纯电影静帧，画面中禁止出现任何文字、字幕、对白气泡、对话框、招牌乱码或水印；对白不要画进图里。no text, no speech bubbles, no captions, no watermark',
   ].filter(Boolean).join('；')
 }
 
@@ -3578,6 +3861,7 @@ function composeShotSequenceFramePrompt(sb, frameIndex, totalFrames) {
     atmosphere ? `氛围：${atmosphere}` : '',
     `序列帧 ${frameIndex + 1}/${totalFrames}：${cameraBeat}；${actionBeat}`,
     '同一镜头保持角色容貌、服装、场景与光影风格一致，但每帧机位、景别、人物姿态必须清晰可见地不同，禁止复制其他序列帧构图',
+    '纯电影静帧，画面中禁止出现任何文字、字幕、对白气泡、对话框、招牌乱码或水印；对白不要画进图里。no text, no speech bubbles, no captions, no watermark',
   ].filter(Boolean).join('；')
 }
 
@@ -3759,7 +4043,103 @@ async function batchRequestShotSequenceFrames() {
   if (!queued) toast.info('所有镜头序列帧已就绪')
 }
 
-async function requestShotFrameRender(sb, frameType) {
+function listVisibleShotFrameTypes() {
+  return shotFrameCaptureMode.value === 'first_last' ? ['first_frame', 'last_frame'] : ['first_frame']
+}
+
+function isShotFrameSelected(storyboardId, frameType) {
+  return selectedShotFrameKeys.value.includes(shotFrameTaskKey(storyboardId, frameType))
+}
+
+function isShotRowFullySelected(sb) {
+  return listVisibleShotFrameTypes().every(type => isShotFrameSelected(sb.id, type))
+}
+
+function toggleShotFrameSelection(storyboardId, frameType, checked) {
+  const key = shotFrameTaskKey(storyboardId, frameType)
+  const has = selectedShotFrameKeys.value.includes(key)
+  if (checked && !has) selectedShotFrameKeys.value = [...selectedShotFrameKeys.value, key]
+  if (!checked && has) selectedShotFrameKeys.value = selectedShotFrameKeys.value.filter(item => item !== key)
+}
+
+function toggleShotRowSelection(sb, checked) {
+  for (const type of listVisibleShotFrameTypes()) toggleShotFrameSelection(sb.id, type, checked)
+}
+
+function selectAllVisibleShotFrames() {
+  const keys = []
+  for (const sb of shotRowsForEpisode.value) {
+    for (const type of listVisibleShotFrameTypes()) keys.push(shotFrameTaskKey(sb.id, type))
+  }
+  selectedShotFrameKeys.value = keys
+}
+
+function clearShotFrameSelection() {
+  selectedShotFrameKeys.value = []
+  shotFrameSelectMode.value = false
+}
+
+function onShotFrameThumbClick(sb, frameType) {
+  if (shotFrameSelectMode.value) {
+    toggleShotFrameSelection(sb.id, frameType, !isShotFrameSelected(sb.id, frameType))
+    return
+  }
+  if (!shotFrameBusy(sb.id, frameType)) requestShotFrameRender(sb, frameType)
+}
+
+function collectAllVisibleShotFrameJobs() {
+  const jobs = []
+  for (const sb of shotRowsForEpisode.value) {
+    for (const frameType of listVisibleShotFrameTypes()) jobs.push({ sb, frameType })
+  }
+  return jobs
+}
+
+function collectSelectedShotFrameJobs() {
+  const jobs = []
+  for (const key of selectedShotFrameKeys.value) {
+    const [idPart, frameType] = key.split(':')
+    const sb = shotRowsForEpisode.value.find(item => String(item.id) === String(idPart))
+    if (sb && (frameType === 'first_frame' || frameType === 'last_frame')) jobs.push({ sb, frameType })
+  }
+  return jobs
+}
+
+function confirmRegenerateAllShotFrames() {
+  const jobs = collectAllVisibleShotFrameJobs()
+  if (!jobs.length) { toast.info('没有可生成的镜头帧'); return }
+  const includeLast = shotFrameCaptureMode.value === 'first_last'
+  const ok = typeof window === 'undefined'
+    ? true
+    : window.confirm(`将重新生成全部 ${jobs.length} 张${includeLast ? '首/尾帧' : '首帧'}（含已有图），是否继续？`)
+  if (!ok) return
+  runShotFrameJobQueue(jobs, `已开始重新生成 ${jobs.length} 张`)
+}
+
+function generateSelectedShotFrames() {
+  const jobs = collectSelectedShotFrameJobs()
+  if (!jobs.length) { toast.info('请先勾选要生成的首帧/尾帧'); return }
+  runShotFrameJobQueue(jobs, `已开始生成所选 ${jobs.length} 张`)
+  shotFrameSelectMode.value = false
+  selectedShotFrameKeys.value = []
+}
+
+async function runShotFrameJobQueue(jobs, startMessage) {
+  if (shotFrameBatchBusy.value) return
+  shotFrameBatchBusy.value = true
+  toast.success(startMessage)
+  try {
+    for (const job of jobs) {
+      await requestShotFrameRender(job.sb, job.frameType, { quiet: true, awaitCompletion: false })
+    }
+    toast.success(`已提交 ${jobs.length} 张，正在后台生成`)
+  } finally {
+    shotFrameBatchBusy.value = false
+  }
+}
+
+async function requestShotFrameRender(sb, frameType, options = {}) {
+  const quiet = !!options.quiet
   const prompt = composeShotFramePrompt(sb, frameType)
   const referenceImages = collectShotReferenceAssets(sb)
   const key = shotFrameTaskKey(sb.id, frameType)
@@ -3774,9 +4154,11 @@ async function requestShotFrameRender(sb, frameType) {
       aspect_ratio: readImageAspectForScope('shot'),
     }
     const generation = await imageAPI.generate(body)
-    toast.success(frameType === 'first_frame' ? '首帧生成中' : '尾帧生成中')
+    if (!quiet) toast.success(frameType === 'first_frame' ? '首帧生成中' : '尾帧生成中')
     await syncWorkbenchFromApi()
-    await pollShotImageJob(generation?.id, sb.id, frameType, key)
+    const poll = pollShotImageJob(generation?.id, sb.id, frameType, key, { quiet })
+    if (options.awaitCompletion === false) void poll
+    else await poll
   } catch (e) {
     frameRenderPendingKeys.value = frameRenderPendingKeys.value.filter(item => item !== key)
     toast.error(e.message)
@@ -3784,7 +4166,8 @@ async function requestShotFrameRender(sb, frameType) {
 }
 
 /** Poll image generation until terminal status (Comfy local jobs have no time ceiling). */
-async function pollShotImageJob(generationId, storyboardId, frameType, pendingKey) {
+async function pollShotImageJob(generationId, storyboardId, frameType, pendingKey, options = {}) {
+  const quiet = !!options.quiet
   const clearPending = () => {
     if (pendingKey) frameRenderPendingKeys.value = frameRenderPendingKeys.value.filter(item => item !== pendingKey)
   }
@@ -3800,6 +4183,8 @@ async function pollShotImageJob(generationId, storyboardId, frameType, pendingKe
     // First-time: any URL is enough. Regenerate: must differ from the old path.
     return !beforeUrl || url !== beforeUrl
   }
+  const doneLabel = frameType === 'first_frame' ? '首帧生成完成' : '尾帧生成完成'
+  const failLabel = frameType === 'first_frame' ? '首帧生成失败' : '尾帧生成失败'
 
   if (!generationId) {
     // No job id: keep syncing until frame appears / changes (no hard timeout).
@@ -3808,7 +4193,7 @@ async function pollShotImageJob(generationId, storyboardId, frameType, pendingKe
       await syncWorkbenchFromApi()
       if (frameUpdated()) {
         clearPending()
-        toast.success(frameType === 'first_frame' ? '首帧生成完成' : '尾帧生成完成')
+        if (!quiet) toast.success(doneLabel)
         return
       }
     }
@@ -3826,12 +4211,12 @@ async function pollShotImageJob(generationId, storyboardId, frameType, pendingKe
           await syncWorkbenchFromApi()
         }
         clearPending()
-        toast.success(frameType === 'first_frame' ? '首帧生成完成' : '尾帧生成完成')
+        if (!quiet) toast.success(doneLabel)
         return
       }
       if (res?.status === 'failed') {
         clearPending()
-        toast.error(res?.error_msg || res?.errorMsg || (frameType === 'first_frame' ? '首帧生成失败' : '尾帧生成失败'))
+        toast.error(res?.error_msg || res?.errorMsg || failLabel)
         return
       }
     } catch {}
@@ -4083,6 +4468,7 @@ async function bootstrapEpisodeWorkbench() {
   await syncWorkbenchFromApi()
   await refreshWorkbenchAiConfigs()
   await hydrateVoiceProfileCatalog()
+  await loadBuiltinBgmPresets()
 }
 
 onMounted(() => { bootstrapEpisodeWorkbench() })
@@ -4923,8 +5309,30 @@ onMounted(() => { bootstrapEpisodeWorkbench() })
   transition: all 0.15s; border: 1.5px solid var(--border);
 }
 .keyframe-thumb:hover { border-color: var(--accent); box-shadow: 0 2px 8px rgba(0,0,0,0.2); }
+.keyframe-thumb.selected { border-color: var(--accent); box-shadow: 0 0 0 2px var(--accent-glow); }
 .keyframe-thumb img { width: 100%; height: 100%; object-fit: cover; }
 .keyframe-thumb-empty { width: 100%; height: 100%; display: flex; align-items: center; justify-content: center; color: var(--text-3); }
+.keyframe-thumb-check,
+.keyframe-row-check {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+}
+.keyframe-row-check { flex-shrink: 0; }
+.keyframe-thumb-check {
+  position: absolute;
+  top: 4px;
+  left: 4px;
+  z-index: 2;
+  width: 20px;
+  height: 20px;
+  border-radius: 4px;
+  background: rgba(255,255,255,0.92);
+  box-shadow: 0 1px 4px rgba(0,0,0,0.18);
+}
+.keyframe-thumb-check input,
+.keyframe-row-check input { cursor: pointer; }
 .keyframe-re {
   position: absolute; top: 3px; right: 3px; width: 18px; height: 18px;
   border-radius: 50%; background: rgba(0,0,0,0.5); color: #fff;
@@ -4940,9 +5348,17 @@ onMounted(() => { bootstrapEpisodeWorkbench() })
 }
 
 /* Prod grid */
-.clip-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(190px, 1fr)); gap: 12px; }
+.clip-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(190px, 1fr));
+  gap: 12px;
+  align-items: start;
+}
 .clip-card {
-  display: flex; flex-direction: column; overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  height: auto;
   transition: transform 0.18s var(--ease-out), box-shadow 0.18s var(--ease-out), border-color 0.18s var(--ease-out);
   border-radius: 20px;
   background: linear-gradient(180deg, rgba(255,255,255,0.74), rgba(248,251,255,0.58));
@@ -4960,7 +5376,7 @@ onMounted(() => { bootstrapEpisodeWorkbench() })
   position: absolute; bottom: 5px; right: 5px; font-size: 10px; font-weight: 600;
   background: var(--success); color: #fff; padding: 1px 5px; border-radius: 3px;
 }
-.clip-info { padding: 10px 12px 8px; }
+.clip-info { padding: 10px 12px 8px; flex: 0 0 auto; }
 .clip-desc { font-size: 12px; line-height: 1.4; }
 .clip-meta-line { margin-top: 5px; font-size: 10px; color: var(--text-3); }
 .clip-dots { display: flex; align-items: center; gap: 4px; margin-top: 5px; color: var(--text-3); }
@@ -4970,7 +5386,14 @@ onMounted(() => { bootstrapEpisodeWorkbench() })
   line-height: 1.45;
   color: var(--error);
 }
-.clip-actions { display: flex; gap: 6px; padding: 8px 10px 10px; border-top: 1px solid rgba(27, 41, 64, 0.08); }
+.clip-actions {
+  display: flex;
+  gap: 6px;
+  padding: 8px 10px 10px;
+  border-top: 1px solid rgba(27, 41, 64, 0.08);
+  flex: 0 0 auto;
+  margin-top: 0;
+}
 .clip-actions .btn { flex: 1; justify-content: center; }
 
 /* Image viewer */
@@ -5043,6 +5466,7 @@ onMounted(() => { bootstrapEpisodeWorkbench() })
 .compose-options-trigger {
   display: inline-flex;
   align-items: center;
+  flex-wrap: wrap;
   gap: 8px;
 }
 .compose-opt {
@@ -5059,6 +5483,73 @@ onMounted(() => { bootstrapEpisodeWorkbench() })
   height: 14px;
   margin: 0;
   accent-color: var(--accent);
+}
+.compose-opt-volume input[type='range'] {
+  width: 72px;
+  height: 14px;
+  accent-color: var(--accent);
+}
+.shot-bgm-panel {
+  margin-top: 8px;
+  padding: 6px 8px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--bg-2, rgba(0, 0, 0, 0.02));
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.shot-bgm-panel:not(:has(.shot-bgm-controls)) {
+  padding: 4px 8px;
+}
+.shot-bgm-top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+.shot-bgm-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--text-1);
+  cursor: pointer;
+  user-select: none;
+}
+.shot-bgm-toggle input {
+  width: 14px;
+  height: 14px;
+  margin: 0;
+  accent-color: var(--accent);
+}
+.shot-bgm-mode {
+  font-size: 10px;
+  color: var(--text-3);
+}
+.shot-bgm-controls {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.shot-bgm-select {
+  flex: 1 1 140px;
+  min-width: 120px;
+  max-width: 100%;
+  height: 30px;
+  padding: 0 8px;
+  font-size: 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--bg-0, #fff);
+  color: var(--text-1);
+}
+.shot-bgm-desc {
+  margin: 0;
+  font-size: 10px;
+  line-height: 1.4;
+  color: var(--text-3);
 }
 .mosaic-tool { width: min(1320px, calc(100vw - 40px)); max-height: calc(100vh - 48px); display: flex; flex-direction: column; overflow: hidden; animation: scaleIn 0.2s var(--ease-out); }
 .mosaic-tool-head { display: flex; align-items: center; gap: 8px; padding: 16px 20px; border-bottom: 1px solid var(--border); flex-shrink: 0; }

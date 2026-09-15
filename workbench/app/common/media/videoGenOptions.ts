@@ -40,4 +40,4 @@ export function mergeEpisodeVideoGenOptions(
 }
 
 export const videoGenOptionsHelpText =
-  '控制视频模型生成参数：「模型音频」对应火山 Seedance（含 1.5 Pro / 2.0 / 2.0 Fast）的 generate_audio、万相 parameters.audio 等；「模型字幕」通过在提示词中补充字幕描述引导模型呈现台词；未勾选时万相会关闭 prompt_extend 并添加 negative_prompt 抑制画面字幕（多数模型不直接输出 SRT 文件）。'
+  '「模型音频」默认开启：分镜对白会写入提示词，交给视频模型口语演出（Seedance generate_audio、万相 parameters.audio 等）。「模型字幕」默认关闭：禁止画面烧录字幕，合成阶段再后期叠字幕；勾选后才会引导模型把台词画进画面。'

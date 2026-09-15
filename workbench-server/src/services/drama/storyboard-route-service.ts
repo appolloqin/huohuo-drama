@@ -27,6 +27,7 @@ const STORYBOARD_FIELD_MAP: Record<string, string> = {
   result: 'result',
   bgm_prompt: 'bgmPrompt',
   sound_effect: 'soundEffect',
+  bgm_url: 'bgmUrl',
   reference_images: 'referenceImages',
 }
 

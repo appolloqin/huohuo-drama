@@ -4,6 +4,7 @@ import path from 'path'
 import { execFileSync } from 'child_process'
 import { configureFfmpegPaths, getFfmpegExecutable } from '../../common/media/ffmpeg-path.js'
 import { readFrameSlideshowBgmVolume } from '../../common/media/frame-slideshow-bgm.js'
+import { resolvePicturePrimaryDurationSec } from './compose-duration-policy.js'
 
 configureFfmpegPaths()
 
@@ -96,6 +97,46 @@ export async function muxVideoWithBackgroundMusic(input: {
         '-shortest',
         '-movflags', '+faststart',
       ])
+      .output(input.outputPath)
+      .on('end', () => resolve())
+      .on('error', reject)
+      .run()
+  })
+}
+
+function escapeSubtitleFilterPath(subtitlePath: string): string {
+  return subtitlePath
+    .replace(/\\/g, '/')
+    .replace(/:/g, '\\:')
+    .replace(/'/g, "\\'")
+}
+
+function subtitleVideoFilter(subtitlePath: string): string {
+  const escaped = escapeSubtitleFilterPath(subtitlePath)
+  const style = 'FontSize=20\\,PrimaryColour=&HFFFFFF&\\,OutlineColour=&H000000&\\,Outline=2'
+  return `subtitles=filename='${escaped}':force_style='${style}'`
+}
+
+/** Mix a primary dialogue track with low-volume looping BGM; duration follows the primary track. */
+export async function mixDialogueAudioWithBgm(input: {
+  dialogueAudioPath: string
+  bgmPath: string
+  outputPath: string
+  volume: number
+  durationSec: number
+}): Promise<void> {
+  const volume = Math.min(1, Math.max(0.01, input.volume))
+  const duration = Math.max(0.1, input.durationSec).toFixed(3)
+  await new Promise<void>((resolve, reject) => {
+    ffmpeg(input.dialogueAudioPath)
+      .input(input.bgmPath)
+      .inputOptions(['-stream_loop', '-1'])
+      .complexFilter([
+        `[0:a]apad,atrim=0:${duration},asetpts=PTS-STARTPTS[dlg]`,
+        `[1:a]volume=${volume},atrim=0:${duration},asetpts=PTS-STARTPTS[bgm]`,
+        '[dlg][bgm]amix=inputs=2:duration=first:dropout_transition=0[aout]',
+      ])
+      .outputOptions(['-map', '[aout]', ...AUDIO_ENCODE, '-t', duration])
       .output(input.outputPath)
       .on('end', () => resolve())
       .on('error', reject)
@@ -324,103 +365,53 @@ export async function renderSlideshowFromImages(input: {
   }
 }
 
-export async function renderComposedClip(input: {
-  videoPath: string
-  audioPath?: string | null
-  subtitlePath?: string | null
-  keepSourceAudio?: boolean
-  backgroundMusicPath?: string | null
-  outputPath: string
-}) {
-  const hasSourceAudio = input.keepSourceAudio ? await probeHasAudioStream(input.videoPath) : false
-
-  if (!input.audioPath && input.keepSourceAudio && !hasSourceAudio) {
-    const bgmPath = input.backgroundMusicPath
-    if (bgmPath && fs.existsSync(bgmPath)) {
-      let videoPath = input.videoPath
-      if (input.subtitlePath && ffmpegSupportsSubtitles()) {
-        const subtitledPath = `${input.outputPath}.subbed.mp4`
-        await new Promise<void>((resolve, reject) => {
-          const escaped = input.subtitlePath!
-            .replace(/\\/g, '/')
-            .replace(/:/g, '\\:')
-            .replace(/'/g, "\\'")
-          const style = 'FontSize=20\\,PrimaryColour=&HFFFFFF&\\,OutlineColour=&H000000&\\,Outline=2'
-          ffmpeg(videoPath)
-            .videoFilters([`subtitles=filename='${escaped}':force_style='${style}'`])
-            .outputOptions([...VIDEO_ENCODE, '-an', '-movflags', '+faststart'])
-            .output(subtitledPath)
-            .on('end', () => resolve())
-            .on('error', reject)
-            .run()
-        })
-        videoPath = subtitledPath
-      }
-      await muxVideoWithBackgroundMusic({
-        videoPath,
-        bgmPath,
-        outputPath: input.outputPath,
-      })
-      if (videoPath !== input.videoPath) {
-        try {
-          if (fs.existsSync(videoPath)) fs.unlinkSync(videoPath)
-        } catch {
-          // ignore cleanup errors
-        }
-      }
-      return
-    }
-
-    await new Promise<void>((resolve, reject) => {
-      let command = ffmpeg(input.videoPath)
-      const filters: string[] = []
-      if (input.subtitlePath && ffmpegSupportsSubtitles()) {
-        const escaped = input.subtitlePath
-          .replace(/\\/g, '/')
-          .replace(/:/g, '\\:')
-          .replace(/'/g, "\\'")
-        const style = 'FontSize=20\\,PrimaryColour=&HFFFFFF&\\,OutlineColour=&H000000&\\,Outline=2'
-        filters.push(`subtitles=filename='${escaped}':force_style='${style}'`)
-      }
-      if (filters.length) command = command.videoFilter(filters)
-
-      command
-        .outputOptions(['-map', '0:v', ...VIDEO_ENCODE, '-an', '-movflags', '+faststart'])
-        .output(input.outputPath)
-        .on('end', () => resolve())
-        .on('error', reject)
-        .run()
-    })
-    return
-  }
-
+/** Extract video audio to a temp wav for further mixing. */
+async function extractAudioTrack(videoPath: string, outputWavPath: string): Promise<void> {
   await new Promise<void>((resolve, reject) => {
-    let command = ffmpeg(input.videoPath)
-    if (input.audioPath) {
-      command = command.input(input.audioPath)
-    }
+    ffmpeg(videoPath)
+      .outputOptions(['-vn', '-ac', '2', '-ar', '48000'])
+      .output(outputWavPath)
+      .on('end', () => resolve())
+      .on('error', reject)
+      .run()
+  })
+}
 
-    const filters: string[] = []
-    if (input.subtitlePath && ffmpegSupportsSubtitles()) {
-      const escaped = input.subtitlePath
-        .replace(/\\/g, '/')
-        .replace(/:/g, '\\:')
-        .replace(/'/g, "\\'")
-      const style = 'FontSize=20\\,PrimaryColour=&HFFFFFF&\\,OutlineColour=&H000000&\\,Outline=2'
-      filters.push(`subtitles=filename='${escaped}':force_style='${style}'`)
-    }
+async function burnSubtitlesOntoVideo(videoPath: string, subtitlePath: string, outputPath: string): Promise<void> {
+  await new Promise<void>((resolve, reject) => {
+    ffmpeg(videoPath)
+      .videoFilters([subtitleVideoFilter(subtitlePath)])
+      .outputOptions([...VIDEO_ENCODE, '-an', '-movflags', '+faststart'])
+      .output(outputPath)
+      .on('end', () => resolve())
+      .on('error', reject)
+      .run()
+  })
+}
 
-    if (filters.length) command = command.videoFilter(filters)
-
-    const outputOptions: string[] = []
-    if (input.audioPath) {
-      outputOptions.push('-map', '0:v', '-map', '1:a', ...VIDEO_ENCODE, ...AUDIO_ENCODE, '-shortest')
-    } else if (input.keepSourceAudio && hasSourceAudio) {
-      outputOptions.push('-map', '0:v', '-map', '0:a', ...VIDEO_ENCODE, ...AUDIO_ENCODE)
-    } else {
-      outputOptions.push('-map', '0:v', ...VIDEO_ENCODE, '-an')
-    }
-
+async function muxVideoWithAudioTrack(input: {
+  videoPath: string
+  audioPath: string
+  outputPath: string
+  durationSec?: number | null
+}): Promise<void> {
+  const durationSec = input.durationSec != null && input.durationSec > 0
+    ? resolvePicturePrimaryDurationSec(input.durationSec)
+    : null
+  const outputOptions = [
+    '-map', '0:v',
+    '-map', '1:a',
+    ...VIDEO_ENCODE,
+    ...AUDIO_ENCODE,
+    '-movflags', '+faststart',
+  ]
+  if (durationSec != null) {
+    outputOptions.push('-t', durationSec.toFixed(3))
+  }
+  await new Promise<void>((resolve, reject) => {
+    let command = ffmpeg(input.videoPath).input(input.audioPath)
+    // Pad short dialogue so output matches picture length; -t trims overrun.
+    if (durationSec != null) command = command.audioFilters(['apad'])
     command
       .outputOptions(outputOptions)
       .output(input.outputPath)
@@ -428,4 +419,140 @@ export async function renderComposedClip(input: {
       .on('error', reject)
       .run()
   })
+}
+
+export async function renderComposedClip(input: {
+  videoPath: string
+  audioPath?: string | null
+  subtitlePath?: string | null
+  keepSourceAudio?: boolean
+  backgroundMusicPath?: string | null
+  backgroundMusicVolume?: number
+  outputPath: string
+}) {
+  const bgmPath = input.backgroundMusicPath && fs.existsSync(input.backgroundMusicPath)
+    ? input.backgroundMusicPath
+    : null
+  const bgmVolume = input.backgroundMusicVolume ?? readFrameSlideshowBgmVolume()
+  const wantSubtitles = !!(input.subtitlePath && ffmpegSupportsSubtitles())
+  const hasSourceAudio = input.keepSourceAudio ? await probeHasAudioStream(input.videoPath) : false
+  const pictureDurationSec = resolvePicturePrimaryDurationSec(await probeMediaDuration(input.videoPath))
+
+  const tempPaths: string[] = []
+  const cleanup = () => {
+    for (const filePath of tempPaths) {
+      try {
+        if (fs.existsSync(filePath)) fs.unlinkSync(filePath)
+      } catch {
+        // ignore
+      }
+    }
+  }
+
+  try {
+    let videoPath = input.videoPath
+    if (wantSubtitles) {
+      const subtitledPath = `${input.outputPath}.subbed.mp4`
+      await burnSubtitlesOntoVideo(videoPath, input.subtitlePath!, subtitledPath)
+      tempPaths.push(subtitledPath)
+      videoPath = subtitledPath
+    }
+
+    // External dialogue/TTS track (frame slideshow): picture-primary length.
+    if (input.audioPath) {
+      let mixedAudioPath = input.audioPath
+      if (bgmPath) {
+        const mixedPath = `${input.outputPath}.mix.m4a`
+        await mixDialogueAudioWithBgm({
+          dialogueAudioPath: input.audioPath,
+          bgmPath,
+          outputPath: mixedPath,
+          volume: bgmVolume,
+          durationSec: pictureDurationSec,
+        })
+        tempPaths.push(mixedPath)
+        mixedAudioPath = mixedPath
+      } else {
+        // Pad/trim TTS alone via -t on mux
+      }
+      await muxVideoWithAudioTrack({
+        videoPath,
+        audioPath: mixedAudioPath,
+        outputPath: input.outputPath,
+        durationSec: pictureDurationSec,
+      })
+      return
+    }
+
+    // Keep model / source audio (AI video path).
+    if (input.keepSourceAudio && hasSourceAudio) {
+      if (bgmPath) {
+        const extractedPath = `${input.outputPath}.dlg.wav`
+        const mixedPath = `${input.outputPath}.mix.m4a`
+        await extractAudioTrack(input.videoPath, extractedPath)
+        tempPaths.push(extractedPath)
+        await mixDialogueAudioWithBgm({
+          dialogueAudioPath: extractedPath,
+          bgmPath,
+          outputPath: mixedPath,
+          volume: bgmVolume,
+          durationSec: pictureDurationSec,
+        })
+        tempPaths.push(mixedPath)
+        await muxVideoWithAudioTrack({
+          videoPath,
+          audioPath: mixedPath,
+          outputPath: input.outputPath,
+          durationSec: pictureDurationSec,
+        })
+        return
+      }
+
+      // Subtitles burn strips audio; re-mux original dialogue track.
+      if (videoPath !== input.videoPath) {
+        const extractedPath = `${input.outputPath}.dlg.wav`
+        await extractAudioTrack(input.videoPath, extractedPath)
+        tempPaths.push(extractedPath)
+        await muxVideoWithAudioTrack({
+          videoPath,
+          audioPath: extractedPath,
+          outputPath: input.outputPath,
+          durationSec: pictureDurationSec,
+        })
+        return
+      }
+
+      await new Promise<void>((resolve, reject) => {
+        ffmpeg(videoPath)
+          .outputOptions(['-map', '0:v', '-map', '0:a', ...VIDEO_ENCODE, ...AUDIO_ENCODE, '-movflags', '+faststart'])
+          .output(input.outputPath)
+          .on('end', () => resolve())
+          .on('error', reject)
+          .run()
+      })
+      return
+    }
+
+    // No dialogue track: optional BGM only.
+    if (bgmPath) {
+      await muxVideoWithBackgroundMusic({
+        videoPath,
+        bgmPath,
+        outputPath: input.outputPath,
+        volume: bgmVolume,
+      })
+      return
+    }
+
+    await new Promise<void>((resolve, reject) => {
+      ffmpeg(videoPath)
+        .outputOptions(['-map', '0:v', ...VIDEO_ENCODE, '-an', '-movflags', '+faststart'])
+        .output(input.outputPath)
+        .on('end', () => resolve())
+        .on('error', reject)
+        .run()
+    })
+  } finally {
+    cleanup()
+  }
 }

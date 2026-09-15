@@ -243,7 +243,7 @@ export const studioZh = {
     shotComposeHelp:
       '「视频生成」产出的是 AI 原始镜头。「开始合成」会按镜头台词生成 TTS 配音与字幕，再用 ffmpeg 混流为成片；无对白则只处理视频与字幕。导出整集时拼接的是合成后的镜头。',
     videoGenOptionsHelp:
-      '控制视频模型生成参数：「模型音频」对应 Seedance generate_audio、万相 parameters.audio 等；「模型字幕」通过在提示词中补充字幕描述引导模型在画面中呈现台词（多数模型不直接输出 SRT 字幕文件）。',
+      '「模型音频」默认开启：分镜对白写入提示词，交给视频模型口语演出。「模型字幕」默认关闭：禁止画面烧录字幕，合成阶段再后期叠字幕；勾选后才会引导模型把台词画进画面。',
     gridCellsFmt: '{rows}x{cols} = {cells}格',
     assignedFraction: '{a}/{b} 格已分配',
     unassignedWarn: '未分配格子会被忽略，不会写回分镜',
@@ -761,7 +761,7 @@ export const studioEn = {
     recompose: 'Recomposite',
     startCompose: 'Composite',
     videoGenOptionsHelp:
-      'Controls model video generation: Model audio maps to Seedance generate_audio / Wan parameters.audio. Model subtitles append dialogue cues to the prompt so the model renders on-screen text (most models do not output SRT files).',
+      'Model audio is on by default: shot dialogue is injected so the video model speaks it. Model subtitles are off by default (no burned-in text); soft subtitles are added at compose. Enable only if you want on-screen captions from the model.',
     shotComposeHelp:
       'Video generation produces raw AI clips. Composite merges each clip with TTS dubbing and subtitles from shot dialogue via ffmpeg; shots without dialogue skip dubbing. Episode export stitches composited clips, not raw AI video.',
     gridCellsFmt: '{rows}x{cols} = {cells} cells',
