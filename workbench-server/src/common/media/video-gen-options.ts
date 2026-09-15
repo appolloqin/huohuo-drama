@@ -51,18 +51,30 @@ export function mergeVideoGenOptionsIntoMetadata(
   return JSON.stringify({ ...base, video_gen_options: next })
 }
 
+/** 引导模型用口语说出分镜对白（非烧屏字幕） */
+export const VIDEO_SPOKEN_DIALOGUE_PROMPT_CUE_PREFIX =
+  '角色按以下台词自然口语演出（请生成对应语音，不要把文字画进画面）：'
+
 export function enhanceVideoPrompt(
   prompt: string,
   dialogue: string | null | undefined,
   options: VideoGenOptions,
 ): string {
   const base = prompt?.trim() || ''
-  if (options.generate_subtitles) {
-    const line = dialogue?.trim()
-    if (!line) return base
-    const cue = `画面底部显示清晰可读的中文字幕，字幕内容为：${line}`
-    return base ? `${base}\n${cue}` : cue
+  const line = dialogue?.trim() || ''
+  const parts: string[] = []
+  if (base) parts.push(base)
+
+  if (line) {
+    if (options.generate_subtitles) {
+      parts.push(`画面底部显示清晰可读的中文字幕，字幕内容为：${line}`)
+    } else {
+      parts.push(`${VIDEO_SPOKEN_DIALOGUE_PROMPT_CUE_PREFIX}${line}`)
+      parts.push(VIDEO_NO_SUBTITLE_PROMPT_CUE)
+    }
+  } else if (!options.generate_subtitles) {
+    parts.push(VIDEO_NO_SUBTITLE_PROMPT_CUE)
   }
-  if (!base) return VIDEO_NO_SUBTITLE_PROMPT_CUE
-  return `${base}\n${VIDEO_NO_SUBTITLE_PROMPT_CUE}`
+
+  return parts.join('\n')
 }

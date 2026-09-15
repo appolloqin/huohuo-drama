@@ -59,6 +59,7 @@ export function migrateDramaColumnsSqlite(sqlite: Database.Database): void {
 
   appendColumnSqlite(sqlite, 'episodes', 'formatted_script', 'TEXT')
   appendColumnSqlite(sqlite, 'episodes', 'formatted_script_blob_path', 'TEXT')
+  appendColumnSqlite(sqlite, 'storyboards', 'bgm_url', 'TEXT')
 
   migrateDramaEpisodeTextSplitSqlite(sqlite)
 }
@@ -128,6 +129,7 @@ export async function migrateDramaColumnsMysql(pool: Pool): Promise<void> {
 
   await appendColumnMysql(pool, 'episodes', 'formatted_script', 'TEXT')
   await appendColumnMysql(pool, 'episodes', 'formatted_script_blob_path', 'TEXT')
+  await appendColumnMysql(pool, 'storyboards', 'bgm_url', 'TEXT')
 
   await migrateDramaEpisodeTextSplitMysql(pool)
 }

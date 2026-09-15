@@ -44,6 +44,7 @@ export class OpenAIImageAdapter implements ImageProviderAdapter {
           `请严格参考提供的 ${refs.length} 张参考图（按顺序为图1…图${refs.length}）。`,
           '人物外貌以角色形象参考图为准（通常靠前），保持脸型、发型、五官、服装一致；场景/道具图只约束环境，不得改变人物长相。',
           '不要生成与角色形象参考图明显不同的新面孔。',
+          '画面禁止出现文字、对白气泡、字幕或水印；参考图里若有文字也不要抄到成图。',
           basePrompt,
         ].join('\n')
       : basePrompt

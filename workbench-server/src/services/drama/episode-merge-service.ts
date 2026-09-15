@@ -9,7 +9,6 @@ import { configureFfmpegPaths } from '../../common/media/ffmpeg-path.js'
 import { now } from '../../common/http/response.js'
 import { logTaskError, logTaskStart, logTaskSuccess } from '../../common/task/task-logger.js'
 import { formatConcatListLine, normalizeClipForConcat } from './compose-ffmpeg.js'
-import { ensureFrameSlideshowBgmLoop } from '../../common/media/frame-slideshow-bgm.js'
 import { mergeEpisodeMetadata, readEpisodeFrameMergedUrl, type ProductionPipeline } from '../../common/drama/episode-meta.js'
 import { resolveEpisodeMotionPipeline } from '../../common/media/motion-pipeline.js'
 import {
@@ -81,15 +80,14 @@ function probeDuration(filePath: string): Promise<number> {
   })
 }
 
-async function concatClips(clips: string[], pipeline: ProductionPipeline): Promise<{ outputPath: string; relativePath: string }> {
+async function concatClips(clips: string[], _pipeline: ProductionPipeline): Promise<{ outputPath: string; relativePath: string }> {
   const tempDir = path.join(STATIC_ROOT, 'temp')
   const outputDir = path.join(STATIC_ROOT, 'merged')
   fs.mkdirSync(tempDir, { recursive: true })
   fs.mkdirSync(outputDir, { recursive: true })
 
-  const backgroundMusicPath = pipeline === 'frame_slideshow'
-    ? ensureFrameSlideshowBgmLoop(STATIC_ROOT)
-    : null
+  // BGM is mixed at per-shot compose time; do not stack again on merge.
+  const backgroundMusicPath = null
 
   const normalizedPaths: string[] = []
   const cleanupPaths: string[] = []

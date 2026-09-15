@@ -12,7 +12,7 @@ import {
 } from '../../common/drama/storyboard-frame-meta.js'
 import type { ProductionPipeline } from '../../common/drama/episode-meta.js'
 import { now } from '../../common/http/response.js'
-import { parseDialogueForTTS } from './compose-dialogue.js'
+import { resolveSlideshowPictureDurationSec } from './compose-duration-policy.js'
 import { probeMediaDuration, renderSlideshowFromImages } from './compose-ffmpeg.js'
 import { logTaskError, logTaskStart, logTaskSuccess } from '../../common/task/task-logger.js'
 
@@ -41,16 +41,9 @@ const SLIDESHOW_DURATION_TOLERANCE_SEC = 0.35
 
 type StoryboardRow = NonNullable<Awaited<ReturnType<typeof storyboardsRepo.findStoryboardById>>>
 
-async function resolveSlideshowTargetDuration(storyboard: StoryboardRow, paths: SlideshowPaths): Promise<number> {
-  const parsed = parseDialogueForTTS(storyboard.dialogue)
-  if (!parsed.ignorable && parsed.pureText && storyboard.ttsAudioUrl) {
-    const audioPath = resolvePath(storyboard.ttsAudioUrl, paths)
-    if (fs.existsSync(audioPath)) {
-      const audioDurationSec = await probeMediaDuration(audioPath)
-      if (audioDurationSec > 0) return Math.max(3, audioDurationSec)
-    }
-  }
-  return Math.max(3, storyboard.duration || 10)
+function resolveSlideshowTargetDuration(storyboard: StoryboardRow): number {
+  // Picture / storyboard plan is primary; TTS must not shrink or stretch the clip.
+  return resolveSlideshowPictureDurationSec(storyboard.duration)
 }
 
 async function renderStoryboardSlideshowAtDuration(
@@ -95,7 +88,7 @@ async function renderStoryboardSlideshowAtDuration(
   }
 }
 
-/** Regenerate slideshow clip when its length does not match the target (e.g. TTS duration). */
+/** Regenerate slideshow clip when its length does not match the storyboard plan. */
 export async function ensureStoryboardSlideshowDuration(
   storyboardId: number,
   targetDurationSec: number,
@@ -136,14 +129,14 @@ export async function ensureStoryboardSlideshowDuration(
   return relative
 }
 
-/** 已有静帧片段时，按对白/TTS 目标时长重新对齐（数字导演配音阶段后调用） */
+/** 已有静帧片段时，按分镜规划时长重新对齐（数字导演配音阶段后调用；不再跟 TTS 压短） */
 export async function alignStoryboardSlideshowToTargetDuration(
   storyboardId: number,
   paths: SlideshowPaths,
 ): Promise<string | null> {
   const storyboard = await storyboardsRepo.findStoryboardById(storyboardId)
   if (!storyboard || !getFrameVideoUrl(storyboard.referenceImages)) return null
-  const durationSec = await resolveSlideshowTargetDuration(storyboard, paths)
+  const durationSec = resolveSlideshowTargetDuration(storyboard)
   return ensureStoryboardSlideshowDuration(storyboardId, durationSec, paths)
 }
 
@@ -159,7 +152,7 @@ export async function generateStoryboardSlideshow(storyboardId: number, paths: S
     frames: collectSlideshowKeyframePaths(storyboard).length,
   })
 
-  const durationSec = await resolveSlideshowTargetDuration(storyboard, paths)
+  const durationSec = resolveSlideshowTargetDuration(storyboard)
 
   try {
     const relative = await renderStoryboardSlideshowAtDuration(storyboard, durationSec, paths)

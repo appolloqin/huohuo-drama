@@ -116,6 +116,10 @@ export type EpisodeMetadata = {
     generate_audio?: boolean
     generate_subtitles?: boolean
   }
+  /** 单镜合成默认音量等；每镜 BGM 文件在 storyboards.bgm_url */
+  compose_options?: {
+    bgm_volume?: number
+  }
   /** 正文落盘时缓存字数，供列表/统计 SQL 使用 */
   prose_char_count?: number
   /** 章节质量审校结果（独立于 continuity_check） */
@@ -442,6 +446,16 @@ export function mergeEpisodeMetadata(
       next.video_gen_options = { ...current, ...patch.video_gen_options }
     } else {
       delete next.video_gen_options
+    }
+  }
+  if ('compose_options' in patch) {
+    if (patch.compose_options && typeof patch.compose_options === 'object') {
+      const current = (base.compose_options && typeof base.compose_options === 'object')
+        ? { ...(base.compose_options as Record<string, unknown>) }
+        : {}
+      next.compose_options = { ...current, ...patch.compose_options }
+    } else {
+      delete next.compose_options
     }
   }
   if ('production_pipeline' in patch) {

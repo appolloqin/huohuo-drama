@@ -9,6 +9,7 @@ import { normalizeMediaReferenceList, stripStyleReferenceFromListJson } from './
 import { finalizeImageFromBase64, finalizeImageFromUrl, markLinkedSceneFailed } from '../drama/generation-finalizer.js'
 import { pollImageGeneration } from './image-generation-poll.js'
 import { defaultAspectRatioForScope } from '../../common/media/image-aspect-presets.js'
+import { ensureShotFrameNoOnscreenText, isShotFrameImageJob } from '../../common/media/shot-frame-prompt.js'
 import { resolveRelativeMediaUrl } from '../ai/adapters/comfyui-workflow.js'
 import {
   detectComfyImageMode,
@@ -91,10 +92,13 @@ async function runImageGenerationWorker(id: number, config: AIConfig) {
     const styleReferenceUrl = parseStyleReferenceUrl(record.style) ?? null
     const contentRefsJson = stripStyleReferenceFromListJson(record.referenceImages, styleReferenceUrl)
     const references = await normalizeMediaReferenceList(contentRefsJson, 'ImageTask')
+    const prompt = isShotFrameImageJob(record)
+      ? ensureShotFrameNoOnscreenText(record.prompt)
+      : record.prompt
     const frameJob = {
       id: record.id,
       model: record.model,
-      prompt: record.prompt,
+      prompt,
       size: record.size,
       frameType: record.frameType,
       referenceImages: references.length ? JSON.stringify(references) : null,

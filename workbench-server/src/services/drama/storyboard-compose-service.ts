@@ -7,9 +7,19 @@ import * as storyboardsRepo from '../../db/repos/storyboards/index.js'
 import { readProductionPipeline, type ProductionPipeline } from '../../common/drama/episode-meta.js'
 import { mergeFrameComposedVideoUrl } from '../../common/drama/storyboard-frame-meta.js'
 import { ensureFrameSlideshowBgmLoop } from '../../common/media/frame-slideshow-bgm.js'
+import { ensureBuiltinBgmFile } from '../../common/media/builtin-bgm-catalog.js'
+import {
+  readComposeOptionsFromMetadata,
+  resolveStoryboardBgmSelection,
+} from '../../common/media/compose-options.js'
 import { now } from '../../common/http/response.js'
 import { generateTTS } from '../media/tts-generation.js'
 import { buildSubtitleDocument, parseDialogueForTTS } from './compose-dialogue.js'
+import {
+  audioExceedsPicture,
+  resolveSlideshowPictureDurationSec,
+  resolveSubtitleDurationSec,
+} from './compose-duration-policy.js'
 import { renderComposedClip, probeMediaDuration } from './compose-ffmpeg.js'
 import { resolveStoryboardMotionVideoUrl, ensureStoryboardSlideshowDuration } from './storyboard-slideshow-service.js'
 import { logTaskProgress, logTaskStart, logTaskSuccess } from '../../common/task/task-logger.js'
@@ -23,6 +33,40 @@ function resolvePath(relativePath: string, paths: ComposePaths): string {
   if (path.isAbsolute(relativePath)) return relativePath
   if (relativePath.startsWith('static/')) return path.join(paths.dataRoot, relativePath)
   return path.join(paths.staticRoot, relativePath)
+}
+
+function resolveComposeBgmPath(
+  storyboard: { bgmUrl?: string | null },
+  episodeMetadata: string | null | undefined,
+  paths: ComposePaths,
+): { bgmPath: string | null; bgmVolume: number } {
+  const options = readComposeOptionsFromMetadata(episodeMetadata)
+  const selection = resolveStoryboardBgmSelection(storyboard.bgmUrl)
+  if (!selection.enabled) return { bgmPath: null, bgmVolume: options.bgm_volume }
+
+  if (selection.mode === 'custom' && selection.customPath) {
+    const absolute = resolvePath(selection.customPath.replace(/^\//, ''), paths)
+    if (fs.existsSync(absolute)) return { bgmPath: absolute, bgmVolume: options.bgm_volume }
+    logTaskProgress('ComposeTask', 'shot-bgm-missing-fallback-builtin', {
+      bgmUrl: selection.customPath,
+    })
+    return {
+      bgmPath: ensureFrameSlideshowBgmLoop(paths.staticRoot),
+      bgmVolume: options.bgm_volume,
+    }
+  }
+
+  if (selection.mode === 'builtin' && selection.builtinId) {
+    return {
+      bgmPath: ensureBuiltinBgmFile(paths.staticRoot, selection.builtinId),
+      bgmVolume: options.bgm_volume,
+    }
+  }
+
+  return {
+    bgmPath: ensureFrameSlideshowBgmLoop(paths.staticRoot),
+    bgmVolume: options.bgm_volume,
+  }
 }
 
 async function resolveVoiceForSpeaker(episodeId: number, speaker: string): Promise<{ voiceId: string; dramaAudioConfigId?: number }> {
@@ -39,7 +83,35 @@ async function resolveVoiceForSpeaker(episodeId: number, speaker: string): Promi
   }
 }
 
-async function ensureTtsAudio(storyboard: Awaited<ReturnType<typeof storyboardsRepo.findStoryboardById>>, paths: ComposePaths) {
+async function writeDialogueSubtitle(input: {
+  storyboard: NonNullable<Awaited<ReturnType<typeof storyboardsRepo.findStoryboardById>>>
+  pureText: string
+  durationSec: number
+  paths: ComposePaths
+}): Promise<string> {
+  const subtitleDir = path.join(input.paths.staticRoot, 'subtitles')
+  fs.mkdirSync(subtitleDir, { recursive: true })
+  const subtitleFilename = `${randomUUID()}.srt`
+  const subtitlePath = path.join(subtitleDir, subtitleFilename)
+  fs.writeFileSync(
+    subtitlePath,
+    buildSubtitleDocument(input.pureText, input.durationSec),
+    'utf-8',
+  )
+  const subtitleRelative = `static/subtitles/${subtitleFilename}`
+  await storyboardsRepo.updateStoryboard(input.storyboard.id, {
+    subtitleUrl: subtitleRelative,
+    updatedAt: now(),
+  })
+  return subtitlePath
+}
+
+/** Frame slideshow: generate/reuse TTS and align subtitle to picture. */
+async function ensureTtsAudio(
+  storyboard: Awaited<ReturnType<typeof storyboardsRepo.findStoryboardById>>,
+  paths: ComposePaths,
+  pictureDurationSec?: number | null,
+) {
   if (!storyboard) {
     return { audioPath: null as string | null, subtitlePath: null as string | null, audioDurationSec: null as number | null }
   }
@@ -72,21 +144,42 @@ async function ensureTtsAudio(storyboard: Awaited<ReturnType<typeof storyboardsR
   }
 
   const audioDurationSec = Math.max(0.1, await probeMediaDuration(audioPath))
+  const subtitleDurationSec = pictureDurationSec != null && pictureDurationSec > 0
+    ? resolveSubtitleDurationSec(audioDurationSec, pictureDurationSec)
+    : audioDurationSec
 
-  const subtitleDir = path.join(paths.staticRoot, 'subtitles')
-  fs.mkdirSync(subtitleDir, { recursive: true })
-  const subtitleFilename = `${randomUUID()}.srt`
-  const subtitlePath = path.join(subtitleDir, subtitleFilename)
-  fs.writeFileSync(
-    subtitlePath,
-    buildSubtitleDocument(parsed.pureText, audioDurationSec),
-    'utf-8',
-  )
+  if (pictureDurationSec != null && audioExceedsPicture(audioDurationSec, pictureDurationSec)) {
+    logTaskProgress('ComposeTask', 'trim-tts-to-picture', {
+      storyboardId: storyboard.id,
+      audioDurationSec,
+      pictureDurationSec,
+    })
+  }
 
-  const subtitleRelative = `static/subtitles/${subtitleFilename}`
-  await storyboardsRepo.updateStoryboard(storyboard.id, { subtitleUrl: subtitleRelative, updatedAt: now() })
+  const subtitlePath = await writeDialogueSubtitle({
+    storyboard,
+    pureText: parsed.pureText,
+    durationSec: subtitleDurationSec,
+    paths,
+  })
 
   return { audioPath, subtitlePath, audioDurationSec }
+}
+
+/** AI video: keep model audio; only build late-stage subtitles from dialogue. */
+async function ensureAiPipelineSubtitle(
+  storyboard: NonNullable<Awaited<ReturnType<typeof storyboardsRepo.findStoryboardById>>>,
+  paths: ComposePaths,
+  pictureDurationSec: number,
+): Promise<string | null> {
+  const parsed = parseDialogueForTTS(storyboard.dialogue)
+  if (parsed.ignorable || !parsed.pureText) return null
+  return writeDialogueSubtitle({
+    storyboard,
+    pureText: parsed.pureText,
+    durationSec: Math.max(0.1, pictureDurationSec),
+    paths,
+  })
 }
 
 export async function composeStoryboard(
@@ -120,41 +213,57 @@ export async function composeStoryboard(
     storyboardId,
     storyboardNumber: storyboard.storyboardNumber,
     episodeId: storyboard.episodeId,
+    pipeline,
   })
 
   try {
-    const { audioPath, subtitlePath, audioDurationSec } = await ensureTtsAudio(storyboard, paths)
     let resolvedMotionVideoUrl = motionVideoUrl
-    if (pipeline === 'frame_slideshow' && audioDurationSec) {
-      resolvedMotionVideoUrl = await ensureStoryboardSlideshowDuration(storyboardId, audioDurationSec, paths)
+    if (pipeline === 'frame_slideshow') {
+      const pictureTargetSec = resolveSlideshowPictureDurationSec(storyboard.duration)
+      resolvedMotionVideoUrl = await ensureStoryboardSlideshowDuration(storyboardId, pictureTargetSec, paths)
     }
+
+    const pictureDurationSec = Math.max(
+      0.1,
+      await probeMediaDuration(resolvePath(resolvedMotionVideoUrl, paths)),
+    )
+    const { bgmPath, bgmVolume } = resolveComposeBgmPath(storyboard, episode?.metadata, paths)
+
+    let audioPath: string | null = null
+    let subtitlePath: string | null = null
+    let keepSourceAudio = true
+
+    if (pipeline === 'frame_slideshow') {
+      const tts = await ensureTtsAudio(storyboard, paths, pictureDurationSec)
+      audioPath = tts.audioPath
+      subtitlePath = tts.subtitlePath
+      keepSourceAudio = !audioPath
+    } else {
+      subtitlePath = await ensureAiPipelineSubtitle(storyboard, paths, pictureDurationSec)
+      keepSourceAudio = true
+      audioPath = null
+    }
+
     const outputDir = path.join(paths.staticRoot, 'composed')
     fs.mkdirSync(outputDir, { recursive: true })
     const outputFilename = `${randomUUID()}.mp4`
     const outputPath = path.join(outputDir, outputFilename)
 
-    const backgroundMusicPath = pipeline === 'frame_slideshow' && !audioPath
-      ? ensureFrameSlideshowBgmLoop(paths.staticRoot)
-      : null
-
     await renderComposedClip({
       videoPath: resolvePath(resolvedMotionVideoUrl, paths),
       audioPath,
       subtitlePath,
-      keepSourceAudio: !audioPath,
-      backgroundMusicPath,
+      keepSourceAudio,
+      backgroundMusicPath: bgmPath,
+      backgroundMusicVolume: bgmVolume,
       outputPath,
     })
 
     const composedRelative = `static/composed/${outputFilename}`
-    const durationUpdate = pipeline === 'frame_slideshow' && audioDurationSec
-      ? { duration: Math.max(3, Math.round(audioDurationSec)) }
-      : {}
     if (pipeline === 'frame_slideshow') {
       await storyboardsRepo.updateStoryboard(storyboardId, {
         referenceImages: mergeFrameComposedVideoUrl(storyboard.referenceImages, composedRelative),
         status: 'compose_completed',
-        ...durationUpdate,
         updatedAt: now(),
       })
     } else {
@@ -169,6 +278,7 @@ export async function composeStoryboard(
       storyboardId,
       storyboardNumber: storyboard.storyboardNumber,
       output: composedRelative,
+      pipeline,
     })
     return composedRelative
   } catch (err) {

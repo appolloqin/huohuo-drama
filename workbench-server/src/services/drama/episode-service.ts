@@ -13,6 +13,7 @@ import { saveChapterContent } from '../novel/novel-chapter-service.js'
 import { mergeEpisodeMetadata, readProductionPipeline, type ProductionPipeline } from '../../common/drama/episode-meta.js'
 import { isValidAspectRatio, type ImageAspectRatio } from '../../common/media/image-aspect-presets.js'
 import { normalizeVideoGenOptions } from '../../common/media/video-gen-options.js'
+import { normalizeComposeOptions } from '../../common/media/compose-options.js'
 import { dramaOwnedByUser, episodeAndDramaForUser } from './drama-access-service.js'
 import { extractChapterOutline, resolveChapterListDisplayTitle } from '../../common/novel/novel-outline.js'
 import { parseNovelMetadata } from '../../common/novel/novel-meta.js'
@@ -250,6 +251,14 @@ export async function updateOwnedEpisode(
     updates.metadata = mergeEpisodeMetadata(
       (updates.metadata as string | undefined) ?? ownedEpisode.episode.metadata,
       { video_gen_options: patch },
+    )
+  }
+
+  if ('compose_options' in body && body.compose_options && typeof body.compose_options === 'object') {
+    const patch = normalizeComposeOptions(body.compose_options)
+    updates.metadata = mergeEpisodeMetadata(
+      (updates.metadata as string | undefined) ?? ownedEpisode.episode.metadata,
+      { compose_options: patch },
     )
   }
 

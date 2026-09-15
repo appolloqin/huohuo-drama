@@ -436,6 +436,8 @@ export const storyboards = sqliteTable('storyboards', {
   videoPromptBlobPath: text('video_prompt_blob_path'),
   bgmPrompt: text('bgm_prompt'),
   soundEffect: text('sound_effect'),
+  /** 镜头级 BGM：空=不加；`__builtin__`=内置；否则为上传相对路径 */
+  bgmUrl: text('bgm_url'),
   composedImage: text('composed_image'),
   firstFrameImage: text('first_frame_image'),
   lastFrameImage: text('last_frame_image'),
