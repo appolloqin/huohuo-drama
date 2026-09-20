@@ -15,6 +15,7 @@ import { ViduVideoAdapter } from './vidu-video.js'
 import { AliImageAdapter } from './ali-image.js'
 import { AliVideoAdapter } from './ali-video.js'
 import { AliTTSAdapter } from './ali-tts.js'
+import { HuohuoVideoAdapter } from './huohuo-video.js'
 import type { ImageProviderAdapter, TTSProviderAdapter, VideoProviderAdapter } from './types.js'
 
 const DEFAULT_VENDOR_SLUG = 'minimax'
@@ -58,6 +59,8 @@ class VendorAdapterRegistry {
       volcengine: new VolcEngineVideoAdapter(),
       vidu: new ViduVideoAdapter(),
       ali: new AliVideoAdapter(),
+      // 快活马网关：阿里 DashScope 官方协议透传（video-synthesis 异步任务）
+      huohuo: new HuohuoVideoAdapter(),
       'minimax-h3': new MiniMaxH3VideoAdapter(),
       comfyui: new ComfyUIVideoAdapter('comfyui'),
       'comfyui-t2v': new ComfyUIVideoAdapter('comfyui-t2v'),
