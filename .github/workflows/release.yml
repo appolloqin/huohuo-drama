@@ -150,6 +150,8 @@ jobs:
     needs: [prepare]
     runs-on: macos-latest
     timeout-minutes: 180
+    env:
+      NPM_CONFIG_SCRIPT_SHELL: bash
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -183,6 +185,8 @@ jobs:
     needs: [prepare]
     runs-on: ubuntu-latest
     timeout-minutes: 180
+    env:
+      NPM_CONFIG_SCRIPT_SHELL: bash
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4

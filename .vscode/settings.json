@@ -1,0 +1,5 @@
+{
+  "terminal.integrated.env.windows": {
+    "npm_config_script_shell": "cmd.exe"
+  }
+}

@@ -24,13 +24,26 @@ const platform = process.platform
 const arch = process.arch === 'arm64' ? 'arm64' : 'x64'
 const NODE_VERSION = process.env.HUOHUO_NODE_VERSION || '22.14.0'
 
+if (platform === 'win32') {
+  // Nested `npm run` inherits this. Cursor/PowerShell often sets script-shell=powershell,
+  // which loads conda init before Node and can GBK-crash. Do not change workbench source.
+  process.env.npm_config_script_shell = 'cmd.exe'
+  process.env.NPM_CONFIG_SCRIPT_SHELL = 'cmd.exe'
+}
+
+function childEnv(extra = {}) {
+  return { ...process.env, ...extra }
+}
+
 function run(cmd, args, cwd, env = {}) {
+  const executable = platform === 'win32' && cmd === 'npm' ? 'npm.cmd' : cmd
   console.log(`[prepare-runtime] $ ${cmd} ${args.join(' ')} (cwd=${cwd})`)
-  const r = spawnSync(cmd, args, {
+  const r = spawnSync(executable, args, {
     cwd,
-    env: { ...process.env, ...env },
+    env: childEnv(env),
     stdio: 'inherit',
-    shell: platform === 'win32',
+    shell: platform === 'win32' ? 'cmd.exe' : false,
+    windowsHide: true,
   })
   if (r.status !== 0) {
     throw new Error(`Command failed (${r.status}): ${cmd} ${args.join(' ')}`)

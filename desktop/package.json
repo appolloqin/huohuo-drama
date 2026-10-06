@@ -9,10 +9,10 @@
     "dev": "electron .",
     "prepare:runtime": "node scripts/prepare-runtime.mjs",
     "smoke:modes": "node scripts/smoke-modes.mjs",
-    "dist": "npm run prepare:runtime && electron-builder",
-    "dist:win": "npm run prepare:runtime && electron-builder --win",
-    "dist:mac": "npm run prepare:runtime && electron-builder --mac",
-    "dist:linux": "npm run prepare:runtime && electron-builder --linux"
+    "dist": "node scripts/dist.mjs",
+    "dist:win": "node scripts/dist.mjs --win",
+    "dist:mac": "node scripts/dist.mjs --mac",
+    "dist:linux": "node scripts/dist.mjs --linux"
   },
   "build": {
     "appId": "com.seeddrama.console",
