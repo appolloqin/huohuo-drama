@@ -176,7 +176,7 @@ export function parseNovelMetadata(raw: JsonColumnInput): NovelMetadata {
   }
 }
 
-export type NovelMetadataPatch = Partial<NovelMetadata> & {
+export type NovelMetadataPatch = Omit<Partial<NovelMetadata>, 'hot_source'> & {
   /** null = 删除 hot_source */
   hot_source?: NovelMetadata['hot_source'] | null
 }

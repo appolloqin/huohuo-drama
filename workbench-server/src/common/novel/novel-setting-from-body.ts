@@ -5,7 +5,7 @@ import {
   getNovelGenreEntryByValue,
   isActiveNovelGenreSkillKey,
 } from './novel-genre-registry.js'
-import type { NovelMetadata, NovelMetadataPatch } from './novel-meta.js'
+import type { NovelMetadataPatch } from './novel-meta.js'
 
 function str(v: unknown): string | undefined {
   if (typeof v !== 'string') return undefined
@@ -95,6 +95,6 @@ export function ideationPatchFromBody(body: Record<string, any>): NovelMetadataP
 }
 
 /** @deprecated 修炼体系已不与题材绑定；保留空操作以兼容旧调用 */
-export function stripCultivationIfNonPower(meta: NovelMetadata): NovelMetadata {
+export function stripCultivationIfNonPower<T extends NovelMetadataPatch>(meta: T): T {
   return meta
 }

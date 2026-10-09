@@ -1,6 +1,6 @@
 /** 立项设定创建/保存校验 */
 
-import type { NovelMetadata } from './novel-meta.js'
+import type { NovelMetadataPatch } from './novel-meta.js'
 import { resolveCultivationIds } from './novel-meta.js'
 import { isActiveNovelGenreSkillKey } from './novel-genre-registry.js'
 import { findActiveCatalogEntry } from './novel-setting-catalog-types.js'
@@ -8,7 +8,7 @@ import { NOVEL_CULTIVATION_CATALOG } from './novel-cultivation-catalog.js'
 import { NOVEL_GOLDEN_FINGER_CATALOG } from './novel-golden-finger-catalog.js'
 import { NOVEL_WORLDVIEW_CATALOG } from './novel-worldview-catalog.js'
 
-export function validateNovelIdeationSettings(meta: Partial<NovelMetadata>): string | null {
+export function validateNovelIdeationSettings(meta: NovelMetadataPatch): string | null {
   const primary = (meta.novel_genre_skill_key || '').trim()
   if (!primary || !isActiveNovelGenreSkillKey(primary)) {
     return '请选择有效的主题材'

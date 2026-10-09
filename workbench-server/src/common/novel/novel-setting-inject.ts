@@ -1,6 +1,6 @@
 /** 立项设定 → premise/outline 注入块 */
 
-import type { NovelMetadata } from './novel-meta.js'
+import type { NovelMetadataPatch } from './novel-meta.js'
 import { resolveCultivationIds } from './novel-meta.js'
 import { getNovelGenreEntryBySkillKey } from './novel-genre-registry.js'
 import { findActiveCatalogEntry } from './novel-setting-catalog-types.js'
@@ -20,7 +20,7 @@ function resolveLine(
   return entry?.injectPrompt
 }
 
-function resolveCultivationBlock(meta: NovelMetadata): string | undefined {
+function resolveCultivationBlock(meta: NovelMetadataPatch): string | undefined {
   const catalogParts: Array<{ label: string; text: string }> = []
   for (const id of resolveCultivationIds(meta)) {
     const entry = findActiveCatalogEntry(NOVEL_CULTIVATION_CATALOG, id)
@@ -36,7 +36,7 @@ function resolveCultivationBlock(meta: NovelMetadata): string | undefined {
   return `可并行多套（须写清主次与互相掣肘，全书名称不混用）：\n${bullets.join('\n')}`
 }
 
-export function buildNovelSettingInjectBlock(meta: NovelMetadata): string {
+export function buildNovelSettingInjectBlock(meta: NovelMetadataPatch): string {
   const primaryKey = (meta.novel_genre_skill_key || '').trim()
   const primaryLabel =
     (meta.novel_genre || '').trim()
