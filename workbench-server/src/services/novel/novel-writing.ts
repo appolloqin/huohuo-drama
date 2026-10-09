@@ -73,6 +73,12 @@ import { resolveChapterBeatBudgets, shouldUseBeatSequentialGenerate } from './no
 import { hasRealWorldBlock } from '../../common/novel/novel-worldbuilding.js'
 import { loadNextChapterContentHead, loadPrevChapterContentTail } from './novel-continuity.js'
 import { loadPrevChapterEndSnapshot } from './novel-chapter-end-snapshot.js'
+import {
+  buildWritingBriefCastConstraintBlock,
+  extractChapterCastAllowlist,
+  findForeignPersonNamesInBrief,
+  mergeCastAllowlist,
+} from './novel-writing-brief-cast.js'
 
 const MAX_NOVEL_USER_PROMPT_CHARS = 32000
 
@@ -323,24 +329,83 @@ export async function generateNovelWritingBrief(args: {
     )
   }
 
+  // 上章契约在场名：可并入允许名单（承接），但仍不得新造大纲外专名
+  let extraAllow: string[] = []
+  if (dramaId && chapterNumber >= 2) {
+    try {
+      const snap = await loadPrevChapterEndSnapshot(dramaId, chapterNumber)
+      if (snap?.cast?.trim()) {
+        extraAllow = extractChapterCastAllowlist(`【本章人物】${snap.cast}`)
+      }
+    } catch {
+      /* ignore */
+    }
+  }
+  const castAllow = mergeCastAllowlist(
+    extractChapterCastAllowlist(chapterOutline),
+    extraAllow,
+  )
+  const castBlock = buildWritingBriefCastConstraintBlock({
+    chapterOutline,
+    extraAllow,
+  })
+
   const user = [
     ...contextBlocks.filter(Boolean),
     `【书名】${dramaTitle}`,
     genre ? `【题材】${genre}` : '',
     `【本章】第${chapterNumber}章${chapterTitle ? ` ${chapterTitle}` : ''}`,
     formatChapterOutlineBlock(chapterOutline, chapterNumber),
+    castBlock,
     `【关键词】\n${keywords}`,
     chapterNumber >= 2
-      ? '请输出含【一致性账本】的写作说明；**不得改写前序已锁定的人名与事件**，本章大纲仅作方向参考。'
-      : '请输出含【一致性账本】的写作说明；第1章须按【世界观设定】落地：有修炼体系则自然介绍境界/地域/门派；现实/年代/都市/种田则只介绍时代、地域与组织规则，禁止淬体凝气筑基等修真词。',
+      ? [
+        '请输出含【一致性账本】的写作说明。',
+        '优先序：【本章大纲】人名与情节目标 > 上章已发生事实（不得吃书）> 关键词细化。',
+        '不得改写前序已锁定事件；也不得为凑人物卡/压迫叠层新造【本章人物】以外的专名。',
+      ].join('')
+      : [
+        '请输出含【一致性账本】的写作说明；第1章须按【世界观设定】落地：有修炼体系则自然介绍境界/地域/门派；现实/年代/都市/种田则只介绍时代、地域与组织规则，禁止淬体凝气筑基等修真词。',
+        '人名与对手以【本章大纲】【本章人物】为准，禁止新造专名配角。',
+      ].join(''),
     NO_THINKING_OUTPUT_RULE,
   ].filter(Boolean).join('\n\n')
 
-  const brief = await chatCompletionText(
+  let brief = await chatCompletionText(
     [{ role: 'system', content: system }, { role: 'user', content: user }],
     { ...options, billing },
   )
-  return assertValidNovelCreativeOutput(brief, 'writing_brief', `第${chapterNumber}章`)
+  brief = assertValidNovelCreativeOutput(brief, 'writing_brief', `第${chapterNumber}章`)
+
+  const foreign = findForeignPersonNamesInBrief(brief, castAllow)
+  if (foreign.length && castAllow.length) {
+    logTaskWarn('Novel', 'writing-brief-foreign-cast-retry', {
+      chapterNumber,
+      foreign: foreign.slice(0, 8),
+      allow: castAllow.slice(0, 12),
+    })
+    const retryUser = [
+      user,
+      '',
+      `【上轮违规 — 必须改正】写作说明出现不允许的专名：${foreign.join('、')}。`,
+      `请重写整份写作说明：删除上述专名；人物卡/压迫/开头承诺只使用：${castAllow.join('、')}。`,
+      '缺位用职分称呼（账房、都尉、族老），禁止再造新专名。',
+    ].join('\n')
+    brief = assertValidNovelCreativeOutput(
+      await chatCompletionText(
+        [{ role: 'system', content: system }, { role: 'user', content: retryUser }],
+        {
+          ...options,
+          billing: billing
+            ? { ...billing, reason: `${billing.reason || 'novel-writing-brief'}-cast-retry` }
+            : undefined,
+        },
+      ),
+      'writing_brief',
+      `第${chapterNumber}章`,
+    )
+  }
+  return brief
 }
 
 /** 分章行：阿拉伯或中文章号均可 */
