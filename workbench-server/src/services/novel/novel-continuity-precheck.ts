@@ -575,6 +575,8 @@ export function runLocalContinuityAudit(args: {
   prevSnapshot?: import('../../common/novel/novel-continuity-state.js').ChapterEndSnapshot | null
   /** 额外接地文本：写作说明、已成文上下文等 */
   extraGrounding?: string
+  /** 结构卡场合连续：same/bridged 时离场吃书不硬拦 */
+  placeContinuity?: 'same' | 'bridged' | 'jump' | null
 }): LocalAuditResult {
   const { content, chapterNumber, expectedFields, prevChapterTail, chapterOutline, prevSnapshot } = args
   const trimmed = content.trim()
@@ -695,6 +697,7 @@ export function runLocalContinuityAudit(args: {
     prevChapterBody: args.prevChapterBody || prevChapterTail,
     chapterOutline,
     prevSnapshot,
+    placeContinuity: args.placeContinuity,
   })
   if (seam) {
     // 交付重演：规则层告警，不因「糠饼渣子」类误伤把整章硬审打到 0 分

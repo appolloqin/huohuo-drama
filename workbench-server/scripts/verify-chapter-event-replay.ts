@@ -90,6 +90,72 @@ const ok = detectChapterBodyEventReplay({
 })
 if (ok) throw new Error(`仅回忆不应拦: ${ok.message}`)
 
+/** 「塞回袖中」不得把藏纳部位当交付物件；下章「从袖中掏出信」不应误拦 */
+const ch1Sleeve = `
+夜里。屋里只剩他们俩说话。
+秦默把玉佩塞回袖中，又把门关上了。
+苏婉低着头，没再说话。窗外风声一阵一阵。
+秦默站在原地，心里却已经打定了主意要先查账。
+`.trim()
+const sleeveProps = extractClosedDeliveryBeats(ch1Sleeve)
+if (sleeveProps.includes('袖中')) {
+  throw new Error(`袖中不得当作交付物件: ${sleeveProps.join(',')}`)
+}
+const ch2FromSleeve = `
+屋里还是那股潮气。秦默犹豫片刻，又从袖中掏出那封信，递给苏婉。
+“你先看这个。”苏婉接过，指尖发颤。
+两人谁也没有离开这间屋子，空气像结了冰。
+门外忽然传来脚步声，可他们仍站在原处。
+`.trim()
+const sleeveFalse = detectChapterBodyEventReplay({
+  content: ch2FromSleeve,
+  chapterNumber: 2,
+  prevChapterBody: ch1Sleeve,
+  prevSnapshot: {
+    chapter: 1,
+    time: '夜里',
+    place: '屋里',
+    last_event: '塞回袖中',
+    cast: '秦默、苏婉',
+    closed_beats: '交付:袖中',
+  } as any,
+})
+if (sleeveFalse) {
+  throw new Error(`从袖中再掏出真物件不应因「袖中」误拦: ${sleeveFalse.message}`)
+}
+
+/** 自摸猎刀不得闭合物件；下章再摸刀不应拦 */
+const ch1Knife = `
+夜里。屋里只剩他一人。
+秦卫国摸出猎刀，在门板上试刃，又把刀收回腰间。
+窗外风大，他吹灭灯，准备天亮进山。
+`.trim()
+const knifeProps = extractClosedDeliveryBeats(ch1Knife)
+if (knifeProps.some(p => /刀|猎刀/.test(p))) {
+  throw new Error(`自摸猎刀不应闭合: ${knifeProps.join(',')}`)
+}
+const ch2Knife = `
+屋里潮气未散。秦卫国又摸出猎刀，沿兽道前行，在雪地上找脚印。
+他屏住呼吸，判断方向后继续往林子深处走。
+门外忽然传来鸟叫，他没有回头。
+`.trim()
+const knifeHit = detectChapterBodyEventReplay({
+  content: ch2Knife,
+  chapterNumber: 2,
+  prevChapterBody: ch1Knife,
+  prevSnapshot: {
+    chapter: 1,
+    time: '夜里',
+    place: '屋里',
+    last_event: '摸出猎刀试刃',
+    cast: '秦卫国',
+    closed_beats: '交付:猎刀',
+  } as any,
+})
+if (knifeHit) {
+  throw new Error(`再摸猎刀不应因工具误拦: ${knifeHit.message}`)
+}
+
 const seam = detectChapterSeamReplay({
   content: ch2SameOccasion,
   chapterNumber: 2,

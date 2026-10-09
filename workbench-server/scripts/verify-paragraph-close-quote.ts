@@ -104,4 +104,22 @@ if (/猎！”\s*\n/.test(gluedOut)) {
   throw new Error(`must not break paragraph between dialogues:\n${gluedOut}`)
 }
 
+/** 开篇丢收引号不得把整章粘成一段（截图「文字墙」根因） */
+const stuckOpen = (
+  '孙守仁又开口了：“额主大人，老朽知道您年轻。'
+  + '林默盯着他。手心里那枚玄铁令牌硌得生疼。前主人的死讯还在耳边回响。'
+  + '账房摊开的烂账像一张网。他霍地拔出锈蚀的长剑。剑尖直指孙守仁胸口。'
+  + '期限我定。五日之内粮草军饷我一分不少。拿不出来这剑先借你的人头祭旗。'
+  + '堂下一片死寂。孙守仁脸色煞白。林默忽然听见脑子里嗡的一声。'
+  + '一行字浮现：今日可签：刀盾手三百。他眯起眼，把令牌往案上一拍。'
+).repeat(6)
+const stuckOut = preserveNovelLineLayout('', stuckOpen)
+const stuckParas = stuckOut.split(/\n\n+/).filter(Boolean)
+if (stuckParas.length < 4) {
+  throw new Error(`stuck-open quote must still paragraph-split, got ${stuckParas.length} paras`)
+}
+if (stuckParas.some(p => p.length > 420)) {
+  throw new Error(`stuck-open quote left a wall paragraph (${Math.max(...stuckParas.map(p => p.length))} chars)`)
+}
+
 console.log('verify-paragraph-close-quote OK')

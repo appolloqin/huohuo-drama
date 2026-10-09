@@ -48,6 +48,10 @@ import {
   ensureCausalChangeRecordAppended,
   isCausalChainEnabled,
 } from './novel-causal-chain/index.js'
+import {
+  formatAiPatternHints,
+  scanNovelAiPatterns,
+} from '../../common/novel/novel-ai-pattern-scan.js'
 
 /** 与 AI 检测页同口径：优先引擎融合；humanize 闭环关闭 S5 扰动 */
 async function detectForHumanize(
@@ -74,7 +78,36 @@ async function detectForHumanize(
   }
 }
 
-function toHint(detect: AiDetectionResult): HumanizeDetectionHint {
+function toHint(detect: AiDetectionResult, proseForPatterns?: string): HumanizeDetectionHint {
+  const patternSuggestions = proseForPatterns
+    ? formatAiPatternHints(scanNovelAiPatterns(proseForPatterns), 10)
+    : []
+  const detectSuggestions = (detect.suggestions || []).map(s => {
+    const advice = s.kind === 'phrase_repetition' && s.match_text
+      ? (s.match_text.includes('—')
+        ? `破折号「${s.match_text}」约出现 ${s.count || '多'} 次，删减或改为逗号/句号`
+        : /[。！？][他她]/.test(s.match_text) || s.match_text === '他' || s.match_text === '。他'
+          ? `句首「${s.match_text}」约 ${s.count || '多'} 次：改零主语/人名起句/并句，禁止连续「。他……。他……」`
+          : `短语「${s.match_text}」约出现 ${s.count || '多'} 次，换同义或改句式打散`)
+      : s.kind === 'paragraph_uniformity'
+        ? '连续多段字数过匀：并段或拆出一句成段，做成短拍/中段/稍长交错'
+        : s.kind === 'sentence_uniformity'
+          ? '连续句长过匀：并短拆长，做成短/中/长交错'
+          : s.kind === 'colloquial'
+            ? '对话/叙述偏书面，补语气词或更生活化说法'
+            : s.kind === 'lexical'
+              ? '用词分布偏模型化：加具体名词与感官细节，少微微/缓缓/猛地/四肢百骸/病根等空转'
+              : s.kind === 'perplexity'
+                ? '困惑度偏低（同模型好猜）：按检测摘录定点改写邻域，打散可预测句式与空转，勿整章换腔'
+                : undefined
+    return {
+      signal_key: s.signal_key,
+      excerpt: s.excerpt,
+      match_text: s.match_text,
+      count: s.count,
+      advice,
+    }
+  })
   return {
     probability: detect.probability,
     verdict: detect.verdict,
@@ -89,32 +122,7 @@ function toHint(detect: AiDetectionResult): HumanizeDetectionHint {
       char_start: s.char_start,
       char_end: s.char_end,
     })),
-    suggestions: detect.suggestions?.map(s => {
-      const advice = s.kind === 'phrase_repetition' && s.match_text
-        ? (s.match_text.includes('—')
-          ? `破折号「${s.match_text}」约出现 ${s.count || '多'} 次，删减或改为逗号/句号`
-          : /[。！？][他她]/.test(s.match_text) || s.match_text === '他' || s.match_text === '。他'
-            ? `句首「${s.match_text}」约 ${s.count || '多'} 次：改零主语/人名起句/并句，禁止连续「。他……。他……」`
-            : `短语「${s.match_text}」约出现 ${s.count || '多'} 次，换同义或改句式打散`)
-        : s.kind === 'paragraph_uniformity'
-          ? '连续多段字数过匀：并段或拆出一句成段，做成短拍/中段/稍长交错'
-          : s.kind === 'sentence_uniformity'
-            ? '连续句长过匀：并短拆长，做成短/中/长交错'
-            : s.kind === 'colloquial'
-              ? '对话/叙述偏书面，补语气词或更生活化说法'
-              : s.kind === 'lexical'
-                ? '用词分布偏模型化：加具体名词与感官细节，少微微/缓缓/猛地/四肢百骸/病根等空转'
-                : s.kind === 'perplexity'
-                  ? '困惑度偏低（同模型好猜）：按检测摘录定点改写邻域，打散可预测句式与空转，勿整章换腔'
-                  : undefined
-      return {
-        signal_key: s.signal_key,
-        excerpt: s.excerpt,
-        match_text: s.match_text,
-        count: s.count,
-        advice,
-      }
-    }),
+    suggestions: [...patternSuggestions, ...detectSuggestions].slice(0, 20),
   }
 }
 
@@ -190,11 +198,6 @@ async function withCrossModelDetectMeta(
   }
 }
 
-function mergeProseAndChange(prose: string, changeBlock: string | null): string {
-  if (!changeBlock?.trim()) return prose.trim()
-  return `${prose.trim()}\n\n${changeBlock.trim()}`
-}
-
 /** 最高维信号分（用于总分持平时仍可采纳「打中主因」的改写） */
 export function topSignalScore(detect: { signals?: Array<{ score: number }> } | null | undefined): number {
   if (!detect?.signals?.length) return 0
@@ -246,7 +249,10 @@ export function isPerplexityImproved(before?: number, after?: number): boolean {
 }
 
 export type NovelAiHumanizeHookResult = {
+  /** 读者正文（不含【变更记录】） */
   content: string
+  /** 独立变更记录；由管线写入 metadata */
+  causal_change_record?: string | null
   ai_detection: EpisodeAiDetection | null
   humanize_attempts: number
   humanize_passed: boolean
@@ -267,7 +273,14 @@ export async function runNovelChapterAiHumanizeHook(args: {
   }
 
   if (!isAiHumanizeAutoEnabled(meta)) {
-    return { content, ai_detection: null, humanize_attempts: 0, humanize_passed: true }
+    const d = detachChangeRecordForStorage(content)
+    return {
+      content: d.prose || content,
+      causal_change_record: d.changeBlock,
+      ai_detection: null,
+      humanize_attempts: 0,
+      humanize_passed: true,
+    }
   }
 
   const target = resolveAiHumanizeTarget(meta)
@@ -288,7 +301,8 @@ export async function runNovelChapterAiHumanizeHook(args: {
     })
     await persistAiDetection(episodeId, ai_detection)
     return {
-      content: mergeProseAndChange(prose, changeBlock),
+      content: prose,
+      causal_change_record: changeBlock,
       ai_detection,
       humanize_attempts: 0,
       humanize_passed: !!ai_detection.humanize_passed,
@@ -305,7 +319,8 @@ export async function runNovelChapterAiHumanizeHook(args: {
     })
     await persistAiDetection(episodeId, ai_detection)
     return {
-      content: mergeProseAndChange(prose, changeBlock),
+      content: prose,
+      causal_change_record: changeBlock,
       ai_detection,
       humanize_attempts: 0,
       humanize_passed: !!ai_detection.humanize_passed,
@@ -331,7 +346,7 @@ export async function runNovelChapterAiHumanizeHook(args: {
       const beforeProse = prose
       try {
         const out = await humanizeAiTextDetectionPass(
-          { text: prose, detection: toHint(detect) },
+          { text: prose, detection: toHint(detect, prose) },
           billing
             ? { ...billing, reason: `小说章节去AI味（第${attempts}次）` }
             : undefined,
@@ -422,32 +437,31 @@ export async function runNovelChapterAiHumanizeHook(args: {
     }
   }
 
-  let merged = mergeProseAndChange(prose, changeBlock)
   if (isCausalChainEnabled(meta)) {
     try {
       const ensured = await ensureCausalChangeRecordAppended({
         content: prose,
         chapterNumber,
         force: true,
+        storedChangeRecord: changeBlock,
         billing: billing ? { ...billing, reason: '去AI味后生成变更记录' } : undefined,
       })
-      merged = ensured.content
+      prose = ensured.prose
+      changeBlock = ensured.changeBlock
     } catch {
       /* ignore */
     }
   } else if (changeBlock) {
-    // 重新 detach 以防模型误输出变更记录
-    const again = detachChangeRecordForStorage(merged)
+    const again = detachChangeRecordForStorage(prose)
     prose = again.prose || prose
     if (again.changeBlock) changeBlock = again.changeBlock
-    merged = mergeProseAndChange(prose, changeBlock)
     detect = await detectForHumanize(
       prose,
       billing ? { ...billing, reason: '小说章节去AI味变更记录后复检' } : undefined,
     )
   }
 
-  const finalProse = detachChangeRecordForStorage(merged).prose || prose
+  const finalProse = detachChangeRecordForStorage(prose).prose || prose
   let finalDetect = await detectForHumanize(
     finalProse,
     billing ? { ...billing, reason: '小说章节去AI味终检' } : undefined,
@@ -466,7 +480,8 @@ export async function runNovelChapterAiHumanizeHook(args: {
   await persistAiDetection(episodeId, ai_detection)
 
   return {
-    content: merged,
+    content: finalProse,
+    causal_change_record: changeBlock,
     ai_detection,
     humanize_attempts: attempts,
     humanize_passed: !!ai_detection.humanize_passed,

@@ -76,6 +76,23 @@ mustMiss(
   }
 }
 
+// D: 开篇已在厅内对峙，章中才推门入场 → 不得当「重演出门」
+{
+  const prev = '秦默目光落在后窗，身后门合上，人往偏厅去。'
+  const midDoor = detectChapterSeamPresenceReentry({
+    content: [
+      '偏厅里炭盆烧得正旺。秦默坐在主位上，指腹沿着茶碗沿摩挲。',
+      '王德福站在柱边，把账册递上。堂下坐着秦德东。',
+      '偏厅的门吱呀一声被推开。赵铁柱站在门槛外，身后立着刀盾手。',
+    ].join(''),
+    chapterNumber: 4,
+    prevChapterTail: prev,
+  })
+  if (midDoor && /离场吃书/.test(midDoor.message)) {
+    throw new Error('章中推门入场不得误判为开篇重演出门')
+  }
+}
+
 const cold = detectChapterSeamColdOpen({
   content: '雪光映进窗棂。秦卫国推门进来，提着猎物。他把狍子搁下，开始处理，苏婉在灶边烧水。',
   chapterNumber: 8,

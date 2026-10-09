@@ -41,19 +41,31 @@ function normalizeNovelDialogueQuotes(text: string): string {
 /** 规范化后的标题行 */
 const CHANGE_RECORD_RE = /^【变更记录】/m
 const CHANGE_RECORD_SPLIT_RE = /(?=^【变更记录】)/m
-/** 结构化块：至少一条「- 维: …」+「因果:」≥4 字 */
+/**
+ * 结构化块：
+ * - 「- 维: …」+「因果:」
+ * - 或无维名「甲 → 乙」+「因果:」（模型常漏 `- 人物:`）
+ */
 const STRUCTURED_CHANGE_RE =
-  /(?:^|\n)\s*[-*]\s*[^:：\n]+[:：][^\n]+\n\s*因果\s*[:：]\s*\S{4,}/
+  /(?:^|\n)\s*(?:[-*]\s*[^:：\n]+[:：][^\n]+|(?:[-*]\s*)?[^\n:：【]{1,40}\s*→\s*[^\n:：]{1,40})\n\s*因果\s*[:：]\s*\S{4,}/
 
 /** 兼容 ---本章事件摘要： / 【本章事件摘要】 等变体 */
 const CHAPTER_END_META_RE =
   /(?:^|\n)(?:---\s*\n*\s*)?(?:【\s*本章事件摘要\s*】|本章事件摘要)(?:\s*[（(][^)）]*[)）])?\s*[：:]?/
 
+/** 与服务端 novel-change-record.canonicalizeChangeRecordHeaders 对齐 */
 function canonicalizeChangeRecordHeaders(text: string): string {
-  return (text || '').replace(
-    /(^|\n)[ \t]*(?:#{1,3}[ \t]*)?(?:\*{1,2}[ \t]*)?【[ \t]*变更记录[ \t]*】(?:[ \t]*\*{1,2})?[ \t]*(?=\r?\n|$)/g,
+  let t = text || ''
+  t = t.replace(/([^\n])([ \t]*)【[ \t]*变更记录[ \t]*】/g, '$1\n【变更记录】')
+  t = t.replace(
+    /(^|\n)[ \t]*(?:#{1,3}[ \t]*)?(?:\*{1,2}[ \t]*)?【[ \t]*变更记录[ \t]*】(?:[ \t]*\*{1,2})?[ \t]*(?=\r?\n|$|[ \t]*[-*])/g,
     '$1【变更记录】',
   )
+  t = t.replace(/^(【变更记录】)[ \t]*([-*])/m, '$1\n$2')
+  // 正文后粘条目：……”- 人物/…:  / 当场- 物品/…:
+  t = t.replace(/([^\n])[ \t]*(-\s*[^:：\n]{1,48}[:：])/g, '$1\n$2')
+  t = t.replace(/([^\n])[ \t]*(因果|触发|代价|感知|耗时)\s*[:：]/g, '$1\n  $2:')
+  return t
 }
 
 function stripChapterEndMeta(text: string): string {
@@ -79,18 +91,55 @@ function stripChangeRecordHeader(block: string): string {
     .trim()
 }
 
+function isArrowStateTransitionLine(line: string): boolean {
+  const t = line.trim()
+  if (!t || [...t].length > 48) return false
+  if (/[。！？!?…]$/.test(t)) return false
+  if (/^(因果|触发|代价|感知|耗时)\s*[:：]/.test(t)) return false
+  return /^(?:[-*]\s*)?.{1,24}\s*→\s*.{1,24}$/.test(t) && /→/.test(t)
+}
+
+const META_SUBFIELD_LINE_RE = /^(因果|触发|代价|感知|耗时)\s*[:：]/
+
+function isMetaSubfieldLine(line: string): boolean {
+  return META_SUBFIELD_LINE_RE.test((line || '').trim())
+}
+
 function isChangeRecordMetaLine(line: string): boolean {
   const t = line.trim()
   if (!t) return true
   if (/^[-*]\s*[^:：\n]+[:：]/.test(t)) return true
   if (/^[-*]\s*.*无状态变化/.test(t)) return true
-  if (/^(因果|触发|代价|感知|耗时)\s*[:：]/.test(t)) return true
+  if (isMetaSubfieldLine(t)) return true
+  if (isArrowStateTransitionLine(t)) return true
   return false
 }
 
 function looksLikeChangeEntryStart(line: string): boolean {
   const t = line.trim()
-  return /^[-*]\s*[^:：\n]+[:：]/.test(t) || /^[-*]\s*.*无状态变化/.test(t)
+  if (/^[-*]\s*[^:：\n]+[:：]/.test(t)) return true
+  if (/^[-*]\s*.*无状态变化/.test(t)) return true
+  if (isArrowStateTransitionLine(t)) return true
+  if (isMetaSubfieldLine(t)) return true
+  return false
+}
+
+/** 不完整变更记录残片：裸子字段，或「- 维:」+ 子字段缺完整因果门槛 */
+function isOrphanMetaFragment(chunk: string): boolean {
+  const lines = (chunk || '')
+    .split(/\r?\n/)
+    .map(l => l.trim())
+    .filter(Boolean)
+  if (!lines.length) return false
+  if (!lines.every(l => isChangeRecordMetaLine(l))) return false
+  if (lines.every(isMetaSubfieldLine)) return true
+  const hasEntry = lines.some(l =>
+    /^[-*]\s*[^:：\n]+[:：]/.test(l)
+    || /^[-*]\s*.*无状态变化/.test(l)
+    || isArrowStateTransitionLine(l),
+  )
+  const hasSub = lines.some(isMetaSubfieldLine)
+  return hasEntry && hasSub
 }
 
 function ensureChangeRecordHeader(block: string): string {
@@ -138,9 +187,12 @@ function peelOrphanedStructuredFromProse(prose: string): {
   prose: string
   changeBlocks: string[]
 } {
-  const raw = prose.trim()
+  const raw = canonicalizeChangeRecordHeaders(prose).trim()
   if (!raw) return { prose: '', changeBlocks: [] }
-  if (!STRUCTURED_CHANGE_RE.test(raw) && !(/无状态变化/.test(raw) && /因果\s*[:：]\s*\S{4,}/.test(raw))) {
+  const hasStructuredGate = STRUCTURED_CHANGE_RE.test(raw)
+    || (/无状态变化/.test(raw) && /因果\s*[:：]\s*\S{4,}/.test(raw))
+  const hasOrphanSubfields = /(?:^|\n)\s*(?:因果|触发|代价|感知|耗时)\s*[:：]/.test(raw)
+  if (!hasStructuredGate && !hasOrphanSubfields) {
     return { prose: raw, changeBlocks: [] }
   }
 
@@ -160,7 +212,10 @@ function peelOrphanedStructuredFromProse(prose: string): {
       j += 1
     }
     const chunk = lines.slice(i, lastNonEmpty + 1).join('\n')
-    if (isStructuredChangeRecordBlock(chunk) || isStructuredChangeRecordBlock(ensureChangeRecordHeader(chunk))) {
+    const peel = isStructuredChangeRecordBlock(chunk)
+      || isStructuredChangeRecordBlock(ensureChangeRecordHeader(chunk))
+      || isOrphanMetaFragment(chunk)
+    if (peel) {
       changeBlocks.push(ensureChangeRecordHeader(chunk))
       for (let k = i; k <= lastNonEmpty; k++) keep[k] = false
       i = lastNonEmpty + 1

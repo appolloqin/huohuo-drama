@@ -16,6 +16,10 @@ export function parseTextBillingPayload(body: Record<string, any>) {
     enableThinking,
   }
   if (perplexityModel) base.perplexityModel = perplexityModel
+  // MiniMax：显式开关；未传则不写字段（请求时回退旧逻辑）
+  if ('minimax_reasoning_split' in body) {
+    base.minimaxReasoningSplit = body.minimax_reasoning_split === true
+  }
   return base
 }
 
@@ -29,6 +33,8 @@ export function toServiceConfigApiShape(row: any) {
     credit_token_cost: Number(settings.creditTokenCost || 0),
     perplexity_model: typeof settings.perplexityModel === 'string' ? settings.perplexityModel : '',
     enable_thinking: resolveThinkingEnabled(settings),
+    // 未配置时前端默认勾选 true（M3.1 等须开）；仅显式 false 才关
+    minimax_reasoning_split: settings.minimaxReasoningSplit !== false,
     workflow: typeof settings.workflow === 'string'
       ? settings.workflow
       : settings.workflow

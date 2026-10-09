@@ -30,6 +30,18 @@ if (detectIntraCastPresenceFail(mentionOnly)) {
   throw new Error('mention-only should pass')
 }
 
+// 推门进账房（非外出）+ 账房内他人：不得误杀
+const enterRoom = `秦默推门进去，屋里霉味扑面。孙满仓赔着笑：“少主您坐。”秦默翻开账本查账。`
+if (detectIntraCastPresenceFail(enterRoom)) {
+  throw new Error('enter-room should not flag solo-away teleport')
+}
+
+// 主角离场，此前已在场的孙满仓对柳如烟开口：合法留场
+const remainAfterLeave = `孙满仓跪在地上哭道：“少主饶命。”秦默抬脚迈过门槛出去了。柳如烟站在门边没动。孙满仓爬起来：“柳姑娘，这单子列好还是不列好？”`
+if (detectIntraCastPresenceFail(remainAfterLeave)) {
+  throw new Error('already-present after leave should pass')
+}
+
 const local = runLocalContinuityAudit({ content: bad, chapterNumber: 10 })
 if (!local.hard.some(h => h.rule === 'intra_cast_teleport')) {
   throw new Error(`local audit should include intra_cast_teleport: ${JSON.stringify(local.hard)}`)

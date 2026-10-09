@@ -97,6 +97,8 @@ export const settingsFil: ConsoleMessages['settings'] = {
   creditTokenHint: 'Credits ay base sa aktwal na token (round up). Hal.: 3000 token = 10 credits.',
   enableThinking: 'Thinking mode',
   enableThinkingHint: 'Off by default: i-disable ang reasoning chain para hindi haluan ang prose. Panatilihing off sa novel/polish. Kapag on, maaaring may analysis at mas maraming token sa R1 / MiniMax M2.',
+  minimaxReasoningSplit: 'Reasoning split (reasoning_split)',
+  minimaxReasoningSplitHint: 'On: reasoning sa hiwalay na field. Kailangan ng MiniMax-M3.1-Flash-Preview. Off: maaaring maghalo sa content (tatanggalin sa server).',
   testConfig: 'Subukan',
   testing: 'Sinusubukan…',
   save: 'I-save',

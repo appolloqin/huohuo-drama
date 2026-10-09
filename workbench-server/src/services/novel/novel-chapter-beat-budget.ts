@@ -9,9 +9,54 @@ import {
 } from './novel-chapter-seam.js'
 import {
   buildEmotionBeatSpecs,
+  buildEmotionBeatSpecsFromPack,
   EMOTION_BEAT_WEIGHTS,
   shouldBindEmotionBeats,
 } from './novel-chapter-emotion-beats.js'
+import type { ChapterBeatPack } from './novel-chapter-beat-pack.js'
+import {
+  extractOutlineInfoDelta,
+  splitInfoDeltaPointsForCover,
+} from './novel-outline-beat-cover.js'
+
+/**
+ * 【信息增量】是 meta 不进情节拍序列；写前须挂到后段拍 mustLand，否则合同空转。
+ * 题材无关：收束类点挂末拍，其余挂倒数第二拍（仅一拍则全挂该拍）。
+ */
+export function attachInfoDeltaMustLandToBudgetItems(
+  items: ChapterBeatBudgetItem[],
+  chapterOutline?: string,
+): ChapterBeatBudgetItem[] {
+  if (!items.length) return items
+  const points = splitInfoDeltaPointsForCover(extractOutlineInfoDelta(chapterOutline))
+  if (!points.length) return items
+  const already = new Set(
+    items.flatMap(it => (it.mustLand || []).map(m => m.replace(/\s+/g, ''))),
+  )
+  const pending = points.filter(p => !already.has(p.replace(/\s+/g, '')))
+  if (!pending.length) return items
+
+  const out = items.map(it => ({
+    ...it,
+    mustLand: it.mustLand ? [...it.mustLand] : [],
+  }))
+  const last = out.length - 1
+  const prev = out.length >= 2 ? last - 1 : last
+  const endingLike = (p: string) => /登场|犯边|倒计时|启动|收钩|悬念|未决/.test(p)
+  // 若有【章末问题】拍，收束类点优先挂该拍
+  const qIdx = out.findIndex(it => it.tag === '章末问题')
+  const endSlot = qIdx >= 0 ? qIdx : last
+  const midSlot = endSlot > 0 ? endSlot - 1 : endSlot
+
+  for (const p of pending) {
+    const slot = endingLike(p) ? endSlot : midSlot
+    out[slot]!.mustLand!.push(p)
+  }
+  return out.map(it => ({
+    ...it,
+    mustLand: it.mustLand!.length ? [...new Set(it.mustLand)] : undefined,
+  }))
+}
 
 const PHASE_LABELS_5 = ['铺垫', '起因', '发展', '高潮', '收束'] as const
 
@@ -73,6 +118,8 @@ export type ChapterBeatBudgetItem = {
   beat: string
   /** 戏剧标签（若有） */
   tag?: string
+  /** 本拍须落地的大纲原文片段（写前合同 / 轻验收） */
+  mustLand?: string[]
   targetChars: number
   minChars: number
   maxChars: number
@@ -101,7 +148,7 @@ function allocateTargets(userTarget: number, weights: number[]): number[] {
 }
 
 function toBudgetItems(
-  specs: Array<{ phase: string; beat: string; tag?: string }>,
+  specs: Array<{ phase: string; beat: string; tag?: string; mustLand?: string[] }>,
   raw: number[],
   endpointPending: boolean,
 ): ChapterBeatBudgetItem[] {
@@ -116,6 +163,7 @@ function toBudgetItems(
       phase: item.phase,
       beat: item.beat,
       tag: item.tag,
+      mustLand: item.mustLand?.length ? item.mustLand : undefined,
       targetChars,
       minChars: lo,
       maxChars: hi,
@@ -135,29 +183,52 @@ export function resolveChapterBeatBudgets(args: {
   prevChapterTail?: string
   /** 第1～8章绑定恨爽急盼分拍 */
   chapterNumber?: number
+  /** 书名：写入分拍任务引导（非事后闸门） */
+  title?: string
+  /** 全书大纲：信息增量锁定钱数 */
+  amountContext?: string
+  /** 本章大纲软编排/计量兜底结果；有则按 pack 字重与 mustLand 分拍 */
+  beatPack?: ChapterBeatPack | null
 }): ChapterBeatBudget {
   const userTarget = Math.min(20000, Math.max(500, Math.round(Number(args.userTarget)) || 3000))
   const pending = !!args.endpointPending
   const outline = args.chapterOutline || ''
 
   if (shouldBindEmotionBeats(args.chapterNumber) && outline.trim()) {
-    const emotionSpecs = buildEmotionBeatSpecs({
-      chapterOutline: outline,
-      chapterNumber: Number(args.chapterNumber),
-      prevChapterTail: args.prevChapterTail,
-    })
-    const raw = allocateTargets(userTarget, [...EMOTION_BEAT_WEIGHTS])
+    const pack = args.beatPack
+    const emotionSpecs = pack?.beats?.length
+      ? buildEmotionBeatSpecsFromPack({
+        pack,
+        chapterOutline: outline,
+        chapterNumber: Number(args.chapterNumber),
+        amountContext: args.amountContext,
+      })
+      : buildEmotionBeatSpecs({
+        chapterOutline: outline,
+        chapterNumber: Number(args.chapterNumber),
+        prevChapterTail: args.prevChapterTail,
+        title: args.title,
+        amountContext: args.amountContext,
+      })
+    const weights = pack?.beats?.length
+      ? pack.beats.map(b => b.weightHint)
+      : [...EMOTION_BEAT_WEIGHTS]
+    const raw = allocateTargets(userTarget, weights)
     const items = toBudgetItems(emotionSpecs, raw, pending)
     const lines = items.map(
       it => `${it.index}. [${it.phase}] ${it.beat.split('\n')[0] || it.beat} → 约 ${it.minChars}～${it.maxChars} 字（目标 ${it.targetChars}）`,
     )
+    const packNote = pack
+      ? `编排来源：${pack.source === 'soft' ? '软编排' : '计量兜底'}；拍数 ${items.length}；字重随本章大纲 mustLand 分配。`
+      : '未提供 BeatPack 时沿用默认四拍字重。'
     const promptBlock = [
-      '【篇幅预算 — 恨→爽→急→盼（第1～8章硬绑定）】',
-      `用户目标合计 ${userTarget} 字；分拍节点必须按恨→爽→急→盼顺序各写一次；写完「盼」即停；盼之后预算 0 字。`,
+      '【篇幅预算 — 恨→爽→急→盼（第1～8章；本章大纲驱动分拍）】',
+      `用户目标合计 ${userTarget} 字；按下列拍序写厚；写完末拍「盼」即停；盼之后预算 0 字。`,
+      packNote,
       ...lines,
-      '每拍只演本情绪职：恨=极限压迫；爽=一次硬刚+余震；急=未决期限/加码；盼=本事短亮。',
-      '禁止另开侦查/盘点/说明书拍；某拍写不够只在该拍内加交锋与余震，禁止挪到未写拍或发明第五拍。',
-      '优先级：已发生事实（勿回放）> 四拍情绪职 > 大纲要素落地 > 旧稿结构。',
+      '每拍只演本情绪职，且必须场面化该拍【须本拍落地·大纲原文】；禁止发明大纲外情节。',
+      '某拍写不够只在该拍内加交锋与余震；禁止把未写拍内容提前写完。',
+      '优先级：已发生事实（勿回放）> 本拍 mustLand + 情绪职 > 旧稿结构。',
     ].join('\n')
     return { beatCount: items.length, userTarget, items, promptBlock }
   }
@@ -178,18 +249,27 @@ export function resolveChapterBeatBudgets(args: {
 
   const weights = beatWeightTemplate(n)
   const raw = allocateTargets(userTarget, weights)
-  const items: ChapterBeatBudgetItem[] = toBudgetItems(
-    beatItems.map((item, i) => ({
-      phase: phaseLabelFromDramaTag(item.tag) || phaseLabelForIndex(i, n),
-      beat: item.beat,
-      tag: item.tag,
-    })),
-    raw,
-    pending,
+  const items: ChapterBeatBudgetItem[] = attachInfoDeltaMustLandToBudgetItems(
+    toBudgetItems(
+      beatItems.map((item, i) => {
+        const phase = phaseLabelFromDramaTag(item.tag) || phaseLabelForIndex(i, n)
+        return {
+          phase,
+          beat: item.beat,
+          tag: item.tag,
+        }
+      }),
+      raw,
+      pending,
+    ),
+    outline,
   )
 
   const lines = items.map(
-    it => `${it.index}. [${it.phase}] ${it.beat} → 约 ${it.minChars}～${it.maxChars} 字（目标 ${it.targetChars}）`,
+    it => {
+      const land = it.mustLand?.length ? `｜须落地${it.mustLand.length}条` : ''
+      return `${it.index}. [${it.phase}] ${it.beat} → 约 ${it.minChars}～${it.maxChars} 字（目标 ${it.targetChars}）${land}`
+    },
   )
   const firstPhase = items[0]?.phase || '首拍'
   const promptBlock = [

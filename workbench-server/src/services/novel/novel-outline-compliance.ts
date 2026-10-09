@@ -15,13 +15,24 @@ import {
 } from './novel-chapter-seam.js'
 import { detectBriefPendingStateOvershoot } from './novel-brief-compliance.js'
 import { filterDraftByChapterOutline } from './novel-draft-outline-filter.js'
-import { filterSubstantiveOutlineBeats, outlineBeatCoveredIn, beatAnchorTokens, outlineCatalystCoveredIn } from './novel-outline-beat-cover.js'
+import {
+  filterSubstantiveOutlineBeats,
+  outlineBeatCoveredIn,
+  beatAnchorTokens,
+  outlineCatalystCoveredIn,
+  extractOutlineInfoDelta,
+  outlineInfoDeltaCovered,
+  splitInfoDeltaPointsForCover,
+  infoDeltaPointCovered,
+  collectLockedMoneyForInfoDeltaPoint,
+} from './novel-outline-beat-cover.js'
 import { outlineHasExplicitEmotionBeats } from './novel-outline-drama-fields.js'
 
 export { outlineBeatCoveredIn, filterSubstantiveOutlineBeats, outlineCatalystCoveredIn } from './novel-outline-beat-cover.js'
 
 export type OutlineComplianceReasonCode =
   | 'early_beats_missing'
+  | 'info_delta_missing'
   | 'chapter_seam_cold_open'
   | 'chapter_event_replay'
   | 'draft_orphan_replay'
@@ -505,9 +516,69 @@ function outlineResultBeatCoveredIn(haystack: string, phrase: string): boolean {
 }
 
 /**
+ * 从【章末问题】抽出「是要A还是B / 能否X」类待答分支（题材无关结构）。
+ * 只抛钩子事件、未断言任一分支完成 → 不算揭晓。
+ */
+function extractEndingQuestionBranches(question: string): string[] {
+  const q = (question || '').replace(/\s+/g, '')
+  if (!q) return []
+  const out: string[] = []
+  const alt = q.match(/是要(.{2,24}?)还是(?:要)?(.{2,24}?)[？?]/)
+    || q.match(/是(.{2,20}?)还是(.{2,20}?)[？?]/)
+  if (alt) {
+    if (alt[1]) out.push(alt[1])
+    if (alt[2]) out.push(alt[2])
+  }
+  const neng = q.match(/能否(.{2,28}?)[？?]/)
+  if (neng?.[1]) out.push(neng[1])
+  const hui = q.match(/会不会(.{2,28}?)[？?]/)
+  if (hui?.[1]) out.push(hui[1])
+  return [...new Set(out.filter(b => [...b].length >= 2))]
+}
+
+/** 文末是否仍保持未决（开放问法 / 不知） */
+function finaleKeepsQuestionOpen(finale: string): boolean {
+  const t = (finale || '').replace(/\s+/g, '')
+  return /能否|会不会|还不知道|不知能否|不知|尚未|还没|未决|是要.{0,24}还是|还是要|未可知|谁知道/.test(t)
+}
+
+/** 分支关键词是否在文末出现（前缀 2～4 字，题材无关） */
+function branchMentionedInFinale(finale: string, branch: string): boolean {
+  const k = (branch || '').replace(/\s+/g, '')
+  const chars = [...k]
+  if (chars.length < 2) return false
+  if (finale.includes(k)) return true
+  for (let n = Math.min(4, chars.length); n >= 2; n--) {
+    if (finale.includes(chars.slice(0, n).join(''))) return true
+  }
+  return outlineBeatCoveredIn(finale, k)
+}
+
+/**
+ * 正文是否已回答章末问题的待答分支（正向证据；禁止用「终于/成了」口语误杀）。
+ */
+function endingQuestionAnsweredIn(content: string, question: string): boolean {
+  const branches = extractEndingQuestionBranches(question)
+  if (!branches.length) return false
+  const chars = [...(content || '')]
+  if (chars.length < 80) return false
+  // 只看后段：章中「终于挂不住」等不得当揭晓
+  const finale = chars.slice(Math.floor(chars.length * 0.55)).join('').replace(/\s+/g, '')
+  if (finaleKeepsQuestionOpen(finale)) return false
+
+  // 须有「揭晓收束」强信号，避免仅复述钩子场面
+  const strongOutcome =
+    /成功挡住|挡住了|守住了|溃逃|踏平了|保住了|劫走了|专为劫|来劫走|来劫人|屠了|杀进来|攻进来|得手了|溃败|已经挡住|没能挡住/
+  if (!strongOutcome.test(finale)) return false
+
+  return branches.some(b => branchMentionedInFinale(finale, b))
+}
+
+/**
  * 【章末问题】悬念被正文揭晓（题材无关）：
- * 主路径——下章【本章起因】已在本章落地（即提前写出答案）；
- * 辅路径——行动拍之后出现抽象完成义且文末不再保持未决。
+ * 主路径——下章【本章起因】已在本章落地；
+ * 辅路径——文末正向回答了「是要A还是B / 能否X」（抛钩子事件本身不算揭晓）。
+ * 禁止再用「终于/成了」等抽象完成词扫中段误杀。
  */
 export function detectSuspenseEndingResolved(args: {
   content: string
@@ -536,22 +607,7 @@ export function detectSuspenseEndingResolved(args: {
     }
   }
 
-  const compact = raw.replace(/\s+/g, '')
-  // 起势：优先大纲行动拍覆盖点；否则从中段起算（不绑场面词）
-  let afterIdx = Math.floor(compact.length * 0.4)
-  if (actionBeat) {
-    const off = firstBeatCoverOffset(raw, actionBeat)
-    if (off >= 0) afterIdx = Math.min(compact.length - 1, Math.max(0, Math.floor(off * 0.9)))
-  }
-  const afterSetup = compact.slice(afterIdx)
-  if (charLen(afterSetup) < 24) return null
-
-  const tail = afterSetup.slice(Math.floor(afterSetup.length * 0.35))
-  if (/能否|会不会|还不知道|不知能否|还没|尚未|未能|没能|未果|落空|没有成功/.test(tail)) {
-    return null
-  }
-
-  if (!OUTLINE_ABSTRACT_DONE_RE.test(afterSetup)) return null
+  if (!endingQuestionAnsweredIn(raw, q)) return null
 
   return {
     code: 'outline_endpoint_overshoot',
@@ -765,12 +821,15 @@ export function detectOutlineCompliance(args: {
   nextChapterOutline?: string
   /** 下章已写开篇：章末须正向承接 */
   nextChapterHead?: string
+  /** 全书大纲等：回收信息增量相关已锁定钱数 */
+  amountContext?: string
   chapterNumber: number
   prevSnapshot?: import('../../common/novel/novel-continuity-state.js').ChapterEndSnapshot | null
 }): OutlineComplianceResult {
   const reasons: OutlineComplianceReason[] = []
   const outline = args.chapterOutline?.trim() || ''
   const content = args.content?.trim() || ''
+  const amountContext = args.amountContext?.trim() || ''
   // 空正文不得判通过（删毒全清后曾误走 ok，导致后续一致性审报 empty_content）
   if (!content) {
     return {
@@ -850,6 +909,27 @@ export function detectOutlineCompliance(args: {
 
     const named = detectNamedAsGenericEpithet({ content, chapterOutline: outline })
     if (named) reasons.push(named)
+
+    // 【信息增量】须场面化落地（结果态极性 + 全书锁定钱数字面）
+    const infoDelta = extractOutlineInfoDelta(outline)
+    if ([...infoDelta].length >= 4 && !outlineInfoDeltaCovered(content, outline, amountContext)) {
+      const amountContexts = [outline, amountContext]
+      const missingPts = splitInfoDeltaPointsForCover(infoDelta)
+        .filter(p => !infoDeltaPointCovered(content, p, { amountContexts }))
+        .slice(0, 4)
+      const lockedForMiss = [...new Set(
+        missingPts.flatMap(p => collectLockedMoneyForInfoDeltaPoint(p, amountContexts)),
+      )]
+      reasons.push({
+        code: 'info_delta_missing',
+        message:
+          `本章未兑现大纲【信息增量】（须按原文逐条场面化；结果态须写已发生，禁止用未完成/旧态冒充`
+          + (lockedForMiss.length ? `；本章结果态条已锁钱数须用字面：${lockedForMiss.join('、')}` : '')
+          + `）。`
+          + (missingPts.length ? `缺失：${missingPts.join('；')}` : ''),
+        detail: missingPts.join(' | ') || infoDelta.slice(0, 120),
+      })
+    }
   }
 
   const pacing = detectBriefPacing({ content, writingBrief: args.writingBrief })
@@ -921,10 +1001,18 @@ export function buildOutlineComplianceFixPrompt(args: {
       '【待修正正文（供对照，勿照抄错误结构）】',
       args.content.trim().slice(0, 6000),
     ].join('\n')
+  const infoDeltaMiss = args.reasons.find(r => r.code === 'info_delta_missing')
   const lines = [
     args.nuclearCold ? '【大纲落实修正 — 冷开篇核修重写】' : '【大纲落实修正 — 整章重写】',
     '上一稿未落实本章大纲/写作说明，请输出完整替换正文。硬性要求：',
     ...args.reasons.map((r, i) => `${i + 1}. ${r.message}`),
+    infoDeltaMiss
+      ? [
+        '【信息增量硬性】须按【本章大纲】【信息增量】原文逐条场面化；',
+        '结果态条目必须写「已发生/已完成」，禁止改日再办、另册待交、仍欠/尚未等未完成句冒充；',
+        infoDeltaMiss.detail ? `本轮缺失要点：${infoDeltaMiss.detail}` : '',
+      ].filter(Boolean).join('')
+      : '',
     args.reasons.some(r => r.code === 'catalyst_agency_fail')
       ? '【结构硬性】本章起因尚未落地时，禁止沿上章末悬念续写开篇；须先写清起因由【本章人物】完成，再进入欲望/阻碍。'
       : '',

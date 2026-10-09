@@ -161,4 +161,42 @@ assert(!stripped4.includes('因果:'), 'editor strips orphan causal')
 assert(!stripped4.includes('- 人际:'), 'editor strips orphan bullets')
 console.log('orphan no-header mid-chapter ok')
 
+/** 无「- 维:」前缀的箭头状态行 + 因果：须剥离出正文 */
+const arrowOrphan = [
+  '他话音未落。',
+  '',
+  '隐忍账房 → 当众举证者',
+  '  因果: 藏匿账目三年→趁对峙摔出铁证→获秦默信任，被委以保管账目之责',
+  '  触发: 秦德东威胁时王德福反唇相讥并亮出钥匙',
+  '  代价: 与秦德东彻底撕破脸，面临黑风寨灭口风险',
+  '  感知: 腿肚子哆嗦但腰杆挺直，声音由发颤转稳',
+  '  代价: 账目暴露，秦德东再无抵赖余地',
+  '  感知: 纸页泛黄卷边，墨迹陈旧',
+].join('\n')
+const n5 = normalizeChangeRecordArtifacts(arrowOrphan)
+assert(!!n5.changeBlock, 'arrow orphan must become metadata')
+assert(n5.changeBlock!.includes('隐忍账房'), 'arrow changeBlock keeps transition')
+assert(n5.prose.includes('他话音未落'), 'story kept')
+assert(!n5.prose.includes('因果:'), 'arrow causal not in prose')
+assert(!n5.prose.includes('隐忍账房'), 'arrow transition not in prose')
+assert(!stripNovelChangeRecord(arrowOrphan).includes('感知:'), 'editor strips arrow orphan fields')
+console.log('arrow no-dimension orphan ok')
+
+/** 仅裸「感知:/耗时:」残片（无标题、无 - 维:、无因果）须剥离 */
+const bareSubfields = [
+  '“黑风岭不是没水，是水被人掐住了。”周文远指尖点在舆图上游一处，“青水河从苍狼原那边下来，流经黑风寨寨脚，被他们筑了坝。坝一筑，下游的荒田十年没浇过水，全成了干地。”远自墙根起身应答',
+  '  感知: 袍袖磨边、怀卷舆图',
+  '  耗时: 秦默立令后片刻',
+].join('\n')
+const n6 = normalizeChangeRecordArtifacts(bareSubfields)
+assert(n6.prose.includes('黑风岭不是没水'), 'bare-subfield story kept')
+assert(n6.prose.includes('起身应答'), 'bare-subfield trailing prose kept')
+assert(!n6.prose.includes('感知:'), 'bare 感知 stripped from prose')
+assert(!n6.prose.includes('耗时:'), 'bare 耗时 stripped from prose')
+const stripped6 = stripNovelChangeRecord(bareSubfields)
+assert(stripped6.includes('起身应答'), 'editor keeps story')
+assert(!stripped6.includes('感知:'), 'editor strips bare 感知')
+assert(!stripped6.includes('耗时:'), 'editor strips bare 耗时')
+console.log('bare perception/duration orphan ok')
+
 console.log('PASS')

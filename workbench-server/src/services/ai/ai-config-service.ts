@@ -118,8 +118,33 @@ async function resolveEffectiveAgentModel(): Promise<string> {
   return BUNDLED_AGENT_MODEL_NAME
 }
 
-function encodePresetBillingBlob(serviceType: string) {
-  if (serviceType === 'text') return JSON.stringify({ creditTokenUnit: 3000, creditTokenCost: 10, creditCost: 0 })
+/** Provider 为 minimax，或模型名本身是 MiniMax（火火代理常见：provider=huohuo + MiniMax-M3.1-…） */
+function usesMiniMaxTextModel(provider?: string, model?: string): boolean {
+  const p = (provider || '').toLowerCase()
+  const m = (model || '').toLowerCase()
+  return p === 'minimax'
+    || /minimax|abab/.test(m)
+    || /^m2[\-.]|^m3[\-.]|minimax-m\d/i.test(m)
+}
+
+function encodePresetBillingBlob(
+  serviceType: string,
+  opts?: { provider?: string; model?: string; minimaxReasoningSplit?: boolean },
+) {
+  if (serviceType === 'text') {
+    const blob: Record<string, unknown> = {
+      creditTokenUnit: 3000,
+      creditTokenCost: 10,
+      creditCost: 0,
+      enableThinking: false,
+    }
+    // MiniMax 文本（含火火代理转发 MiniMax 型号）：推理分离 + 自适应思考
+    if (usesMiniMaxTextModel(opts?.provider, opts?.model)) {
+      blob.minimaxReasoningSplit = opts?.minimaxReasoningSplit !== false
+      blob.enableThinking = true
+    }
+    return JSON.stringify(blob)
+  }
   if (serviceType === 'image') return JSON.stringify({ creditCost: 10 })
   if (serviceType === 'video') return JSON.stringify({ creditCost: 30 })
   return JSON.stringify({ creditCost: 5 })
@@ -142,6 +167,9 @@ function mergeBillingPatchFromBody(
     }
     if ('enable_thinking' in body) {
       settings.enableThinking = body.enable_thinking === true
+    }
+    if ('minimax_reasoning_split' in body) {
+      settings.minimaxReasoningSplit = body.minimax_reasoning_split === true
     }
     settings.creditCost = 0
   } else if ('credit_cost' in body) {
@@ -182,10 +210,24 @@ async function persistBundledServicePreset(
   preset: EffectivePreset,
   fallbackApiKey: string,
   ts: string,
+  opts?: { minimaxReasoningSplit?: boolean },
 ) {
   const existing = await aiServiceConfigsRepo.findServiceConfigByTypeAndProvider(preset.serviceType, preset.provider)
   // 优先用每张卡片 ai_preset_configs.api_key，没有再回退到弹窗提交的统一 key
   const apiKey = preset.apiKey || fallbackApiKey
+  // 文本+MiniMax 型号：保留已有开关，除非一键提交显式传入
+  let minimaxReasoningSplit = opts?.minimaxReasoningSplit
+  if (
+    preset.serviceType === 'text'
+    && usesMiniMaxTextModel(preset.provider, preset.model)
+    && minimaxReasoningSplit == null
+    && existing?.settings
+  ) {
+    const prev = parseConfigSettings(existing.settings)
+    if (typeof prev.minimaxReasoningSplit === 'boolean') {
+      minimaxReasoningSplit = prev.minimaxReasoningSplit
+    }
+  }
   const values = {
     serviceType: preset.serviceType,
     provider: preset.provider,
@@ -194,7 +236,11 @@ async function persistBundledServicePreset(
     apiKey,
     model: JSON.stringify([preset.model]),
     priority: preset.priority,
-    settings: encodePresetBillingBlob(preset.serviceType),
+    settings: encodePresetBillingBlob(preset.serviceType, {
+      provider: preset.provider,
+      model: preset.model,
+      minimaxReasoningSplit,
+    }),
     isActive: true,
     updatedAt: ts,
   }
@@ -274,12 +320,19 @@ export async function createServiceConfig(body: Record<string, unknown>) {
   return toServiceConfigApiShape(row)
 }
 
-export async function applyHuohuoPreset(apiKey: string) {
+export async function applyHuohuoPreset(
+  apiKey: string,
+  opts?: { minimaxReasoningSplit?: boolean },
+) {
   const ts = now()
   const presets = await resolveEffectiveServicePresets()
   const agentModel = await resolveEffectiveAgentModel()
 
-  for (const preset of presets) await persistBundledServicePreset(preset, apiKey, ts)
+  for (const preset of presets) {
+    await persistBundledServicePreset(preset, apiKey, ts, {
+      minimaxReasoningSplit: opts?.minimaxReasoningSplit,
+    })
+  }
   for (const agent of BUNDLED_AGENT_PRESETS) await persistBundledAgentPreset(agent, agentModel, ts)
 
   const configs = (await aiServiceConfigsRepo.listAllServiceConfigs()).map(toServiceConfigApiShape)
@@ -317,16 +370,25 @@ export async function listEffectivePresets() {
   }
 
   return {
-    services: services.map((p) => ({
-      preset_key: p.serviceType,
-      service_type: p.serviceType,
-      provider: p.provider,
-      base_url: p.baseUrl,
-      api_key: p.apiKey,    // 每张卡片独立的 api_key；管理员在弹窗内填，避免共用一个 key
-      model: p.model,
-      label: p.label,
-      priority: p.priority,
-      source: serviceSource(p),
+    services: await Promise.all(services.map(async (p) => {
+      const base = {
+        preset_key: p.serviceType,
+        service_type: p.serviceType,
+        provider: p.provider,
+        base_url: p.baseUrl,
+        api_key: p.apiKey,    // 每张卡片独立的 api_key；管理员在弹窗内填，避免共用一个 key
+        model: p.model,
+        label: p.label,
+        priority: p.priority,
+        source: serviceSource(p),
+      }
+      if (p.serviceType !== 'text' || !usesMiniMaxTextModel(p.provider, p.model)) return base
+      const textSvc = await aiServiceConfigsRepo.findServiceConfigByTypeAndProvider('text', p.provider)
+      const split = parseConfigSettings(textSvc?.settings).minimaxReasoningSplit
+      return {
+        ...base,
+        minimax_reasoning_split: split !== false,
+      }
     })),
     agent: {
       preset_key: 'agent',
@@ -570,6 +632,22 @@ export async function savePresetOverrides(items: Array<Record<string, unknown>>)
       createdAt: ts,
       updatedAt: ts,
     })
+    // 文本卡片：同步 reasoning_split 到已创建的服务配置（含火火代理 + MiniMax 型号）
+    if (
+      serviceType === 'text'
+      && usesMiniMaxTextModel(provider, model)
+      && 'minimax_reasoning_split' in item
+    ) {
+      const svc = await aiServiceConfigsRepo.findServiceConfigByTypeAndProvider('text', provider)
+      if (svc) {
+        const settings = parseConfigSettings(svc.settings)
+        settings.minimaxReasoningSplit = item.minimax_reasoning_split === true
+        await aiServiceConfigsRepo.updateServiceConfig(svc.id, {
+          settings: JSON.stringify(settings),
+          updatedAt: ts,
+        })
+      }
+    }
   }
   return await listEffectivePresets()
 }
@@ -589,7 +667,16 @@ export async function updateServiceConfig(id: number, body: Record<string, unkno
   if ('model' in body) updates.model = JSON.stringify(body.model)
   if ('priority' in body) updates.priority = body.priority
   if ('is_active' in body) updates.isActive = body.is_active
-  if ('credit_cost' in body || 'credit_token_unit' in body || 'credit_token_cost' in body || 'perplexity_model' in body || 'enable_thinking' in body || 'workflow' in body || 'resolution' in body) {
+  if (
+    'credit_cost' in body
+    || 'credit_token_unit' in body
+    || 'credit_token_cost' in body
+    || 'perplexity_model' in body
+    || 'enable_thinking' in body
+    || 'minimax_reasoning_split' in body
+    || 'workflow' in body
+    || 'resolution' in body
+  ) {
     const existing = await aiServiceConfigsRepo.findServiceConfigById(id)
     updates.settings = JSON.stringify(mergeBillingPatchFromBody(existing ?? undefined, body))
   }

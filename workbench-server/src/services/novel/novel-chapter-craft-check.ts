@@ -275,11 +275,23 @@ export async function checkNovelChapterCraft(args: {
   // 模型不可用时跳过 L1 硬拦与 L2，避免空转
   let feel: AppealFeelResult | null = null
   if (!skipAppealGates) {
-    const hardOpens = listOpeningAppealHardFails(prose, args.chapterNumber, args.priorChapterContent)
+    const hardOpens = listOpeningAppealHardFails(
+      prose,
+      args.chapterNumber,
+      args.priorChapterContent,
+      args.chapterOutline,
+      args.meta?.outline || '',
+    )
     if (hardOpens.length) {
       drama_gates.opening_promise = {
         level: '无',
         note: hardOpens.map((h) => h.message).join('；').slice(0, 120),
+      }
+      if (hardOpens.some((h) => h.code === 'opening_sell_point')) {
+        drama_gates.info_delta = {
+          level: '无',
+          note: hardOpens.find((h) => h.code === 'opening_sell_point')!.message.slice(0, 120),
+        }
       }
       drama_gate_passed = computeDramaGatePassed(drama_gates)
       logTaskWarn('Novel', 'appeal-l1-hard-fail', {
@@ -320,6 +332,8 @@ export async function checkNovelChapterCraft(args: {
     content: prose,
     chapterNumber: args.chapterNumber,
     priorChapterContent: args.priorChapterContent,
+    chapterOutline: args.chapterOutline,
+    amountContext: args.meta?.outline || '',
     feel: feel && !feel.unavailable ? feel : null,
   })
   for (const d of appeal.dimensions) {

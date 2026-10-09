@@ -19,6 +19,7 @@ export {
   isOnlyCausalChangeRecordIssue,
   hasValidChangeRecord,
   buildFallbackChangeRecord,
+  isStubChangeRecord,
 } from './ensure-causal-change-record.js'
 export {
   buildCausalCreationRulesBlock,

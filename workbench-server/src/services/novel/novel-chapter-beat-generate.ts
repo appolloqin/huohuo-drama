@@ -38,6 +38,12 @@ import {
   isEmotionBeatPhase,
   shouldBindEmotionBeats,
 } from './novel-chapter-emotion-beats.js'
+import {
+  beatMustLandInfoDeltaCovered,
+  buildBeatWriteContractBlock,
+  buildChapterInfoDeltaDispatchNote,
+  parseMustLandFromBeatText,
+} from './novel-chapter-beat-write-contract.js'
 import { loadPrevChapterEndSnapshot } from './novel-chapter-end-snapshot.js'
 import {
   buildChapterSeamWriteBlock,
@@ -45,7 +51,7 @@ import {
   buildOutlineStaleBlock,
   buildRewriteAntiSeamBlock,
   detectChapterSeamColdOpen,
-  detectChapterSeamReplay,
+  detectChapterSeamLexicalReplay,
   extractOutlineCatalystPhrases,
   formatNextChapterForbidBlock,
   formatNextChapterForwardSeamBlock,
@@ -66,6 +72,7 @@ import {
 import { alignNovelChapterOutlineBoundary } from './novel-outline-boundary.js'
 import { chapterLengthTokenBudget, polishNovelChapterProse } from './novel-prose-polish.js'
 import { buildFrozenPresencePhaseBlock } from './novel-presence-phase.js'
+import { buildChapterTitleSellHardRequirement } from './novel-title-sell-align.js'
 
 const PRIOR_TAIL_CHARS = 720
 
@@ -171,10 +178,11 @@ export function buildBeatOpeningRule(args: {
   const { chapterNumber, seamRetryHint, hasPriorFrozen, priorTail } = args
   if (chapterNumber >= 2) {
     return [
-      '【开篇硬性 — 章缝承接后再爆发】',
-      '1. 先轻锚承接上章已发生事实 / 落地未决【本章起因】；禁止跳切吃书、禁止复述上章收束对白。',
-      '2. 承接后立刻进入本拍冲突或对白，短平快；环境最多一句锚，禁止开篇大段盘点。',
+      '【开篇硬性 — 状态相容后再爆发】',
+      '1. 开篇须与【上章末状态】逻辑相容（续场/切场/跨日/补叙均可）；禁止无交代回卷已完成抵达或收束。',
+      '2. 相容后立刻进入本拍冲突或对白，短平快；环境最多一句锚，禁止开篇大段盘点。',
       '3. 禁止照抄上章末特色词组（若提示中列出了「勿再复述」条目，更不得沿用）。',
+      '4. 有效起点见【本拍写前合同】；勿为命中字面倒带上章已越过相位。',
       seamRetryHint ? `【上轮硬伤】${seamRetryHint}` : '',
     ].filter(Boolean).join('\n')
   }
@@ -225,6 +233,7 @@ async function generateOneBeat(args: {
   frozenProse: string
   chapterNumber: number
   chapterOutline?: string
+  dramaTitle?: string
   isRewrite: boolean
   existingText?: string
   prevTail?: string
@@ -273,8 +282,23 @@ async function generateOneBeat(args: {
     ? buildEmotionBeatHardRule(item.phase)
     : ''
 
+  const mustLand = item.mustLand?.length
+    ? item.mustLand
+    : parseMustLandFromBeatText(item.beat)
+  const writeContract = buildBeatWriteContractBlock({
+    beatIndex,
+    beatTotal,
+    chapterNumber: args.chapterNumber,
+    chapterOutline: args.chapterOutline,
+    mustLand,
+    beatText: item.beat,
+    prevTail: args.prevTail,
+    prevSnapshot: args.prevSnapshot,
+  })
+
   const beatUser = joinBlocks([
     args.sharedUserPrefix,
+    writeContract,
     openingRule,
     prior && !(args.chapterNumber >= 2 && isFirst)
       ? `【已写正文（已冻结，禁止重写/删改/回放）】\n…${prior}`
@@ -327,6 +351,28 @@ async function generateOneBeat(args: {
     const cut = text.indexOf(prior.slice(-12))
     if (cut > 0) text = text.slice(cut + 12).trim()
   }
+
+  // 写后轻验收：仅本拍 mustLand 中的信息增量点；失败重写本拍一次
+  if (!args.seamRetryHint && mustLand.length) {
+    const cover = beatMustLandInfoDeltaCovered({
+      content: text,
+      mustLand,
+      chapterOutline: args.chapterOutline,
+    })
+    if (!cover.ok) {
+      logTaskWarn('Novel', 'beat-mustland-retry', {
+        beat: item.index,
+        phase: item.phase,
+        missing: cover.missing.slice(0, 4),
+      })
+      const retryHint = [
+        '上轮本拍未场面化下列须落地条目，请在本拍内补写完成态场面（禁止只提半句）：',
+        ...cover.missing.slice(0, 4).map((m, i) => `${i + 1}. ${m}`),
+      ].join('\n')
+      return generateOneBeat({ ...args, seamRetryHint: retryHint })
+    }
+  }
+
   const before = countNovelChars(text)
   text = truncateProseToCharBudget(text, item.maxChars)
   if (countNovelChars(text) < before) {
@@ -346,7 +392,8 @@ async function generateFirstBeatWithSeamGuard(args: Parameters<typeof generateOn
   let text = await generateOneBeat(args)
   if (args.chapterNumber < 2 || !args.prevTail?.trim()) return text
 
-  const hit = detectChapterSeamReplay({
+  // 字面重合仅作拍点软重试提示；是否算回放由一致性模型审判定
+  const hit = detectChapterSeamLexicalReplay({
     content: text,
     chapterNumber: args.chapterNumber,
     prevChapterTail: args.prevTail,
@@ -458,12 +505,25 @@ export async function generateNovelChapterByBeats(
       : prevTail.slice(-240),
   })
   const userTarget = Math.min(20000, Math.max(500, targetLength))
+  const { resolveChapterOutlineBeatPack } = await import('./novel-chapter-beat-pack.js')
+  const beatPack = await resolveChapterOutlineBeatPack({
+    chapterOutline: chapterOutline || '',
+    chapterNumber,
+    userTarget,
+    billing: billing
+      ? { ...billing, reason: '小说分拍软编排' }
+      : undefined,
+    novelGenreSkillKey: resolveNovelGenreSkillKey(meta),
+  })
   const beatBudgets = resolveChapterBeatBudgets({
     chapterOutline,
     userTarget,
     endpointPending: outlineAlign.endpointPending,
     prevChapterTail: prevTail,
     chapterNumber,
+    title: dramaTitle,
+    amountContext: meta.outline || '',
+    beatPack,
   })
   const items = beatBudgets.items
   if (!shouldUseBeatSequentialGenerate({
@@ -514,7 +574,7 @@ export async function generateNovelChapterByBeats(
     '【情节优先序】本章大纲（含【本章起因】）> 上章已发生事实 > 写作说明。写作说明不得另起出门/进山等与大纲或上章事实冲突的起势。',
     '',
     emotionBound
-      ? '当前任务：**按恨→爽→急→盼分拍写作**——每次只写用户指定的本情绪拍；已写正文已冻结；禁止把四拍揉进一拍。'
+      ? '当前任务：**按恨→爽→急→盼分拍写作**（可有同相子拍）——每次只写用户指定的本情绪拍及其【须本拍落地·大纲原文】；已写正文已冻结；禁止把多拍揉进一拍。'
       : '当前任务：**按拍点分段写作**——每次只写用户指定的「本拍」；已写正文已冻结。',
     '章内进度：后拍勿把已写到完成态的过程无交代再完整演一遍（可一句承接；同主题加深/余波可以）。',
     '结构与章末止点服从【本章大纲边界】；禁止为凑字越过末拍。',
@@ -586,6 +646,9 @@ export async function generateNovelChapterByBeats(
     ctx.selfHint,
     `【书名】${dramaTitle}`,
     `【本章】第${chapterNumber}章${chapterTitle ? ` ${chapterTitle}` : ''}`,
+    buildChapterTitleSellHardRequirement(dramaTitle, meta.premise, chapterNumber),
+    // 全章只提示「分拍落地」；具体条目在各拍写前合同 / 须本拍落地
+    buildChapterInfoDeltaDispatchNote(chapterOutline),
     chapterOutline?.trim()
       ? `【本章大纲】\n${chapterOutline.trim()}`
       : '',
@@ -619,6 +682,7 @@ export async function generateNovelChapterByBeats(
       frozenProse: frozen,
       chapterNumber,
       chapterOutline,
+      dramaTitle,
       isRewrite,
       existingText,
       prevTail,
@@ -790,15 +854,15 @@ export async function generateNovelChapterByBeats(
       })
       polished = draftBeforePolish
     } else {
-      // 润色若把上章词组写回开篇，回退或再剥
-      const draftSeam = detectChapterSeamReplay({
+      // 润色若把上章词组写回开篇，回退或再剥（字面重合探测器，非硬审）
+      const draftSeam = detectChapterSeamLexicalReplay({
         content: draft,
         chapterNumber,
         prevChapterTail: prevTail,
         chapterOutline,
         prevSnapshot: prevSnap,
       })
-      const polishSeam = detectChapterSeamReplay({
+      const polishSeam = detectChapterSeamLexicalReplay({
         content: polished,
         chapterNumber,
         prevChapterTail: prevTail,

@@ -220,12 +220,17 @@ export function mapOutlineBoundaryModelViolations(
     )
   }
 
-  // 去重（按 message 前 48 字）
+  // 去重（按 message 前 48 字）；章缝根因只保留一条，避免维度扇出扭曲修写选型
   const seen = new Set<string>()
+  let seamKept = false
   return out.filter(r => {
     const k = r.message.slice(0, 48)
     if (seen.has(k)) return false
     seen.add(k)
+    if (r.code === 'chapter_seam_cold_open') {
+      if (seamKept) return false
+      seamKept = true
+    }
     return true
   }).slice(0, 8)
 }

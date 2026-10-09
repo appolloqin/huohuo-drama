@@ -1237,6 +1237,19 @@
             <span />
           </label>
         </div>
+        <div
+          v-if="serviceConfigFormState.service_type === 'text' && needsMiniMaxReasoningSplitUi(serviceConfigFormState.provider, serviceConfigFormState.modelStr)"
+          class="field-switch-row"
+        >
+          <div class="field-switch-copy">
+            <span class="field-label">{{ tm.settings.minimaxReasoningSplit }}</span>
+            <p class="field-hint">{{ tm.settings.minimaxReasoningSplitHint }}</p>
+          </div>
+          <label class="toggle">
+            <input v-model="serviceConfigFormState.minimax_reasoning_split" type="checkbox" />
+            <span />
+          </label>
+        </div>
         <p v-if="serviceConfigFormState.service_type === 'text'" class="field-hint">{{ tm.settings.creditTokenHint }}</p>
         <p v-if="serviceConfigFormState.service_type === 'text'" class="field-hint">{{ tm.settings.perplexityModelHint }}</p>
         <label v-else class="field">
@@ -1339,6 +1352,19 @@
                 <span class="field-label">Model</span>
                 <input v-model="preset.editForm.model" class="input mono" placeholder="gemini-3-pro-preview" />
               </label>
+              <div
+                v-if="preset.presetKey === 'text' && needsMiniMaxReasoningSplitUi(preset.editForm.provider, preset.editForm.model)"
+                class="field-switch-row"
+              >
+                <div class="field-switch-copy">
+                  <span class="field-label">{{ tm.settings.minimaxReasoningSplit }}</span>
+                  <p class="field-hint">{{ tm.settings.minimaxReasoningSplitHint }}</p>
+                </div>
+                <label class="toggle">
+                  <input v-model="preset.editForm.minimax_reasoning_split" type="checkbox" />
+                  <span />
+                </label>
+              </div>
               <div v-if="preset.probeOutcome" class="test-result" :class="{ ok: preset.probeOutcome.reachable, bad: !preset.probeOutcome.reachable }">
                 <div class="test-result-head">
                   <span class="tag" :class="preset.probeOutcome.reachable ? 'tag-success' : 'tag-error'">{{ preset.probeOutcome.status || 'ERROR' }}</span>
@@ -1861,6 +1887,7 @@ const serviceConfigFormState = reactive({
   credit_token_cost: 10,
   perplexity_model: '',
   enable_thinking: false,
+  minimax_reasoning_split: true,
   workflow: '',
   resolution: '768P',
 })
@@ -2011,7 +2038,14 @@ type PresetCardRow = {
   saving: boolean
   probing: boolean
   probeOutcome: ProbeOutcome | null
-  editForm: { base_url: string; provider: string; api_key: string; model: string }
+  editForm: {
+    base_url: string
+    provider: string
+    api_key: string
+    model: string
+    minimax_reasoning_split: boolean
+  }
+  minimaxReasoningSplit?: boolean
 }
 type AgentPresetRow = {
   presetKey: 'agent'
@@ -2038,6 +2072,15 @@ function sourceTagLabel(source: 'db' | 'env' | 'code'): string {
   return tm.value.settings.presetSourceCode
 }
 
+/** Provider=minimax，或模型名为 MiniMax（火火代理常见）时显示/写入推理分离 */
+function needsMiniMaxReasoningSplitUi(provider: string, model: string): boolean {
+  const p = (provider || '').trim().toLowerCase()
+  const m = (model || '').trim().toLowerCase()
+  return p === 'minimax'
+    || /minimax|abab/.test(m)
+    || /^m2[\-.]|^m3[\-.]|minimax-m\d/i.test(m)
+}
+
 function maskApiKey(key: string): string {
   if (!key) return ''
   if (key.length <= 8) return '*'.repeat(key.length)
@@ -2055,7 +2098,9 @@ function rowFromApi(item: {
   priority: number
   source: 'db' | 'env' | 'code'
   enabled?: boolean
+  minimax_reasoning_split?: boolean
 }): PresetCardRow {
+  const split = item.minimax_reasoning_split !== false
   return {
     presetKey: item.preset_key as PresetCardRow['presetKey'],
     serviceType: item.service_type,
@@ -2072,7 +2117,14 @@ function rowFromApi(item: {
     saving: false,
     probing: false,
     probeOutcome: null,
-    editForm: { base_url: item.base_url, provider: item.provider, api_key: '', model: item.model },
+    minimaxReasoningSplit: split,
+    editForm: {
+      base_url: item.base_url,
+      provider: item.provider,
+      api_key: '',
+      model: item.model,
+      minimax_reasoning_split: split,
+    },
   }
 }
 
@@ -2128,6 +2180,7 @@ function startPresetEdit(row: PresetCardRow | AgentPresetRow) {
       r.editForm.provider = r.provider
       r.editForm.api_key = ''
       r.editForm.model = r.model
+      r.editForm.minimax_reasoning_split = r.minimaxReasoningSplit !== false
       r.probeOutcome = null
     }
   }
@@ -2224,6 +2277,10 @@ async function savePresetEdit(row: PresetCardRow | AgentPresetRow) {
         priority: r.priority,
       }
       if (apiKey) payload.api_key = apiKey
+      if (r.presetKey === 'text' && needsMiniMaxReasoningSplitUi(provider, model)) {
+        payload.minimax_reasoning_split = r.editForm.minimax_reasoning_split !== false
+        r.minimaxReasoningSplit = payload.minimax_reasoning_split as boolean
+      }
       if (isAdmin.value) {
         await aiConfigAPI.savePreset([payload])
       }
@@ -2350,6 +2407,9 @@ function applyServiceProviderPreset(type, presetOrProvider) {
     serviceConfigFormState.credit_token_unit = Number(preset.creditTokenUnit || 3000)
     serviceConfigFormState.credit_token_cost = Number(preset.creditTokenCost || 10)
     serviceConfigFormState.credit_cost = 0
+    // MiniMax 型号（含官方/代理）：默认开启推理分离
+    const models = (preset.models || []).join(',')
+    serviceConfigFormState.minimax_reasoning_split = needsMiniMaxReasoningSplitUi(preset.provider, models)
   } else {
     serviceConfigFormState.credit_cost = Number(preset.creditCost || 0)
   }
@@ -2374,6 +2434,7 @@ function showCreateServiceConfigSheet(t) {
     credit_token_cost: 10,
     perplexity_model: '',
     enable_thinking: false,
+    minimax_reasoning_split: true,
     workflow: '',
     resolution: '768P',
   })
@@ -2397,6 +2458,7 @@ function showEditServiceConfigSheet(c) {
     credit_token_cost: Number(c.credit_token_cost || 0),
     perplexity_model: c.perplexity_model || '',
     enable_thinking: c.enable_thinking === true,
+    minimax_reasoning_split: c.minimax_reasoning_split !== false,
     workflow: c.workflow || '',
     resolution: c.resolution || '768P',
   })
@@ -2419,6 +2481,9 @@ function buildServiceConfigPayload() {
       credit_token_cost: Math.max(0, Number(serviceConfigFormState.credit_token_cost || 0)),
       perplexity_model: serviceConfigFormState.perplexity_model?.trim() || '',
       enable_thinking: serviceConfigFormState.enable_thinking === true,
+      ...(needsMiniMaxReasoningSplitUi(serviceConfigFormState.provider, serviceConfigFormState.modelStr)
+        ? { minimax_reasoning_split: serviceConfigFormState.minimax_reasoning_split !== false }
+        : {}),
     }
   }
   const extra = {
@@ -2475,7 +2540,17 @@ async function applyBundledPlatformPreset() {
       return
     }
     try {
-      await aiConfigAPI.huohuoPreset(bundledPresetKeyForm.apiKey)
+      const textCard = bundledPresetCardRows.value.find(r => r.presetKey === 'text')
+      const textProvider = textCard?.editing ? textCard.editForm.provider : (textCard?.provider || '')
+      const textModel = textCard?.editing ? textCard.editForm.model : (textCard?.model || '')
+      const splitOpts = needsMiniMaxReasoningSplitUi(textProvider, textModel)
+        ? {
+            minimax_reasoning_split: textCard?.editing
+              ? textCard.editForm.minimax_reasoning_split !== false
+              : textCard?.minimaxReasoningSplit !== false,
+          }
+        : undefined
+      await aiConfigAPI.huohuoPreset(bundledPresetKeyForm.apiKey, splitOpts)
       await fetchServiceConfigRows()
       await fetchAgentConfigRows()
       bundledPresetSheetOpen.value = false

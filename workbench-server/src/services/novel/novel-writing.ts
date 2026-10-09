@@ -31,13 +31,19 @@ import {
   buildChapterOutlineDramaPromptBlock,
   OUTLINE_DRAMA_PRIORITY_LINE,
   assertOutlineChapterFields,
+  extractTagBlock,
 } from './novel-outline-drama-fields.js'
+import { buildInfoDeltaMustLandBlock, resolveInfoDeltaLockedAmounts } from './novel-chapter-emotion-beats.js'
 import { ensureOutlineBookDramaFields } from './novel-outline-drama-ensure.js'
+import {
+  buildChapterTitleSellHardRequirement,
+  buildTitleSellHardRequirement,
+} from './novel-title-sell-align.js'
 import { countNovelChars, enforceAssembledLengthFloor, assertNovelChapterLengthBand } from '../../common/novel/novel-char-limit.js'
 import { buildNovelWriteContext } from './novel-continuity.js'
 import { NOVEL_MEMORY_CHAPTER_END_FORMAT, buildAnchorEchoPromptBlock, ensureAnchor, ensureNovelMemory, resolveVolumeForChapter } from './novel-memory/index.js'
 import { CAUSAL_PROSE_ONLY_RULE, isCausalChainEnabled } from './novel-causal-chain/index.js'
-import { parseVolumeRanges, type OutlineVolumeRange, getMaxParsedChapterNumber, extractChapterOutline, listMissingOutlineChapters, listMissingOutlineChaptersInRange } from '../../common/novel/novel-outline.js'
+import { parseVolumeRanges, type OutlineVolumeRange, getMaxParsedChapterNumber, extractChapterOutline, listMissingOutlineChapters, listMissingOutlineChaptersInRange, shouldUsePhasedOutlineGeneration } from '../../common/novel/novel-outline.js'
 import { truncText } from '../../common/drama/project-continuity.js'
 import { logTaskWarn } from '../../common/task/task-logger.js'
 import * as episodesRepo from '../../db/repos/episodes/index.js'
@@ -72,23 +78,62 @@ const MAX_NOVEL_USER_PROMPT_CHARS = 32000
 
 /** M2：情节优先序（生成/续写/数字作家共用） */
 const CHAPTER_PLOT_PRIORITY_LINE =
-  '【情节优先序】本章大纲（含【本章起因】）> 上章已发生事实 > 写作说明。写作说明不得另起出门/进山等与大纲或上章事实冲突的起势。'
+  '【情节优先序】本章大纲结构化标签（【信息增量】/【本章起因】/欲望/阻碍等）> 情绪场演法扩写 > 上章已发生事实 > 写作说明。禁止只演恨/爽对白而丢掉标签事实；写作说明不得另起与大纲冲突的起势。'
+
+/**
+ * 超长时优先保留闸门同源合同块（章缝/大纲边界/篇幅预算/卖点等），
+ * 只压缩世界观/全书大纲/人物卡等次要上下文——旧逻辑 head3+tail5 会把中间关键合同截掉，导致「约束写了却一次不过」。
+ */
+function isPinnedNovelPromptBlock(block: string): boolean {
+  const head = block.trim().slice(0, 48)
+  return /【(开篇强制接缝|正向章缝|章缝|本章大纲|本章大纲边界|信息增量|篇幅预算|书名卖点|生成要求|重写要求|输出前自检|篇幅|本章|书名|写作说明|硬性|旧稿裁定|情节优先序)/.test(head)
+    || /开篇强制接缝|本章大纲边界|篇幅预算|书名卖点正文硬合同|信息增量·须逐条落地/.test(block.slice(0, 120))
+}
 
 function joinNovelPromptBlocks(blocks: string[]): string {
   const filtered = blocks.filter(Boolean)
   let joined = filtered.join('\n\n')
   if (joined.length <= MAX_NOVEL_USER_PROMPT_CHARS) return joined
 
-  const head = filtered.slice(0, 3).join('\n\n')
-  const tail = filtered.slice(-5).join('\n\n')
-  const budget = MAX_NOVEL_USER_PROMPT_CHARS - head.length - tail.length - 64
-  const middle = filtered.slice(3, -5).join('\n\n')
-  const midTrimmed = middle.length > Math.max(budget, 800)
-    ? `${middle.slice(0, Math.max(budget, 800))}\n…（前序上下文过长已截断，请以锁定事实与上章摘录为准）`
-    : middle
-  joined = [head, midTrimmed, tail].filter(Boolean).join('\n\n')
+  const parts = [...filtered]
+  const shrinkIdx = parts
+    .map((b, i) => (isPinnedNovelPromptBlock(b) ? -1 : i))
+    .filter((i): i is number => i >= 0)
+
+  let total = joined.length
+  let guard = 0
+  while (total > MAX_NOVEL_USER_PROMPT_CHARS && shrinkIdx.length && guard++ < 40) {
+    let longest = shrinkIdx[0]!
+    for (const i of shrinkIdx) {
+      if ((parts[i]?.length || 0) > (parts[longest]?.length || 0)) longest = i
+    }
+    const cur = parts[longest] || ''
+    if (cur.length <= 480) break
+    const keep = Math.max(480, Math.floor(cur.length * 0.55))
+    parts[longest] = `${cur.slice(0, keep)}\n…（次要上下文已截断；章缝/大纲边界/篇幅预算未截断）`
+    total = parts.join('\n\n').length
+  }
+
+  joined = parts.join('\n\n')
   if (joined.length > MAX_NOVEL_USER_PROMPT_CHARS) {
-    logTaskWarn('Novel', 'prompt-truncated', { chars: joined.length })
+    logTaskWarn('Novel', 'prompt-truncated', {
+      chars: joined.length,
+      pinned: parts.filter(isPinnedNovelPromptBlock).length,
+      flex: shrinkIdx.length,
+    })
+    // 最后手段：仍超长则从次要块尾部继续砍，绝不先砍 pinned
+    for (const i of [...shrinkIdx].reverse()) {
+      if (joined.length <= MAX_NOVEL_USER_PROMPT_CHARS) break
+      const cur = parts[i] || ''
+      if (cur.length <= 200) {
+        parts[i] = ''
+      } else {
+        parts[i] = `${cur.slice(0, 200)}\n…（次要上下文已截断）`
+      }
+      joined = parts.filter(Boolean).join('\n\n')
+    }
+  }
+  if (joined.length > MAX_NOVEL_USER_PROMPT_CHARS) {
     joined = `${joined.slice(0, MAX_NOVEL_USER_PROMPT_CHARS)}\n…（上下文已截断）`
   }
   return joined
@@ -100,10 +145,12 @@ function formatChapterOutlineBlock(chapterOutline: string | undefined, chapterNu
   const dramaHint = /【欲望】/.test(trimmed) && /【阻碍】/.test(trimmed)
     ? '\n硬性补充：【本章起因】若上章正文尚未写到，本章须先写清其过程再进入欲望/阻碍；仅当前序已写完该起因时才禁止重演。'
     : ''
+  const structHint =
+    '\n硬性：【信息增量】等结构化标签须逐条场面化；恨/爽/急/盼长对白是演法，不得替代或挤掉标签事实。'
   if (chapterNumber >= 2) {
-    return `【本章大纲（须落实情节与章末状态；若与前序已写冲突或含已完成拍点，须以前序为准，禁止按过期大纲倒退开篇）】\n${trimmed}${dramaHint}`
+    return `【本章大纲（须落实情节与章末状态；若与前序已写冲突或含已完成拍点，须以前序为准，禁止按过期大纲倒退开篇）】\n${trimmed}${dramaHint}${structHint}`
   }
-  return `【本章大纲（须落实；情节节点与章末状态勿擅自改写）】\n${trimmed}${dramaHint}`
+  return `【本章大纲（须落实；情节节点与章末状态勿擅自改写）】\n${trimmed}${dramaHint}${structHint}`
 }
 
 /** 章节大纲正文：优先 episode.description，否则全书大纲分章摘录 */
@@ -292,12 +339,6 @@ export async function generateNovelWritingBrief(args: {
   return assertValidNovelCreativeOutput(brief, 'writing_brief', `第${chapterNumber}章`)
 }
 
-/**
- * 超过此章数则「骨架 + 分卷分批」生成分章概要。
- * 戏剧标签章块约 250～400 字/章；100 章单次 16k tokens 会在中段截断（曾出现止于第70章半截标签）。
- */
-const OUTLINE_PHASED_THRESHOLD = 30
-
 /** 分章行：阿拉伯或中文章号均可 */
 function hasOutlineChapterLines(text: string): boolean {
   return /第\s*(?:\d+|[一二三四五六七八九十百千零两]+)\s*章/.test(text || '')
@@ -318,8 +359,13 @@ const OUTLINE_CHAPTER_CONTINUITY_RULES = [
 ].join('\n')
 
 function outlineMaxTokensForChapters(totalChapters: number): number {
-  if (totalChapters <= OUTLINE_PHASED_THRESHOLD) return 16384
+  if (!shouldUsePhasedOutlineGeneration(totalChapters)) return 16384
   return 8192
+}
+
+/** 分卷分章块：旧 count*380 过紧，30 章单次约在第 12 章截断 */
+function outlineVolumeMaxTokens(count: number): number {
+  return Math.min(16384, Math.max(8192, count * 900))
 }
 
 /** 把过大的卷切成小段，保证每段都能塞进完整戏剧标签 */
@@ -330,7 +376,7 @@ function chunkOutlineVolume(vol: OutlineVolumeRange, chunkSize = OUTLINE_VOLUME_
   for (let start = vol.start; start <= vol.end; start += size) {
     const end = Math.min(vol.end, start + size - 1)
     out.push({
-      label: `${vol.label}（第${start}～${end}章）`,
+      label: `${vol.label}｜第${start}～${end}章`,
       start,
       end,
       blurb: vol.blurb,
@@ -399,7 +445,7 @@ async function generateOutlineSkeleton(
     genre ? `【题材】${genre}` : '',
     `【计划章数】${totalChapters}`,
     `【创意/梗概】\n${premise}`,
-    `【硬性要求】大纲开头必须是「${NOVEL_OUTLINE_WORLD_SECTION}」。${buildOutlineWorldHardRequirement(genre)}须含「${NOVEL_OUTLINE_VOLUME_SECTION}」，每卷写明卷名、章节范围与本卷大纲。`,
+    `【硬性要求】大纲开头必须是「${NOVEL_OUTLINE_WORLD_SECTION}」。${buildOutlineWorldHardRequirement(genre)}须含「${NOVEL_OUTLINE_VOLUME_SECTION}」，每卷写明卷名、章节范围与本卷大纲。${buildTitleSellHardRequirement(title, premise)}总纲【卖点偏转】【能力非常规用法】须点名书名硬钩。`,
     NO_THINKING_OUTPUT_RULE,
   ].filter(Boolean).join('\n\n')
 
@@ -429,7 +475,8 @@ async function generateVolumeChapterSummaries(args: {
     }),
     '',
     `本轮**仅输出**第 ${volume.start}～${volume.end} 章（共 ${count} 章）的分章概要。`,
-    `格式：每章必须以「第${volume.start}章：标题」这类**阿拉伯数字**章号起行，其下带齐【本章时间】【本章地点】【本章人物】【本章起因】【欲望】【阻碍】【局面变化】【人物选择】【冲突层】【情绪手法】【章末问题】【信息增量】【主题回响】。`,
+    `格式：每章必须以「第${volume.start}章：短标题」这类**阿拉伯数字**章号起行，其下带齐【本章时间】【本章地点】【本章人物】【本章起因】【欲望】【阻碍】【局面变化】【人物选择】【冲突层】【情绪手法】【章末问题】【信息增量】【主题回响】。`,
+    '**章标题字段分离**：「第N章：」后只写场面短标题 2～12 字，标题行禁止括号/破折号夹注；时间→【本章时间】，地点→【本章地点】，爽型→【爽型】行。',
     OUTLINE_CHAPTER_CONTINUITY_RULES,
     '章节号须与分卷设计完全一致，禁止跳号、重复或改写其他卷的章号。',
     '不要输出世界观、总纲、人物、分卷设计；不要「第一段/第二段」散文规划；不要前言套话。',
@@ -438,14 +485,17 @@ async function generateVolumeChapterSummaries(args: {
 
   const options = await novelAgentCompletionOptions('novel_outline', {
     // 全戏剧标签块约 300～400 token/章；旧 count*90 过紧会导致卷中截断
-    maxTokens: Math.min(16384, Math.max(8192, count * 380)),
+    maxTokens: outlineVolumeMaxTokens(count),
     temperature: 0.68,
   })
 
   const volSeed = volume.blurb
     ? `【本卷规划】\n${volume.blurb}`
-    : `【本卷】${volume.label}（第 ${volume.start}～${volume.end} 章）`
+    : `【本卷】${volume.label}｜第 ${volume.start}～${volume.end} 章`
 
+  const titleSell = volume.start <= 1
+    ? buildTitleSellHardRequirement(title, premise)
+    : ''
   const userBase = [
     `【书名】${title}`,
     genre ? `【题材】${genre}` : '',
@@ -454,6 +504,7 @@ async function generateVolumeChapterSummaries(args: {
     `【全书骨架 — 分卷须严格遵守】\n${stripChapterSummarySection(skeleton).slice(0, 6000)}`,
     volSeed,
     prevTail ? `【上一卷末章概要 — 须自然衔接】\n${prevTail}` : '',
+    titleSell,
   ].filter(Boolean).join('\n\n')
 
   const attemptOnce = async (strict: boolean) => {
@@ -520,11 +571,12 @@ async function generateOutlineChapterTail(args: {
     }),
     '',
     `补全缺失的第 ${fromChapter}～${toChapter} 章分章概要；紧接前文剧情。`,
-    `格式：每章先「第${fromChapter}章：标题」这类阿拉伯数字章号，其下带齐全部戏剧标签。`,
+    `格式：每章先「第${fromChapter}章：短标题」这类阿拉伯数字章号，其下带齐全部戏剧标签。`,
+    '「第N章：」后只写 2～12 字场面短标题；标题行禁止括号/破折号夹注；时间地点爽型分写标签行。',
     OUTLINE_CHAPTER_CONTINUITY_RULES,
   ].join('\n')
   const options = await novelAgentCompletionOptions('novel_outline', {
-    maxTokens: Math.min(16384, Math.max(8192, count * 380)),
+    maxTokens: outlineVolumeMaxTokens(count),
     temperature: 0.68,
   })
 
@@ -543,6 +595,47 @@ async function generateOutlineChapterTail(args: {
   )).trim()
 }
 
+async function appendMissingOutlineChapters(args: {
+  skeleton: string
+  outline: string
+  title: string
+  premise: string
+  genre?: string
+  novelGenreSkillKey?: string
+  totalChapters: number
+}, billing?: TextBillingContext): Promise<string> {
+  let outline = args.outline
+  let missing = listMissingOutlineChapters(outline, args.totalChapters)
+  let guard = 0
+  while (missing.length && guard < 4) {
+    guard += 1
+    logTaskWarn('Novel', 'outline-incomplete-tail', {
+      totalChapters: args.totalChapters,
+      missing: missing.slice(0, 20),
+      attempt: guard,
+    })
+    const fromChapter = missing[0]
+    const toChapter = Math.min(
+      args.totalChapters,
+      fromChapter + OUTLINE_VOLUME_CHUNK_SIZE - 1,
+      missing[missing.length - 1],
+    )
+    const tail = await generateOutlineChapterTail({
+      skeleton: args.skeleton,
+      existingOutline: outline,
+      fromChapter,
+      toChapter,
+      title: args.title,
+      premise: args.premise,
+      genre: args.genre,
+      novelGenreSkillKey: args.novelGenreSkillKey,
+    }, billing)
+    outline = `${outline.trim()}\n${stripIncompleteTrailingChapter(tail)}`
+    missing = listMissingOutlineChapters(outline, args.totalChapters)
+  }
+  return outline
+}
+
 export async function generateNovelOutline(args: {
   title: string
   premise: string
@@ -552,7 +645,7 @@ export async function generateNovelOutline(args: {
 }, billing?: TextBillingContext): Promise<string> {
   const { title, premise, genre, novelGenreSkillKey, totalChapters } = args
 
-  if (totalChapters <= OUTLINE_PHASED_THRESHOLD) {
+  if (!shouldUsePhasedOutlineGeneration(totalChapters)) {
     const one = await generateNovelOutlineSingleShot(args, billing)
     return ensureOutlineBookDramaFields({
       outline: one,
@@ -607,35 +700,15 @@ export async function generateNovelOutline(args: {
 
   let outline = mergeOutlineSkeletonAndChapters(skeleton, volumes, parts)
   outline = stripIncompleteTrailingChapter(outline)
-
-  let missing = listMissingOutlineChapters(outline, totalChapters)
-  let guard = 0
-  while (missing.length && guard < 3) {
-    guard += 1
-    logTaskWarn('Novel', 'outline-incomplete-tail', {
-      totalChapters,
-      missing: missing.slice(0, 20),
-      attempt: guard,
-    })
-    const fromChapter = missing[0]
-    const toChapter = Math.min(
-      totalChapters,
-      fromChapter + OUTLINE_VOLUME_CHUNK_SIZE - 1,
-      missing[missing.length - 1],
-    )
-    const tail = await generateOutlineChapterTail({
-      skeleton,
-      existingOutline: outline,
-      fromChapter,
-      toChapter,
-      title,
-      premise,
-      genre,
-      novelGenreSkillKey,
-    }, billing)
-    outline = `${outline.trim()}\n${stripIncompleteTrailingChapter(tail)}`
-    missing = listMissingOutlineChapters(outline, totalChapters)
-  }
+  outline = await appendMissingOutlineChapters({
+    skeleton,
+    outline,
+    title,
+    premise,
+    genre,
+    novelGenreSkillKey,
+    totalChapters,
+  }, billing)
 
   return ensureOutlineBookDramaFields({
     outline: assertValidNovelCreativeOutput(outline, 'outline', undefined, { totalChapters, genre }),
@@ -670,14 +743,24 @@ async function generateNovelOutlineSingleShot(
     genre ? `【题材】${genre}` : '',
     `【计划章数】${totalChapters}`,
     `【创意/梗概】\n${premise}`,
-    `【硬性要求】大纲开头必须是「${NOVEL_OUTLINE_WORLD_SECTION}」。${buildOutlineWorldHardRequirement(genre)}须含「${NOVEL_OUTLINE_VOLUME_SECTION}」，每卷写明卷名、章节范围与本卷大纲。分章概要必须写满第 ${totalChapters} 章，不得中途截断。新地点/道具须有出场来由；【冲突层】仅外部/人际/自我。`,
+    `【硬性要求】大纲开头必须是「${NOVEL_OUTLINE_WORLD_SECTION}」。${buildOutlineWorldHardRequirement(genre)}须含「${NOVEL_OUTLINE_VOLUME_SECTION}」，每卷写明卷名、章节范围与本卷大纲。分章概要必须写满第 ${totalChapters} 章，不得中途截断。「第N章：」后只写 2～12 字场面短标题，标题行禁止括号夹注；时间/地点/爽型分写标签行。新地点/道具须有出场来由；【冲突层】仅外部/人际/自我。${buildTitleSellHardRequirement(title, premise)}`,
     NO_THINKING_OUTPUT_RULE,
   ].filter(Boolean).join('\n\n')
 
-  const outline = await chatCompletionText(
+  let outline = await chatCompletionText(
     [{ role: 'system', content: system }, { role: 'user', content: user }],
     { ...options, billing },
   )
+  outline = stripIncompleteTrailingChapter(outline)
+  outline = await appendMissingOutlineChapters({
+    skeleton: outline,
+    outline,
+    title,
+    premise,
+    genre,
+    novelGenreSkillKey: skillKey,
+    totalChapters,
+  }, billing)
   return assertValidNovelCreativeOutput(outline, 'outline', undefined, { totalChapters, genre })
 }
 
@@ -965,12 +1048,23 @@ export async function buildGenerateNovelChapterMessages(args: {
     maxTokens: tokenCeiling,
     temperature: isRewrite ? 0.84 : 0.8,
   }
+  const { resolveChapterOutlineBeatPack } = await import('./novel-chapter-beat-pack.js')
+  // 组装提示用计量兜底即可；软编排只在分拍生成入口跑一次，避免双计费
+  const beatPackForPrompt = await resolveChapterOutlineBeatPack({
+    chapterOutline: chapterOutline || '',
+    chapterNumber,
+    userTarget: target,
+    skipSoft: true,
+  })
   const beatBudgets = resolveChapterBeatBudgets({
     chapterOutline,
     userTarget: target,
     endpointPending: boundarySuspend,
     prevChapterTail: prevTail,
     chapterNumber,
+    title: dramaTitle,
+    amountContext: meta.outline || '',
+    beatPack: beatPackForPrompt,
   })
   const beatLengthNote = beatBudgets.promptBlock || beatTarget.promptBlock
   const lengthBoundNote = outlineAlign.boundaryBlock
@@ -1179,10 +1273,14 @@ export async function buildGenerateNovelChapterMessages(args: {
       ? `【写作说明（须落实；已与大纲边界对齐）】\n${alignedBrief}`
       : '')
 
+  const infoDeltaGenLine =
+    '有【信息增量·须逐条落地】时：各条须按大纲原文场面化写出；结果态条须写已发生，禁止用未完成/旧态冒充。'
+
   const rewriteReq = withNext
     ? [
       '【重写要求】须同时对照【上章结尾】、【本章大纲】、【下章大纲（禁写）】与【正向章缝】重写本章；**开篇勿回放上章高潮、勿拍点倒退**；大纲过期拍点一律跳过；下章情节禁止提前写；**章末时空须能接下章且勿照抄下章开篇**。',
       '结构与章末止点以【本章大纲边界】为准；**须吸收【旧稿裁定】中与大纲相关的有价值旧句**，禁止按已作废开篇骨架展开。',
+      infoDeltaGenLine,
       CAST_CONTINUITY_RULE,
       outlineAlign.draftConflictsOutline
         ? '**旧稿已判定超出大纲边界**：禁止照抄旧稿越界结构/篇幅比例；越界段仅作反例。'
@@ -1196,6 +1294,7 @@ export async function buildGenerateNovelChapterMessages(args: {
       ? [
         '【重写要求】须同时对照【上章结尾】与【本章大纲】重写本章；**开篇勿回放上章高潮、勿拍点倒退**；大纲过期拍点一律跳过；**写到章末硬止点即停**（本轮不考虑下章）。',
         '结构与章末止点以【本章大纲边界】为准；**须吸收【旧稿裁定】中与大纲相关的有价值旧句**，禁止按已作废开篇骨架展开。',
+        infoDeltaGenLine,
         CAST_CONTINUITY_RULE,
         outlineAlign.draftConflictsOutline
           ? '**旧稿已判定超出大纲边界**：禁止照抄旧稿越界结构/篇幅比例；越界段仅作反例。'
@@ -1208,6 +1307,7 @@ export async function buildGenerateNovelChapterMessages(args: {
       : [
         '【生成要求】对照【上章结尾】与【本章大纲】一次写完本章；**开篇勿回放上章高潮、勿拍点倒退**；大纲过期拍点一律跳过。',
         '结构与章末止点以【本章大纲边界】为准；**写到章末硬止点即停**；禁止用大纲未列情节凑字。',
+        infoDeltaGenLine,
         CAST_CONTINUITY_RULE,
         forceSeamOpening
           ? '**开篇轻锚接缝**：承接【上章结尾】后进入大纲拍点（手法可顺叙或先果后因）；禁止吃书、完成态重做、同日时辰倒退与天候倒退。'
@@ -1231,8 +1331,15 @@ export async function buildGenerateNovelChapterMessages(args: {
     ctx.selfHint,
     `【书名】${dramaTitle}`,
     `【本章】第${chapterNumber}章${chapterTitle ? ` ${chapterTitle}` : ''}`,
+    buildChapterTitleSellHardRequirement(dramaTitle, meta.premise, chapterNumber),
     draftBlock,
     chapterOutlineBlock,
+    // 一次写全章：须显式注入；锁定钱数来自全书大纲（如前章已立金额）
+    (() => {
+      const infoRaw = extractTagBlock(chapterOutline || '', '信息增量') || ''
+      const locked = resolveInfoDeltaLockedAmounts(infoRaw, meta.outline || '')
+      return buildInfoDeltaMustLandBlock(infoRaw, locked)
+    })(),
     outlineBoundaryBlock,
     beatBudgetBlock,
     nextChapterForbidBlock,
@@ -1246,10 +1353,10 @@ export async function buildGenerateNovelChapterMessages(args: {
         ? `【篇幅】目标 ${target} 字，尽量 ${minLen}～${maxLen} 字；须遵守【篇幅预算】；宁短勿越章末硬止点。${lengthBoundNote ? ` ${lengthBoundNote}` : ''}`
         : `【篇幅】目标 ${target} 字，尽量 ${minLen}～${maxLen} 字；不得超过 ${maxLen} 字；只在大纲拍点内写厚。${lengthBoundNote ? ` ${lengthBoundNote}` : ''}`),
     withNext
-      ? '【输出前自检】开篇是否承接上章末？章末时空是否仍能接上【下章开篇】（勿本章已出门、下章还在炕上）？是否误写下章情节？人物称谓是否有交代？字数是否只用于已列拍点？'
+      ? '【输出前自检】开篇是否承接上章末？章末时空是否仍能接上【下章开篇】（勿本章已出门、下章还在炕上）？是否误写下章情节？【信息增量】是否按大纲原文逐条场面化（结果态须已发生；有【已锁定钱数】须用字面，禁止另造）？人物称谓是否有交代？字数是否只用于已列拍点？'
       : WEBNOVEL_OUTPUT_FORMAT_REMINDER + (forceSeamOpening
-        ? ' 另检：开篇是否承接上章末？是否落在【本章大纲边界】内、写到硬止点即停？人物称谓是否有交代？'
-        : ' 另检：是否落在【本章大纲边界】内、写到硬止点即停？人物称谓是否有交代？'),
+        ? ' 另检：开篇是否承接上章末？是否落在【本章大纲边界】内、写到硬止点即停？【信息增量】是否按大纲原文逐条场面化（结果态须已发生；有【已锁定钱数】须用字面，禁止另造）？人物称谓是否有交代？'
+        : ' 另检：是否落在【本章大纲边界】内、写到硬止点即停？【信息增量】是否按大纲原文逐条场面化（结果态须已发生；有【已锁定钱数】须用字面，禁止另造）？人物称谓是否有交代？'),
     anchorBlock,
   ].filter(Boolean)
 
@@ -1281,6 +1388,24 @@ export async function generateNovelChapterFull(
   },
   billing?: TextBillingContext,
 ): Promise<string> {
+  // 生成前：本章大纲（若来自集 description）写回总大纲，消双源漂移
+  if (args.dramaId && args.chapterNumber >= 1 && (args.chapterOutline || '').trim()) {
+    try {
+      const { syncChapterOutlineToBookOutline } = await import('./novel-chapter-outline-sync.js')
+      await syncChapterOutlineToBookOutline({
+        dramaId: args.dramaId,
+        chapterNumber: args.chapterNumber,
+        chapterOutline: args.chapterOutline || '',
+        fallbackTitle: args.chapterTitle,
+      })
+    } catch (err: any) {
+      logTaskWarn('Novel', 'chapter-outline-sync-before-generate', {
+        chapterNumber: args.chapterNumber,
+        error: err?.message || String(err),
+      })
+    }
+  }
+
   const purgeLexicalSeam = async (text: string): Promise<string> => {
     const { chapterNumber = 1, chapterOutline, dramaId } = args
     if (!dramaId || chapterNumber < 2 || !text.trim()) return text
@@ -1322,6 +1447,8 @@ export async function generateNovelChapterFull(
       endpointPending: outlineAlign.endpointPending,
       prevChapterTail: prevTailForBudget,
       chapterNumber: args.chapterNumber,
+      title: args.dramaTitle,
+      amountContext: args.meta.outline || '',
     })
     if (shouldUseBeatSequentialGenerate({
       beatCount: beatBudgets.beatCount,

@@ -12,6 +12,12 @@ import {
   evaluateStakesCommonSense,
   STAKES_COMMON_SENSE_MIN_MULTIPLIER,
 } from './novel-stakes-common-sense.js'
+import {
+  collectLockedMoneyForInfoDelta,
+  extractOutlineInfoDelta,
+  outlineInfoDeltaCovered,
+  outlineOpeningConflictCovered,
+} from './novel-outline-beat-cover.js'
 
 export {
   detectStakesMismatchText,
@@ -209,7 +215,7 @@ export function appealCharWindow(content: string, start: number, end: number): s
   return appealNormalizedBody(content).slice(Math.max(0, start), Math.max(0, end))
 }
 
-/** 是否已有外部压力对白/对峙动作（结构启发式） */
+/** 是否已有外部压力对白/对峙动作（无大纲时的结构兜底，不扩写题材词表） */
 export function hasOpeningExternalPressure(head: string): boolean {
   return (
     /[“「"][^”」"]{0,48}(?:催|欠|还钱|收走|搬走|点名|滚|赔|工分|懒汉|二流子)/.test(head)
@@ -218,7 +224,7 @@ export function hasOpeningExternalPressure(head: string): boolean {
   )
 }
 
-/** 开篇窗口是否见到卖点冲突物（债额/夺产/骂名等结构物） */
+/** 无大纲时的卖点冲突物兜底（年代样章回归用；有大纲则走 outlineOpeningConflictCovered） */
 export function hasOpeningSellStake(head: string): boolean {
   return (
     /\d+\s*(?:块|元|工分)/.test(head)
@@ -281,22 +287,46 @@ export function detectAppealWakeInventoryOpening(
 export function detectAppealOpeningPressureWindow(
   content: string,
   chapterNumber = 1,
+  chapterOutline?: string,
 ): string | null {
   if (chapterNumber > 5) return null
   const head = appealOpeningHead(content, 320)
   if (head.length < 80) return null
+  if (chapterOutline?.trim()) {
+    if (outlineOpeningConflictCovered(head, chapterOutline) || hasOpeningExternalPressure(head)) return null
+    return '开篇约前300字未兑现大纲压力冲突（须先落本章【恨】/【本章起因】中的对峙）'
+  }
   if (hasOpeningExternalPressure(head)) return null
   return '开篇约前300字未出现压力方对白或对峙动作（须先落催债/夺产/点名等）'
 }
 
-/** 第1～5章：开篇约前500字须见卖点冲突物（债额/夺产/骂名等） */
+/**
+ * 有大纲【信息增量】时：整章须场面化兑现（不与「恨」OR 混检）。
+ * 无信息增量时：前500字仍须兑现开篇压迫冲突物。
+ */
 export function detectAppealOpeningSellPoint(
   content: string,
   chapterNumber = 1,
+  chapterOutline?: string,
+  amountContext?: string,
 ): string | null {
+  // 信息增量：全书章均硬检（结果态极性；若有金钱结算锁定额则校验字面）；其余开篇卖点窗仍限前五章
+  if (chapterOutline?.trim() && (content || '').trim()) {
+    if (!outlineInfoDeltaCovered(content, chapterOutline, amountContext)) {
+      const delta = extractOutlineInfoDelta(chapterOutline)
+      const locked = collectLockedMoneyForInfoDelta(delta, [chapterOutline, amountContext || ''])
+      return locked.length
+        ? '本章未兑现大纲【信息增量】（须按原文逐条场面化；结果态须写已发生；已锁钱数须用字面）'
+        : '本章未兑现大纲【信息增量】（须按原文逐条场面化；结果态须写已发生，禁止用未完成/旧态冒充）'
+    }
+  }
   if (chapterNumber > 5) return null
   const head = appealOpeningHead(content, 500)
-  if (head.length < 100) return null
+  if (head.length < (chapterOutline?.trim() ? 40 : 100)) return null
+  if (chapterOutline?.trim()) {
+    if (outlineOpeningConflictCovered(head, chapterOutline)) return null
+    return '开篇窗口未兑现大纲压迫冲突物（【恨】/【本章起因】/【阻碍】）'
+  }
   if (hasOpeningSellStake(head)) return null
   return '开篇窗口未见卖点冲突物（债额/夺产/骂名等），卖点不得拖到章中'
 }
@@ -308,6 +338,7 @@ export function detectAppealOpeningSellPoint(
 export function detectAppealHateThinDecompress(
   content: string,
   chapterNumber = 1,
+  chapterOutline?: string,
 ): string | null {
   if (chapterNumber > 3) return null
   const head = appealOpeningHead(content, 220)
@@ -316,9 +347,10 @@ export function detectAppealHateThinDecompress(
     /开门|装死|踹得砰砰|门板被踹|一脚踹|闯进来|拍门|砸门/.test(head)
     || hasOpeningExternalPressure(head)
   if (!thinKick) return null
-  // 可见代价：数额/期限/物权/身份职级/契约婚约/修真资源等结构信号（非单一年代词表）
   const hasStake =
-    /\d+\s*(?:块|元|万|亿|工分|灵石|贡献点)/.test(head)
+    outlineOpeningConflictCovered(head, chapterOutline)
+    || hasOpeningSellStake(head)
+    || /\d+\s*(?:块|元|万|亿|工分|灵石|贡献点)/.test(head)
     || /(?:房|宅|屋|院|铺|店|股份|职位|名额|婚约|灵根|丹方).{0,12}(?:占|收|抢|夺|搬|要|撵|废|退|取消|剥夺)/.test(head)
     || /[“「"][^”」"]{0,48}(?:滚出去|给我滚|欠|还钱|还债|还账|收走|搬走|撵出去|签字|离婚|退婚|开除|停职|除名|废掉|交出来|三天|限期)/.test(head)
     || /巨债|夺产|工分债|烂名声|净身出户|解除婚约|逐出师门/.test(head)
@@ -641,6 +673,8 @@ export function listOpeningAppealHardFails(
   content: string,
   chapterNumber = 1,
   priorChapterContent?: string,
+  chapterOutline?: string,
+  amountContext?: string,
 ): OpeningAppealHardFail[] {
   const out: OpeningAppealHardFail[] = []
 
@@ -656,11 +690,11 @@ export function listOpeningAppealHardFails(
 
   const wake = detectAppealWakeInventoryOpening(content, chapterNumber)
   if (wake) out.push({ code: 'wake_inventory_opening', message: wake })
-  const pressure = detectAppealOpeningPressureWindow(content, chapterNumber)
+  const pressure = detectAppealOpeningPressureWindow(content, chapterNumber, chapterOutline)
   if (pressure) out.push({ code: 'opening_pressure_window', message: pressure })
-  const sell = detectAppealOpeningSellPoint(content, chapterNumber)
+  const sell = detectAppealOpeningSellPoint(content, chapterNumber, chapterOutline, amountContext)
   if (sell) out.push({ code: 'opening_sell_point', message: sell })
-  const hateThin = detectAppealHateThinDecompress(content, chapterNumber)
+  const hateThin = detectAppealHateThinDecompress(content, chapterNumber, chapterOutline)
   if (hateThin) out.push({ code: 'hate_thin_decompress', message: hateThin })
   const softCollapse = detectAppealOpeningSoftCollapse(content, chapterNumber)
   if (softCollapse) out.push({ code: 'opening_soft_collapse', message: softCollapse })
@@ -691,6 +725,10 @@ export function buildCommercialAppealAudit(args: {
   chapterNumber?: number
   /** 上章正文（同构对比；缺则跳过同构维） */
   priorChapterContent?: string
+  /** 本章大纲：开篇压力/卖点按大纲冲突物审核 */
+  chapterOutline?: string
+  /** 全书大纲等：信息增量锁定钱数 */
+  amountContext?: string
   /** L2 观感结果；仅 flat===true 记硬失败维 */
   feel?: {
     flat: boolean
@@ -702,7 +740,13 @@ export function buildCommercialAppealAudit(args: {
   const gates = args.craft.drama_gates || {}
   const chapterNumber = args.chapterNumber ?? 1
   const hardOpens = args.content
-    ? listOpeningAppealHardFails(args.content, chapterNumber, args.priorChapterContent)
+    ? listOpeningAppealHardFails(
+      args.content,
+      chapterNumber,
+      args.priorChapterContent,
+      args.chapterOutline,
+      args.amountContext,
+    )
     : []
   const opening = gates.opening_promise
   const feelFlat = args.feel?.flat === true

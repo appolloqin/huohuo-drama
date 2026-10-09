@@ -21,8 +21,10 @@ import {
 } from './novel-chapter-craft-check.js'
 import { continueNovelChapter, generateNovelChapterFull } from './novel-writing.js'
 import { normalizeNovelTemporalNumerals } from '../../common/novel/novel-temporal-numerals.js'
+import { enforceNovelProseDeliveryLayout } from '../../common/novel/novel-paragraph-format.js'
 import { alignNovelChapterOutlineBoundary } from './novel-outline-boundary.js'
 import { detectChapterSeamColdOpen, detectChapterSeamReplay } from './novel-chapter-seam.js'
+import { computeSeamStructureVerdict } from './novel-seam-structure-verdict.js'
 import type { ChapterEndSnapshot } from '../../common/novel/novel-continuity-state.js'
 import { logTaskWarn } from '../../common/task/task-logger.js'
 
@@ -78,11 +80,21 @@ export async function runChapterCraftPipelineHook(args: {
     return { content, craft: null, rewritten, rewriteAttempts }
   }
 
+  const placeContinuity = chapterNumber >= 2
+    ? (computeSeamStructureVerdict({
+      content,
+      chapterNumber,
+      prevChapterTail,
+      prevSnapshot,
+      chapterOutline,
+    })?.place_continuity ?? null)
+    : null
   const seamArgs = {
     chapterNumber,
     prevChapterTail,
     chapterOutline,
     prevSnapshot,
+    placeContinuity,
   }
 
   // 与生成侧一致：Craft 审校/重生使用对齐后写作说明；existingText 用当前正文（大纲闸门后的稿）
@@ -145,10 +157,12 @@ export async function runChapterCraftPipelineHook(args: {
           || craft.appeal?.passed === false
         )
         if (appealBlocked) {
-          const appealMsgs = (craft.appeal?.dimensions || [])
-            .filter((d) => !d.passed)
-            .map((d) => d.message)
-            .slice(0, 5)
+          const appealMsgs = [...new Set(
+            (craft.appeal?.dimensions || [])
+              .filter((d) => !d.passed)
+              .map((d) => d.message)
+              .filter(Boolean),
+          )].slice(0, 5)
           throw new ContinuityRewriteAbortError({
             chapterNumber,
             rewriteAttempts,
@@ -229,7 +243,7 @@ export async function runChapterCraftPipelineHook(args: {
   }
 
   return {
-    content: normalizeNovelTemporalNumerals(content),
+    content: normalizeNovelTemporalNumerals(enforceNovelProseDeliveryLayout(content)),
     craft,
     rewritten,
     rewriteAttempts,
@@ -329,10 +343,12 @@ export async function runChapterCraftContinueHook(args: {
           || craft.appeal?.passed === false
         )
         if (appealBlocked) {
-          const appealMsgs = (craft.appeal?.dimensions || [])
-            .filter((d) => !d.passed)
-            .map((d) => d.message)
-            .slice(0, 5)
+          const appealMsgs = [...new Set(
+            (craft.appeal?.dimensions || [])
+              .filter((d) => !d.passed)
+              .map((d) => d.message)
+              .filter(Boolean),
+          )].slice(0, 5)
           throw new ContinuityRewriteAbortError({
             chapterNumber,
             rewriteAttempts,
@@ -386,8 +402,8 @@ export async function runChapterCraftContinueHook(args: {
   }
 
   return {
-    segment: normalizeNovelTemporalNumerals(segment),
-    content: normalizeNovelTemporalNumerals(content),
+    segment: normalizeNovelTemporalNumerals(enforceNovelProseDeliveryLayout(segment, { throwOnFail: false })),
+    content: normalizeNovelTemporalNumerals(enforceNovelProseDeliveryLayout(content)),
     craft,
     rewritten,
     rewriteAttempts,

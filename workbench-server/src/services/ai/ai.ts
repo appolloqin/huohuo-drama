@@ -10,7 +10,11 @@ import {
   sameFamilyDetect,
 } from '../../common/novel/novel-model-family.js'
 import { chargeTextUsage, parseConfigSettings, resolveThinkingEnabled, resolveTokenUsage } from '../credits/credits.js'
-import { applyMiniMaxTextRequestParams, isMiniMaxTextConfig } from './minimax-text.js'
+import {
+  applyMiniMaxTextRequestParams,
+  isMiniMaxTextConfig,
+  resolveMiniMaxReasoningSplit,
+} from './minimax-text.js'
 import {
   applyKimiFixedSamplingOmit,
   applyKimiK3ThinkingGuard,
@@ -546,10 +550,15 @@ export type ChatCompletionOptions = {
   /** 显式开启思考；MiniMax 默认强制关闭（避免 reasoning 有、content 空） */
   enableThinking?: boolean
   /**
-   * MiniMax reasoning_split；默认 true。
-   * 空正文重试时改为 false，使输出进入 content（含 think 标签时再剥离）。
+   * MiniMax reasoning_split 覆盖；未传则读服务配置 minimaxReasoningSplit（默认 true）。
+   * 仅当配置显式关闭时，空正文重试才可改为 false。
    */
   minimaxReasoningSplit?: boolean
+  /**
+   * MiniMax-M3.1-Flash reasoning_effort；未传默认 medium（官方省略=max，长请求易超时）。
+   * 审校/变更记录等短任务建议 low。
+   */
+  minimaxReasoningEffort?: 'low' | 'medium' | 'high' | 'xhigh' | 'max'
   /**
    * content 空时从 reasoning 抢救的策略：
    * - auto：先 JSON 再叙事（写作）
@@ -1025,7 +1034,10 @@ function describeEmptyCompletion(data: any, model: string, requestedMaxTokens?: 
       && completionTokens < requestedMaxTokens * 0.5
     if (cfg && isMiniMaxTextConfig(cfg)) {
       if (underCap) {
-        return `${prefix}：MiniMax 只返回了 reasoning、content 为空（finish=${finish}）。将自动关闭 reasoning_split 重试；若仍失败请换非推理模型或检查网关是否忽略 thinking.disabled`
+        const splitOn = resolveMiniMaxReasoningSplit(cfg.settings, false)
+        return splitOn
+          ? `${prefix}：MiniMax 只返回了 reasoning、content 为空（finish=${finish}）。当前已开启 reasoning_split，将提高 max_tokens 并纠偏重试`
+          : `${prefix}：MiniMax 只返回了 reasoning、content 为空（finish=${finish}）。将尝试关闭 reasoning_split 重试；若型号强制要求开启，请在设置中打开「推理分离」`
       }
       return `${prefix}：MiniMax 思考输出挤占正文（已请求 thinking.type=disabled）。请提高 max_completion_tokens 或换模型`
     }
@@ -1105,9 +1117,10 @@ function resolveRequestMaxTokens(cfg: AIConfig, options: ChatCompletionOptions):
 }
 
 function resolveThinkingForRequest(cfg: AIConfig, options: ChatCompletionOptions): boolean {
-  // 显式开启才开；MiniMax 默认强制关（设置页误开 enableThinking 时也会被关掉）
   if (options.enableThinking === true) return true
-  if (isMiniMaxTextConfig(cfg)) return false
+  if (options.enableThinking === false && !isMiniMaxTextConfig(cfg)) return false
+  // MiniMax 请求层须 adaptive（M3.1-Flash-Preview 禁止 disabled）；正文靠 reasoning_split
+  if (isMiniMaxTextConfig(cfg)) return true
   return resolveThinkingEnabled(parseConfigSettings(cfg.settings))
 }
 
@@ -1138,10 +1151,10 @@ function buildChatCompletionRequestBody(
   // extraBody 可能又塞回 temperature；固定采样型号必须再剥一次
   applyKimiFixedSamplingOmit(body, cfg)
   applyMiniMaxTextRequestParams(body, cfg, thinkingEnabled, {
-    // 关思考时默认 false：部分网关仍产出 reasoning 且 content 空；开思考才默认拆分
     reasoningSplit: options.minimaxReasoningSplit != null
       ? options.minimaxReasoningSplit
-      : thinkingEnabled,
+      : resolveMiniMaxReasoningSplit(cfg.settings, thinkingEnabled),
+    reasoningEffort: options.minimaxReasoningEffort,
   })
   // MiniMax 已在 applyMiniMax 写 thinking；DeepSeek/Ali/网关推理模型须在此补回，否则删 extra 后等于未关思考
   // kimi-k3 始终开思考，不可写 disabled
@@ -1316,11 +1329,13 @@ async function chatCompletionWithConfig(
             : Math.min(16384, Math.max(prev + 1536, Math.round(prev * 1.35)))
         // 关思考仍只吐 reasoning 时：后续轮次改为开思考，让最终 JSON/正文进 content
         const openThinking = !sensitive && deepseekV4 && attempt >= 1
+        // 配置要求 reasoning_split=true 时不可在重试里改成 false（M3.1 等会 400）
+        const splitOn = resolveMiniMaxReasoningSplit(cfg.settings, false)
         attemptOptions = {
           ...attemptOptions,
           maxTokens: bumped,
           enableThinking: openThinking ? true : false,
-          minimaxReasoningSplit: false,
+          minimaxReasoningSplit: splitOn ? true : false,
         }
         if (sensitive) {
           attemptMessages = [
@@ -1346,7 +1361,7 @@ async function chatCompletionWithConfig(
           serviceType: cfg.serviceType || 'text',
           maxTokens: bumped,
           enableThinking: openThinking,
-          reasoningSplit: false,
+          reasoningSplit: splitOn ? true : false,
           sensitive,
           error: lastErr.message,
         })
@@ -1380,7 +1395,12 @@ export async function chatCompletionTextAudit(
     role: options.billing.role,
   } : undefined)
   // 审校只要约定 JSON：禁止把 reasoning 叙事散文当「成功正文」交给下游
-  return chatCompletionWithConfig(messages, { ...options, salvageMode: 'json' }, cfg)
+  // MiniMax-M3.1：审校/变更记录用 low，避免 max 思考拖过网关超时
+  return chatCompletionWithConfig(messages, {
+    ...options,
+    salvageMode: 'json',
+    minimaxReasoningEffort: options.minimaxReasoningEffort ?? 'low',
+  }, cfg)
 }
 
 /** OpenAI 兼容 /completions：echo + logprobs，用于困惑度检测 */

@@ -154,7 +154,12 @@ export function guessPlaceLabel(text: string): string | undefined {
   if (/屋里|屋内|房间里|灶房|茅屋/.test(tail)) return '屋里'
   const m = tail.match(/在([\u4e00-\u9fff]{2,8})(?:里|上|中|旁|边)/)
     || tail.match(/([\u4e00-\u9fff]{2,6})(?:路口|门外|门口|道上)/)
-  return m?.[1] ? `${m[1]}一带` : undefined
+  const raw = m?.[1]?.trim()
+  if (!raw) return undefined
+  // 拒身体/藏纳部位当「地点」（在手里攥着 → 手里一带）
+  if (/^(手|怀|袖|袋|心|脸|身|眼|耳|掌|腰)/.test(raw)) return undefined
+  if (/(手里|怀里|袖中|袋里|心里|脸上|身上)$/.test(raw)) return undefined
+  return `${raw}一带`
 }
 
 function guessCastLabel(text: string): string | undefined {
@@ -175,46 +180,79 @@ const DELIVERY_ACTION_RE = /掏出|摸出|拿出|捧出|递过|递给|塞给|塞
 const DELIVERY_PROP_STOP = new Set([
   '自己', '什么', '这个', '那个', '他们', '她们', '我们', '东西', '一声', '一下',
   '手里', '怀里', '眼前', '心里', '脸上', '身上', '门口', '屋里', '炕上', '一半', '那边',
+  // 藏纳部位：是「从何处」不是交付物件（否则「塞回袖中」→下章「从袖中掏出」误拦）
+  '袖中', '袖里', '袖口', '袋中', '袋里', '腰间', '怀中', '掌中', '手中', '裤袋', '衣袋',
+  // 自用工具/文书：章内反复「摸出」不等于闭合交付（否则下章正常再摸刀/翻账本被误拦）
+  '猎刀', '短刀', '柴刀', '砍刀', '腰刀', '匕首', '账本', '账册', '麻绳', '绳子', '木料',
   '秦卫', '苏婉', '卫国', // 常见人名碎片；完整名由 cast 再滤
 ])
 
+/** 藏纳/身体部位碎片（不可作 closed delivery 物件） */
+const DELIVERY_PROP_LOCATION_RE =
+  /^(袖中|袖里|袖口|袋中|袋里|腰间|怀中|怀里|手里|手中|掌中|裤袋|衣袋|身上|脸上|眼前|心里)$|(手里|怀里|身上|脸上|袖中|袖里|袋中|袋里|腰间|一半|那边)$/
+
+function isDeliveryLocationProp(prop: string): boolean {
+  const t = (prop || '').trim()
+  if (!t) return true
+  if (DELIVERY_PROP_STOP.has(t)) return true
+  if (DELIVERY_PROP_LOCATION_RE.test(t)) return true
+  return false
+}
+
+/** 交付完成态：递给他人 / 掰分共享（自摸工具不算闭合） */
+const DELIVERY_HANDOFF_RE = /递给|递过|塞给|交给|塞回|掰成|掰开|省下来|端给/
+
 /**
  * 从正文抽取「已闭合交付」物件名（供章末契约 / 下章禁演）。
- * 信号：交付动词句中的 2～4 字物件，不绑糠饼等专名。
+ * 信号：章末近窗 + 交付完成态句中的 2～4 字物件，不绑糠饼等专名。
  */
 export function extractClosedDeliveryBeats(content: string): string[] {
   if (!content?.trim() || [...content].length < 40) return []
-  const sentences = content.split(/(?<=[。！？\n])/).map(s => s.trim()).filter(Boolean)
+  // 只扫章末：章中「摸出猎刀」不应锁死下章再摸
+  const window = content.trim().slice(-1200)
+  const sentences = window.split(/(?<=[。！？\n])/).map(s => s.trim()).filter(Boolean)
   const found: string[] = []
   const seen = new Set<string>()
   const push = (raw: string) => {
     let prop = raw.replace(/^(那|这|半|块|个|只|条|点)/, '').trim()
     if ([...prop].length < 2) prop = raw
     if ([...prop].length < 2 || [...prop].length > 4) return
-    if (DELIVERY_PROP_STOP.has(prop)) return
-    // 拒「她手里 / 大的一半」等身体部位或计量碎片
-    if (/(手里|怀里|身上|脸上|一半|那边)$/.test(prop)) return
+    if (isDeliveryLocationProp(prop)) return
     if (prop.includes('的') && [...prop].length > 3) return
+    // 拒「门关上了」类句尾动作碎片
+    if (/(关上了|打开了|走了|来了|去了)$/.test(prop)) return
     if (seen.has(prop)) return
     seen.add(prop)
     found.push(prop)
   }
   for (const s of sentences) {
     if (!DELIVERY_ACTION_RE.test(s)) continue
-    const afterVerb = s.match(/(?:掏出|摸出|拿出|捧出|递过|递给|塞给|塞回|端给|露出)([^。！？]{2,28})/)
-    if (afterVerb?.[1]) {
-      const chunk = afterVerb[1]
-      const afterDe = chunk.match(/的([\u4e00-\u9fff]{2,4})/)
-      if (afterDe) push(afterDe[1]!)
-      else {
-        const tail = chunk.match(/([\u4e00-\u9fff]{2,4})[，。！？、；：\s]*$/)
-        if (tail) push(tail[1]!)
+    const handoff = DELIVERY_HANDOFF_RE.test(s)
+    const foodShare = /半块|省下来|糠饼|干粮|馍馍/.test(s)
+    // 半块食物：「半块发硬的糠饼」跳过「发硬的」再取物件
+    const half = s.matchAll(/半块(?:[\u4e00-\u9fff]{1,8}的)?([\u4e00-\u9fff]{2,4})/g)
+    for (const m of half) {
+      if (handoff || foodShare || /摸出|掏出|拿出|掰|塞|递/.test(s)) push(m[1]!)
+    }
+    // 摸出/掏出：须同句交付完成态，或食物分享句（糠饼）；纯摸刀不算
+    if (handoff || foodShare) {
+      const afterVerb = s.match(/(?:掏出|摸出|拿出|捧出|递过|递给|塞给|塞回|端给|露出)([^。！？]{2,28})/)
+      if (afterVerb?.[1]) {
+        const chunk = afterVerb[1].split(/[，、；：]/)[0]!.trim()
+        const afterDe = chunk.match(/的([\u4e00-\u9fff]{2,4})/)
+        if (afterDe) push(afterDe[1]!)
+        else {
+          const head = chunk.match(/^([\u4e00-\u9fff]{2,4})/)
+          if (head) push(head[1]!)
+        }
+      }
+      const objVerb = s.matchAll(/([\u4e00-\u9fff]{2,4})(?:递给|递过|塞给|塞回|掰成|掰开)/g)
+      for (const m of objVerb) {
+        const cand = m[1]!
+        const afterBa = cand.match(/把([\u4e00-\u9fff]{2,4})$/)
+        push(afterBa?.[1] || cand)
       }
     }
-    const half = s.matchAll(/半块([\u4e00-\u9fff]{2,4})/g)
-    for (const m of half) push(m[1]!)
-    const objVerb = s.matchAll(/([\u4e00-\u9fff]{2,4})(?:递给|递过|塞给|塞回|掰成|掰开)/g)
-    for (const m of objVerb) push(m[1]!)
     if (found.length >= 8) break
   }
   return found
@@ -225,7 +263,7 @@ export function parseClosedBeatProps(closedBeats?: string | null): string[] {
   const out: string[] = []
   for (const part of closedBeats.split(/[；;、|/]/)) {
     const t = part.replace(/^交付[:：]?/, '').trim()
-    if ([...t].length >= 2 && [...t].length <= 6) out.push(t)
+    if ([...t].length >= 2 && [...t].length <= 6 && !isDeliveryLocationProp(t)) out.push(t)
   }
   return out
 }
@@ -511,7 +549,8 @@ const OPENING_ARRIVAL_RE = new RegExp([
   '推开门进', '推门进入', '走了进来', '走进来了', '进了屋', '进了门',
   '跨进门', '跨进门槛', '回到家', '赶回了家', '赶回家', '赶回来',
   '从外头.{0,8}进来', '从外面.{0,8}进来', '从门外.{0,6}进来',
-  '回来了', '归来时', '返回(?:家|屋|房)',
+  // 勿用裸「回来了」（叙述回顾易误伤）；须带归来锚点
+  '(?:这会儿|这才|刚刚|终于|这才算)回来了', '归来时', '返回(?:家|屋|房)',
 ].join('|'))
 
 /** 开篇：声称外出过夜/一宿（需上章先有离场） */
@@ -551,20 +590,21 @@ function openingEarlyHomeLocus(opening: string): boolean {
   return /门槛|门口|门框|门边|房门|屋门|家门|屋里|屋内|室内|房里|厅里|帐内|舱内|炕上|回屋|转身回屋/.test(head)
 }
 
-/** 开篇「从封闭/出入口再出发」：场合在内或门口 + 外向离场/封门/取物再上路 */
+/** 开篇「从封闭/出入口再出发」：只看开篇头段，勿把章中推门入场误判为重演出门 */
 function openingStagesExitRitual(opening: string): boolean {
-  const h = opening.replace(/\s+/g, '').slice(0, 1200)
-  if ([...h].length < 12) return false
+  const early = opening.replace(/\s+/g, '').slice(0, 420)
+  if ([...early].length < 12) return false
   const locus =
     openingEarlyHomeLocus(opening)
-    || classifyPlaceCategory(h) === 'enclosed'
-    || classifyPlaceCategory(h) === 'threshold'
-    || /门槛|门口|门框|门边|房门|屋门|家门|屋里|屋内|室内|房里|厅里|帐内|舱内|炕上/.test(h)
+    || classifyPlaceCategory(early) === 'enclosed'
+    || classifyPlaceCategory(early) === 'threshold'
+    || /门槛|门口|门框|门边|房门|屋门|家门|屋里|屋内|室内|房里|厅里|帐内|舱内|炕上/.test(early)
+  // 禁止 `.` 跨句：否则「推开。……门槛」会误命中 推开.{0,8}门
   const sealOrLeave =
-    /门.{0,8}(?:合|关|带上|锁|插)|(?:合|关|带上|锁|插).{0,6}门|推门|推开.{0,8}门|出了门|迈步出门|出门去|出门了|离开|出去|动身|启程|迈出|走了出去|去一趟/.test(h)
+    /门[^\u3002。！？\n]{0,8}(?:合|关|带上|锁|插)|(?:合|关|带上|锁|插)[^\u3002。！？\n]{0,6}门|推门|推开[^\u3002。！？\n]{0,8}门|出了门|迈步出门|出门去|出门了|离开|出去|动身|启程|迈出|走了出去|去一趟/.test(early)
   // 无「出门」字样：门口/回屋取物后「往林/山走」「进山」等同重演出发
   const gearThenOutbound =
-    /(?:回屋|屋里|捡了|揣怀|塞进|披上|带上).{0,40}(?:往|向).{0,10}(?:林|山|坡|外).{0,6}(?:走|去)|进山|进林|去山里|去林子|沿着屋后/.test(h)
+    /(?:回屋|屋里|捡了|揣怀|塞进|披上|带上)[^\u3002。！？\n]{0,40}(?:往|向)[^\u3002。！？\n]{0,10}(?:林|山|坡|外)[^\u3002。！？\n]{0,6}(?:走|去)|进山|进林|去山里|去林子|沿着屋后/.test(early)
   return locus && (sealOrLeave || gearThenOutbound)
 }
 

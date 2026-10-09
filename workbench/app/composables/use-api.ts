@@ -113,8 +113,9 @@ type NovelStreamEvent = {
   continuity_ledger?: unknown
   chapter_craft?: unknown
   outline_compliance?: OutlineComplianceReport | null
+  chapter_review?: NovelChapterReview | null
+  ai_detection?: NovelAiDetection | null
 }
-
 export type OutlineComplianceReport = {
   passed: boolean
   attempts: number
@@ -127,6 +128,8 @@ export type NovelStreamFinalMeta = {
   continuity_ledger?: unknown
   chapter_craft?: unknown
   outline_compliance?: OutlineComplianceReport | null
+  chapter_review?: NovelChapterReview | null
+  ai_detection?: NovelAiDetection | null
   hard_reject?: boolean
 }
 
@@ -198,6 +201,29 @@ export type NovelAiDetection = {
   calibration?: 'calibrated' | 'none'
   ref_mode?: 'echo' | 'prompt_logprobs' | 'proxy' | 'none'
   cache_hit?: boolean
+}
+
+export type NovelChapterReview = {
+  verdict: 'APPROVE' | 'CONCERNS' | 'REJECT'
+  summary: string
+  findings: Array<{
+    severity: 'S1' | 'S2' | 'S3' | 'S4'
+    category: string
+    location: string
+    evidence: string
+    issue: string
+    fix: string
+  }>
+  pattern_scan?: {
+    blocking_count: number
+    advisory_count: number
+    grade: string
+  }
+  platform?: string
+  platform_label?: string
+  content_hash?: string
+  checked_at?: string
+  model_failed?: boolean
 }
 
 export type ContinuityBlockingItem = {
@@ -461,20 +487,23 @@ export async function consumeNovelSSE(
         // 勿把审校进度行当正文块写入编辑器（编码损坏时形如 ???? 2/3 ???）
         if (json.text) {
           const t = String(json.text)
-          const looksStatus = /正在(?:大纲|审校|润色|降低|检测|补全|修复|模型|冷开篇|生成|修正)/.test(t)
+          const looksStatus = /正在(?:大纲|审校|审稿|润色|降低|检测|补全|修复|模型|冷开篇|生成|修正)|平台审稿/.test(t)
             || (/[?？\uFFFD]{3,}/.test(t) && /\d+\s*\/\s*\d+/.test(t))
             || /^[?？\uFFFD\s.…]{6,}\d+\s*\/\s*\d+/.test(t.trim())
             || /修正大纲落实\s*\d+\s*\/\s*\d+/.test(t)
           if (!looksStatus) onChunk(t)
           else onStatus?.(t.trim())
         }
-        if (json.content != null || json.continuity_check !== undefined || json.outline_compliance !== undefined) {
+        if (json.content != null || json.continuity_check !== undefined || json.outline_compliance !== undefined
+          || json.chapter_review !== undefined) {
           gotFinal = true
           onFinal?.(json.content ?? '', {
             continuity_check: json.continuity_check,
             continuity_ledger: json.continuity_ledger,
             chapter_craft: json.chapter_craft,
             outline_compliance: json.outline_compliance,
+            chapter_review: json.chapter_review,
+            ai_detection: json.ai_detection,
             hard_reject: (json as { hard_reject?: boolean }).hard_reject === true
               || json.outline_compliance?.hardReject === true,
           })
@@ -635,6 +664,8 @@ export const novelAPI = {
       chapter_title: string
       ai_detection: NovelAiDetection | null
       continuity_check: ContinuityCheckResult | null
+      chapter_review: NovelChapterReview | null
+      review_platform: string
     }>(`/novel/chapters/${chapterId}/brief`),
   detectChapterAi: (chapterId: number, body?: {
     text?: string
@@ -642,6 +673,13 @@ export const novelAPI = {
     enable_adversarial?: boolean
   }) =>
     api.post<NovelAiDetection>(`/novel/chapters/${chapterId}/detect-ai`, body ?? {}),
+  reviewChapter: (chapterId: number, body?: {
+    text?: string
+    platform?: string
+  }) =>
+    api.post<NovelChapterReview>(`/novel/chapters/${chapterId}/review`, body ?? {}),
+  listReviewPlatforms: () =>
+    api.get<{ platforms: Array<{ id: string; label: string }> }>('/novel/review-platforms'),
   getChapterStateCard: (chapterId: number) =>
     api.get<{
       card: {
@@ -777,6 +815,10 @@ export const novelAPI = {
       content: string
       continuity_check?: ContinuityCheckResult | null
       outline_compliance?: OutlineComplianceReport | null
+      chapter_craft?: unknown
+      ai_detection?: NovelAiDetection | null
+      chapter_review?: NovelChapterReview | null
+      hard_reject?: boolean
     }>(`/novel/chapters/${chapterId}/generate`, body),
   generateChapterStream: (
     chapterId: number,
@@ -1013,7 +1055,13 @@ export const aiConfigAPI = {
   update: (id: number, d: any) => api.put(`/ai-configs/${id}`, d),
   del: (id: number) => api.del(`/ai-configs/${id}`),
   test: (d: any) => api.post('/ai-configs/test', d),
-  huohuoPreset: (apiKey: string) => api.post('/ai-configs/huohuo-preset', { api_key: apiKey }),
+  huohuoPreset: (apiKey: string, opts?: { minimax_reasoning_split?: boolean }) =>
+    api.post('/ai-configs/huohuo-preset', {
+      api_key: apiKey,
+      ...(opts?.minimax_reasoning_split != null
+        ? { minimax_reasoning_split: opts.minimax_reasoning_split }
+        : {}),
+    }),
   // 「火火一键配置」可编辑存储：DB 优先 + env 兜底 + 代码常量兜底
   listPreset: () => api.get<{
     policy?: { credit_billing_enabled: boolean }
@@ -1027,6 +1075,7 @@ export const aiConfigAPI = {
       model: string
       label: string
       priority: number
+      minimax_reasoning_split?: boolean
       source: 'db' | 'env' | 'code'
       enabled?: boolean
     }>

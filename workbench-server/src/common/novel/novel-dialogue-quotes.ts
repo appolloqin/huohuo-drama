@@ -58,3 +58,53 @@ export function normalizeNovelDialogueQuotes(text: string): string {
   if (!text) return text
   return normalizeCornerQuotes(normalizeStraightDoubleQuotes(text))
 }
+
+/** 开合弯引号深度（>0 未闭合） */
+export function dialogueQuoteOpenDepth(text: string): number {
+  let depth = 0
+  for (const ch of text || '') {
+    if (ch === '“') depth += 1
+    else if (ch === '”' && depth > 0) depth -= 1
+  }
+  return depth
+}
+
+/**
+ * 修复未闭合/多余收引号（交付源头，不靠拆段「容忍坏引号」）。
+ * - 文末仍开着：在最近句末标点后补 ”；找不到则文末补
+ * - 多余 ”：仅在明显成对失衡时删末尾孤立收引号（保守）
+ */
+export function repairUnbalancedDialogueQuotes(text: string): string {
+  if (!text) return text
+  let out = normalizeNovelDialogueQuotes(text)
+  let guard = 0
+  while (dialogueQuoteOpenDepth(out) > 0 && guard < 8) {
+    guard += 1
+    const depthAt = (s: string) => dialogueQuoteOpenDepth(s)
+    // 从后往前找：在仍使 depth>0 的前缀之后的句末处插入 ”
+    let inserted = false
+    for (let i = out.length - 1; i >= 0; i--) {
+      if (!/[。！？!?]/.test(out[i]!)) continue
+      const next = out[i + 1]
+      if (next === '”') continue
+      const head = out.slice(0, i + 1)
+      if (depthAt(head) <= 0) continue
+      out = `${head}”${out.slice(i + 1)}`
+      inserted = true
+      break
+    }
+    if (!inserted) out = `${out}”`
+  }
+  // 多余收引号：成对后仍多 ” 且落在文末空白前 → 去掉末尾孤立 ”
+  guard = 0
+  while (guard < 4) {
+    guard += 1
+    const opens = (out.match(/“/g) || []).length
+    const closes = (out.match(/”/g) || []).length
+    if (closes <= opens) break
+    const trimmedRight = out.replace(/\s+$/, '')
+    if (!trimmedRight.endsWith('”')) break
+    out = `${trimmedRight.slice(0, -1)}${out.slice(trimmedRight.length)}`
+  }
+  return out
+}

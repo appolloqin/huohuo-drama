@@ -1,12 +1,14 @@
 /**
- * 章末【变更记录】— 正文定稿后专用生成（方案 A：与写章同轮解耦）
+ * 章末【变更记录】— 正文定稿后专用生成（与写章同轮解耦）。
+ * 落库形态：正文与变更记录分离；审校可临时拼接，禁止把拼接结果当读者正文写回。
  */
-import { chatCompletionTextAudit, type TextBillingContext } from '../../ai/ai.js'
+import { chatCompletionText, type TextBillingContext } from '../../ai/ai.js'
 import { logTaskWarn } from '../../../common/task/task-logger.js'
 import { CAUSAL_CHANGE_RECORD_HEADER, CAUSAL_CHAPTER_END_FORMAT } from './causal-chain-template.js'
 import { normalizeChangeRecordArtifacts } from '../../../common/novel/novel-change-record.js'
 import {
   parseChangeRecord,
+  resolveFullChapterForAudit,
   splitProseAndChangeRecord,
 } from './causal-chain-parser.js'
 
@@ -17,16 +19,38 @@ const ENSURE_SYSTEM = `你是网文 continuity 编辑。任务：仅根据给定
 - 每条变化须含独立一行「因果:」（触发→过程→结果，至少 8 字）
 - 子字段用「触发:」「代价:」等时须另起一行缩进
 - 正文无明显变化时，输出无变化声明（见格式示例）
+- **禁止**写「见正文」「（见正文本章变化）」「汇总为因果链索引」等空壳占位
 - 格式严格遵循用户给出的模板`
 
-const PROSE_CHANGED_RE = /(?:来到|到了|前往|离开|突破|晋升|重伤|痊愈|获得|发现|觉醒|灵力|境界|悬崖|坠|死|伤|场景)/
+const PROSE_CHANGED_RE = /(?:来到|到了|前往|离开|突破|晋升|重伤|痊愈|获得|发现|觉醒|灵力|境界|悬崖|坠|死|伤|场景|签到|吐兵|列阵)/
 
-export function hasValidChangeRecord(fullText: string): boolean {
-  const { changeBlock } = splitProseAndChangeRecord(fullText)
+/** 空壳占位：曾被当「合法」落库，导致读者正文粘上元数据垃圾 */
+const STUB_CHANGE_RE =
+  /见正文|见正文本章|汇总为因果链索引|此处汇总|（见正文）|\(见正文\)/
+
+export function isStubChangeRecord(block: string | null | undefined): boolean {
+  if (!block?.trim()) return false
+  return STUB_CHANGE_RE.test(block)
+}
+
+/** 校验【变更记录】块（可单独块，也可正文+块拼接） */
+export function hasValidChangeRecord(fullTextOrBlock: string): boolean {
+  const t = (fullTextOrBlock || '').trim()
+  if (!t) return false
+  let changeBlock = splitProseAndChangeRecord(t).changeBlock
+  if (!changeBlock && /^【变更记录】/m.test(t)) {
+    changeBlock = t
+  }
   if (!changeBlock) return false
+  if (isStubChangeRecord(changeBlock)) return false
   const entries = parseChangeRecord(changeBlock)
   if (!entries.length) return false
-  return entries.every(e => (e.causal?.trim().length ?? 0) >= 4)
+  return entries.every(e => {
+    const causal = e.causal?.trim() || ''
+    if (causal.length < 8) return false
+    if (STUB_CHANGE_RE.test(causal) || STUB_CHANGE_RE.test(e.change || '')) return false
+    return true
+  })
 }
 
 function extractChangeBlockFromModel(raw: string): string | null {
@@ -38,7 +62,6 @@ function extractChangeBlockFromModel(raw: string): string | null {
     const block = candidate.slice(idx).trim()
     if (hasValidChangeRecord(block)) return block
   }
-  // 偶发省略标题但输出结构化条目
   const normalized = normalizeChangeRecordArtifacts(
     /【变更记录】/.test(candidate) ? candidate : `【变更记录】\n${candidate}`,
   )
@@ -48,27 +71,16 @@ function extractChangeBlockFromModel(raw: string): string | null {
   return null
 }
 
+/** 仅「无明显变化」时可用的程序化兜底；禁止「见正文」空壳 */
 export function buildFallbackChangeRecord(prose: string, _chapterNumber: number): string {
   if (PROSE_CHANGED_RE.test(prose)) {
-    return [
-      CAUSAL_CHANGE_RECORD_HEADER,
-      '- 场景/状态: （见正文本章变化）',
-      '  因果: 本章场景、人物状态或情节转折已在正文完整叙述，此处汇总为因果链索引',
-      '  触发: 见正文关键事件',
-      '',
-      '- 人物: （见正文）',
-      '  因果: 人物心理或处境变化随正文事件推进，与上章因果起点衔接',
-    ].join('\n')
+    return ''
   }
   return [
     CAUSAL_CHANGE_RECORD_HEADER,
     '- 状态: 无状态变化（因果起点延续）',
     '  因果: 本章未发生需单独列明的场景/时间/人物状态/资源/伤势变更',
   ].join('\n')
-}
-
-function mergeProseAndBlock(prose: string, block: string): string {
-  return `${prose.trim()}\n\n${block.trim()}`
 }
 
 async function generateChangeRecordBlock(args: {
@@ -78,7 +90,7 @@ async function generateChangeRecordBlock(args: {
   strict?: boolean
 }): Promise<string | null> {
   const { prose, chapterNumber, billing, strict } = args
-  const raw = await chatCompletionTextAudit(
+  const raw = await chatCompletionText(
     [
       { role: 'system', content: ENSURE_SYSTEM },
       {
@@ -87,41 +99,77 @@ async function generateChangeRecordBlock(args: {
           CAUSAL_CHAPTER_END_FORMAT,
           '',
           `【章节】第 ${chapterNumber} 章`,
-          strict ? '【严格要求】每条须含「因果:」且不少于 8 字；只输出【变更记录】块。' : '',
+          strict
+            ? '【严格要求】每条须含「因果:」且不少于 8 字；只输出【变更记录】块；禁止「见正文」占位。'
+            : '',
           `【正文 — 据此提取变更；须覆盖本章实质变化】\n${prose.slice(-10000)}`,
         ].filter(Boolean).join('\n'),
       },
     ],
-    { maxTokens: 1536, temperature: strict ? 0.1 : 0.2, billing },
+    {
+      maxTokens: 1536,
+      temperature: strict ? 0.1 : 0.2,
+      billing,
+      minimaxReasoningEffort: 'low',
+    },
   )
   return extractChangeBlockFromModel(raw)
 }
 
+export type EnsureCausalChangeRecordResult = {
+  /** 读者正文（永不附带【变更记录】） */
+  prose: string
+  /** 独立变更记录块；无效时为 null */
+  changeBlock: string | null
+  fixed: boolean
+  /**
+   * 仅供一致性审校临时入参（正文+记录拼接）。
+   * 禁止赋给 episode.content / 返回给前端编辑区。
+   */
+  auditContent: string
+}
+
 /**
- * 将正文与【变更记录】合并（先剥离误混入正文的条目）。
- * @param force 为 true 时忽略已有块，按正文强制重生成（方案 A 定稿路径）
+ * 生成/回收【变更记录】，与正文分离返回。
+ * @param force 为 true 时忽略已有块，按正文强制重生成
  */
 export async function ensureCausalChangeRecordAppended(args: {
   content: string
   chapterNumber: number
   billing?: TextBillingContext
   force?: boolean
-}): Promise<{ content: string; fixed: boolean }> {
+  /** 已落库的独立变更记录（优先于粘在 content 里的块） */
+  storedChangeRecord?: string | null
+}): Promise<EnsureCausalChangeRecordResult> {
   const trimmed = args.content.trim()
-  if (!trimmed) return { content: trimmed, fixed: false }
+  if (!trimmed) {
+    return { prose: '', changeBlock: null, fixed: false, auditContent: '' }
+  }
 
   const normalized = normalizeChangeRecordArtifacts(trimmed)
   const body = (normalized.prose || '').trim()
     || splitProseAndChangeRecord(trimmed).prose.trim()
     || trimmed
 
-  if (!args.force && normalized.changeBlock) {
-    const mergedExisting = mergeProseAndBlock(body, normalized.changeBlock)
-    if (hasValidChangeRecord(mergedExisting)) {
-      return {
-        content: mergedExisting,
-        fixed: normalized.reclaimedFakeBlocks > 0 || mergedExisting !== trimmed,
-      }
+  const pick = (block: string | null | undefined, fixed: boolean): EnsureCausalChangeRecordResult => {
+    const changeBlock = block?.trim() && hasValidChangeRecord(block) ? block.trim() : null
+    return {
+      prose: body,
+      changeBlock,
+      fixed,
+      auditContent: resolveFullChapterForAudit(body, changeBlock),
+    }
+  }
+
+  if (!args.force) {
+    const existing = (args.storedChangeRecord?.trim() && hasValidChangeRecord(args.storedChangeRecord)
+      ? args.storedChangeRecord.trim()
+      : null)
+      || (normalized.changeBlock && !isStubChangeRecord(normalized.changeBlock) && hasValidChangeRecord(normalized.changeBlock)
+        ? normalized.changeBlock
+        : null)
+    if (existing) {
+      return pick(existing, normalized.reclaimedFakeBlocks > 0 || !!normalized.changeBlock)
     }
   }
 
@@ -131,7 +179,7 @@ export async function ensureCausalChangeRecordAppended(args: {
       chapterNumber: args.chapterNumber,
       billing: args.billing,
     })
-    if (block && !hasValidChangeRecord(mergeProseAndBlock(body, block))) {
+    if (block && !hasValidChangeRecord(block)) {
       block = await generateChangeRecordBlock({
         prose: body,
         chapterNumber: args.chapterNumber,
@@ -139,8 +187,8 @@ export async function ensureCausalChangeRecordAppended(args: {
         strict: true,
       })
     }
-    if (block && hasValidChangeRecord(mergeProseAndBlock(body, block))) {
-      return { content: mergeProseAndBlock(body, block), fixed: true }
+    if (block && hasValidChangeRecord(block)) {
+      return pick(block, true)
     }
   } catch (err: unknown) {
     logTaskWarn('Novel', 'ensure-change-record-llm-failed', {
@@ -149,12 +197,20 @@ export async function ensureCausalChangeRecordAppended(args: {
   }
 
   const fallback = buildFallbackChangeRecord(body, args.chapterNumber)
-  const merged = mergeProseAndBlock(body, fallback)
-  if (hasValidChangeRecord(merged)) {
+  if (fallback && hasValidChangeRecord(fallback)) {
     logTaskWarn('Novel', 'ensure-change-record-fallback', { chapterNumber: args.chapterNumber })
-    return { content: merged, fixed: true }
+    return pick(fallback, true)
   }
-  return { content: body, fixed: normalized.reclaimedFakeBlocks > 0 }
+
+  if (PROSE_CHANGED_RE.test(body)) {
+    logTaskWarn('Novel', 'ensure-change-record-no-stub', { chapterNumber: args.chapterNumber })
+  }
+  return {
+    prose: body,
+    changeBlock: null,
+    fixed: normalized.reclaimedFakeBlocks > 0 || isStubChangeRecord(normalized.changeBlock),
+    auditContent: body,
+  }
 }
 
 export function needsCausalChangeRecordFix(check: {

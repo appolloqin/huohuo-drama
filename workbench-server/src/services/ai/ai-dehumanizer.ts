@@ -1,9 +1,31 @@
 import { countNovelChars } from '../../common/novel/novel-char-limit.js'
 import { buildHumanizeExcerptList } from '../../common/novel/novel-detect-excerpts.js'
+import {
+  formatAiPatternHints,
+  scanNovelAiPatterns,
+} from '../../common/novel/novel-ai-pattern-scan.js'
 import { chatCompletionText, type ChatMessage, type TextBillingContext } from './ai.js'
 import { WEBNOVEL_HUMAN_PROSE_STYLE, WEBNOVEL_STAT_FINGERPRINT_GUIDE } from '../../agents/webnovel-prose-style.js'
 import { buildDehumanizerSystem, dehumanizerCompletionOptions } from './ai-dehumanizer-prompt.js'
 import { collectNameCoveredBigrams } from './ai-text-detection.js'
+
+function mergePatternDetectionHints(
+  text: string,
+  detection?: HumanizeDetectionHint | null,
+): HumanizeDetectionHint | null {
+  const pattern = formatAiPatternHints(scanNovelAiPatterns(text), 10)
+  if (!pattern.length && !detection) return detection ?? null
+  const base: HumanizeDetectionHint = detection ? { ...detection } : {}
+  const existing = base.suggestions || []
+  const merged = [
+    ...pattern,
+    ...existing.filter(
+      (s) => !pattern.some((p) => p.match_text && s.match_text?.includes(p.match_text.slice(0, 16))),
+    ),
+  ].slice(0, 20)
+  base.suggestions = merged
+  return base
+}
 
 export const MAX_HUMANIZE_CHARS = 120000
 
@@ -381,6 +403,9 @@ export async function humanizeAiText(args: {
     throw new Error(`正文过长，单次改写不超过 ${MAX_HUMANIZE_CHARS} 字`)
   }
 
+  // 注入句式预检（Gate 类 blocking/advisory），与统计/困惑度建议合并
+  const detection = mergePatternDetectionHints(trimmed, args.detection)
+
   const system = await buildDehumanizerSystem()
   const charCount = countNovelChars(trimmed)
   const tokenCeiling = Math.min(16384, Math.max(2048, Math.round(charCount * 2.2)))
@@ -424,12 +449,12 @@ export async function humanizeAiText(args: {
   pipelineSteps.push('standard_step2_history')
 
   let finalText = pass2
-  const hintsStr = formatDetectionHints(args.detection)
-  if (shouldRunDetectionPass(args.detection) && hintsStr) {
+  const hintsStr = formatDetectionHints(detection)
+  if (shouldRunDetectionPass(detection) && hintsStr) {
     finalText = await runPass(
       [
         { role: 'system', content: system },
-        { role: 'user', content: buildExcerptFirstHumanizeUser(pass2, args.detection) },
+        { role: 'user', content: buildExcerptFirstHumanizeUser(pass2, detection) },
       ],
       pass3Options,
       billing,
@@ -437,11 +462,11 @@ export async function humanizeAiText(args: {
     pipelineSteps.push('method3_detection_guided')
   }
 
-  if (shouldRunPerplexityPass(args.detection)) {
+  if (shouldRunPerplexityPass(detection)) {
     finalText = await runPass(
       [
         { role: 'system', content: system },
-        { role: 'user', content: buildPass4PerplexityUser(finalText, args.detection) },
+        { role: 'user', content: buildPass4PerplexityUser(finalText, detection) },
       ],
       pass4Options,
       billing,
@@ -470,12 +495,13 @@ export async function humanizeAiTextDetectionPass(
     throw new Error(`正文过长，单次改写不超过 ${MAX_HUMANIZE_CHARS} 字`)
   }
 
+  const detection = mergePatternDetectionHints(trimmed, args.detection)
   const system = await buildDehumanizerSystem()
   const charCount = countNovelChars(trimmed)
   const tokenCeiling = Math.min(16384, Math.max(2048, Math.round(charCount * 2.2)))
-  const pplHeavy = (args.detection?.signals?.find(s => s.key === 'perplexity')?.score ?? 0) >= 0.55
-    || (args.detection?.probability ?? 0) >= 70
-    || (args.detection?.perplexity != null && args.detection.perplexity > 0 && args.detection.perplexity < 3)
+  const pplHeavy = (detection?.signals?.find(s => s.key === 'perplexity')?.score ?? 0) >= 0.55
+    || (detection?.probability ?? 0) >= 70
+    || (detection?.perplexity != null && detection.perplexity > 0 && detection.perplexity < 3)
   const options = await dehumanizerCompletionOptions({
     maxTokens: tokenCeiling,
     // PPL 极低时再升温，否则 ±1 句改写几乎拉不动困惑度
@@ -484,7 +510,7 @@ export async function humanizeAiTextDetectionPass(
   const content = await runPass(
     [
       { role: 'system', content: system },
-      { role: 'user', content: buildDetectionPassUser(trimmed, args.detection) },
+      { role: 'user', content: buildDetectionPassUser(trimmed, detection) },
     ],
     options,
     billing,

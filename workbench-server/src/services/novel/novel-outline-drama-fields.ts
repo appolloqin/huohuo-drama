@@ -182,6 +182,88 @@ export function sliceOutlineChapterSection(outline: string, chapterNumber: numbe
   return lines.slice(start, end).join('\n')
 }
 
+/**
+ * 把本章大纲正文规范成总大纲分章块（含「第N章：标题」行）。
+ * 集 description 常以短标题起行、无「第N章」头，此处补齐以便写回总纲。
+ */
+export function normalizeChapterSectionForBook(args: {
+  chapterNumber: number
+  chapterOutline: string
+  fallbackTitle?: string
+}): string {
+  const n = args.chapterNumber
+  const t = (args.chapterOutline || '').trim()
+  if (!t || !(n >= 1)) return ''
+  const lines = t.split(/\n/)
+  const first = (lines[0] || '').trim()
+  const headerRe = new RegExp(`^第\\s*${n}\\s*章\\s*[：:]`)
+  if (headerRe.test(first) || /^第\s*\d+\s*章\s*[：:]/.test(first)) {
+    // 统一章号为当前章
+    const rest = t.replace(/^[^\n]+/, '').replace(/^\n/, '')
+    const titleMatch = first.match(/^第\s*\d+\s*章\s*[：:]\s*(.*)$/)
+    const title = (titleMatch?.[1] || '').trim() || args.fallbackTitle || `第${n}章`
+    return rest.trim() ? `第${n}章：${title}\n${rest.trim()}` : `第${n}章：${title}`
+  }
+  const looksLikeTitle = !!first && !first.startsWith('【') && [...first].length <= 24
+  const title = looksLikeTitle
+    ? first
+    : ((args.fallbackTitle || '').trim() || `第${n}章`)
+  const body = looksLikeTitle ? lines.slice(1).join('\n').trim() : t
+  return body ? `第${n}章：${title}\n${body}` : `第${n}章：${title}`
+}
+
+/**
+ * 用新分章块替换总大纲中第 N 章（含标题行至下一章前）；无则按章号插入。
+ */
+export function replaceOutlineChapterSection(
+  outline: string,
+  chapterNumber: number,
+  newSection: string,
+): string {
+  const section = (newSection || '').trim()
+  if (!section || !(chapterNumber >= 1)) return outline || ''
+  const lines = (outline || '').split(/\n/)
+  let start = -1
+  let end = lines.length
+  for (let i = 0; i < lines.length; i++) {
+    const m = lines[i]!.match(CHAPTER_HEADER_RE)
+    if (!m) continue
+    const n = Number(m[1])
+    if (n === chapterNumber && start < 0) start = i
+    else if (start >= 0 && n > chapterNumber) {
+      end = i
+      break
+    }
+  }
+  const mid = section.split(/\n/)
+  if (start >= 0) {
+    // 保留替换块后多余空行收敛为至多一个空行
+    const after = lines.slice(end)
+    while (after.length && !after[0]!.trim()) after.shift()
+    const before = lines.slice(0, start)
+    const joined = [...before, ...mid]
+    if (after.length) joined.push('', ...after)
+    return joined.join('\n').replace(/\n{3,}/g, '\n\n')
+  }
+  let insertAt = lines.length
+  for (let i = 0; i < lines.length; i++) {
+    const m = lines[i]!.match(CHAPTER_HEADER_RE)
+    if (m && Number(m[1]) > chapterNumber) {
+      insertAt = i
+      break
+    }
+  }
+  const before = lines.slice(0, insertAt)
+  const after = lines.slice(insertAt)
+  while (before.length && !before[before.length - 1]!.trim()) before.pop()
+  while (after.length && !after[0]!.trim()) after.shift()
+  const joined = [...before]
+  if (joined.length) joined.push('')
+  joined.push(...mid)
+  if (after.length) joined.push('', ...after)
+  return joined.join('\n').replace(/\n{3,}/g, '\n\n')
+}
+
 export function parseOutlineChapterFields(
   outline: string,
   chapterNumber: number,
@@ -352,23 +434,24 @@ export function buildChapterOutlineDramaPromptBlock(fields: OutlineChapterDramaF
       : []
   return [
     '【本章大纲·戏剧要素 — 须在正文落地】',
-    `时间：${fields.time}`,
-    `地点：${fields.place}`,
-    `人物：${fields.cast}`,
+    '硬性：下列结构化标签事实优先于恨/爽/急/盼长对白；禁止只演情绪场而跳过信息增量等标签。',
+    `信息增量：${fields.infoDelta}`,
     `起因：${fields.catalyst}`,
     `欲望：${fields.desire}`,
     `阻碍：${fields.obstacle}`,
     `局面变化：${fields.stakesShift}`,
     `人物选择：${fields.choice}`,
+    `章末问题：${fields.endingQuestion}`,
+    `主题回响：${fields.themeEcho}`,
+    `时间：${fields.time}`,
+    `地点：${fields.place}`,
+    `人物：${fields.cast}`,
     `冲突层：${fields.conflictLayers.join('、')}`,
     `情绪手法：${fields.emotionCraft}`,
-    `章末问题：${fields.endingQuestion}`,
-    `信息增量：${fields.infoDelta}`,
-    `主题回响：${fields.themeEcho}`,
     ...emotionLines,
     emotionLines.length
-      ? '落地顺序：恨→爽→急→盼（正文分拍硬绑定；同源 EmotionCoreContract SSOT）。爽=动作震慑+本事露尖；急=拢共天数；盼=一句缺一环。禁止开篇纯盘点、章尾纯感慨。'
-      : '落地顺序：承接上章末 → 若【起因】前序未写到则先写清其过程（冲突可见） → 再写欲望/阻碍/局面变化（须有局势推进）/人物选择 → 章末落到【章末问题】未决事件；信息增量服务书名/梗概卖点可见。禁止跳过未完成的起因直接写结果态；禁止开篇纯盘点、章尾纯感慨。',
+      ? '落地顺序：结构化标签事实 → 恨→爽→急→盼演法（正文分拍硬绑定；同源 EmotionCoreContract SSOT）。禁止开篇纯盘点、章尾纯感慨。'
+      : '落地顺序：承接上章末 → 结构化标签（含信息增量）场面化 → 欲望/阻碍/局面/选择 → 章末问题未决。禁止跳过标签事实只写情绪词。',
   ].join('\n')
 }
 
@@ -389,14 +472,23 @@ export function buildOutlineBookPromptBlock(fields: OutlineBookFields): string {
 export const OUTLINE_DRAMA_PRIORITY_LINE = OUTLINE_DRAMA_PRIORITY_LINE_SSOT
 
 /**
- * 写作用本章大纲：优先全书大纲中已带齐戏剧标签的第 N 章块；
- * 否则回退 fallback（如旧版一行概要 / episode.description）。
+ * 写作用本章大纲：
+ * - 若 fallback（本章自定义）已是戏剧标签块 → 优先用它（与 UI「本章大纲」一致）
+ * - 否则用全书大纲第 N 章块
  */
 export function resolveWritingChapterOutline(
   bookOutline: string | undefined,
   chapterNumber: number,
   fallback?: string,
 ): { text: string; source: 'book_drama' | 'fallback' | 'empty' } {
+  const fb = (fallback || '').trim()
+  if (fb) {
+    let hits = 0
+    for (const label of ['本章起因', '恨', '信息增量', '欲望', '阻碍', '局面变化']) {
+      if (fb.includes(`【${label}】`)) hits += 1
+    }
+    if (hits >= 2) return { text: fb, source: 'fallback' }
+  }
   const book = (bookOutline || '').trim()
   if (book) {
     const check = assertOutlineChapterFields(book, chapterNumber)
@@ -405,7 +497,6 @@ export function resolveWritingChapterOutline(
       if (section) return { text: section, source: 'book_drama' }
     }
   }
-  const fb = (fallback || '').trim()
   if (fb) return { text: fb, source: 'fallback' }
   return { text: '', source: 'empty' }
 }

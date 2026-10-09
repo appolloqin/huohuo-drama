@@ -9,9 +9,12 @@ export type PresencePhaseConflict = {
   message: string
 }
 
-/** 离场/外出结构（位类，非场面词表） */
+/**
+ * 离场/外出结构（位类，非场面词表）。
+ * 勿用「推门进(?!来)」：会把「推门进去/进账房」误判为独处离场。
+ */
 const DEPART_CUE_RE =
-  /推门进了|推门进(?!来)|出了门|出了屋|出了院|进了山|进了林|上了路|出了城|出了营|背上身[，,]?推门/
+  /推门进了[山林城营]|背上身[，,]?推门|出了门|出了屋|出了院|进了山|进了林|上了路|出了城|出了营|迈过门槛|走出[了]?[门屋院房]/
 
 /** 他者同场施动（接在人名后） */
 const COPRESENT_ACT_RE =
@@ -139,6 +142,24 @@ function hasBridgeBetween(hay: string, from: number, to: number): boolean {
   return BRIDGE_RE.test(mid)
 }
 
+/** 离场前已有同场动作/对白 → 留场配角，不是空降 */
+function wasAlreadyCopresentBefore(hay: string, name: string, beforeIdx: number): boolean {
+  if (beforeIdx <= 0 || !name) return false
+  const head = hay.slice(0, beforeIdx)
+  let from = 0
+  while (from < head.length) {
+    const i = findNameIndex(head, name, from)
+    if (i < 0) break
+    const tail = head.slice(i + name.length, i + name.length + 16)
+    const pre = head.slice(Math.max(0, i - 6), i)
+    if (!MENTION_ONLY_RE.test(pre) && (COPRESENT_ACT_RE.test(tail) || /^[“"]/.test(tail))) {
+      return true
+    }
+    from = i + name.length
+  }
+  return false
+}
+
 /**
  * 独处/离场已立 → 他者无桥接同场 → hard
  */
@@ -156,6 +177,8 @@ export function detectIntraCastPresenceFail(content: string): PresencePhaseConfl
   if (!co) return null
 
   if (hasBridgeBetween(hay, solo.index, co.index)) return null
+  // 主角离场前对方已在场（如账房问话后秦默出门、孙满仓对柳如烟开口）→ 合法
+  if (wasAlreadyCopresentBefore(hay, co.name, solo.index)) return null
 
   const who = solo.actor === '（叙述主语）' ? '叙述主语' : solo.actor
   return {

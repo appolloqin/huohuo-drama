@@ -2,7 +2,7 @@
  * npx tsx scripts/verify-seam-strip-opening.ts
  */
 import {
-  detectChapterSeamReplay,
+  detectChapterSeamLexicalReplay,
   stripSeamReplayOpening,
   buildChapterSeamWriteBlock,
 } from '../src/services/novel/novel-chapter-seam.js'
@@ -18,13 +18,13 @@ const bad =
   '带着一丝若有若无的笑意还挂在他脸上。他把糠饼又往她手里推了推。'
   + pad
 
-const hit = detectChapterSeamReplay({
+const hit = detectChapterSeamLexicalReplay({
   content: bad,
   chapterNumber: 2,
   prevChapterTail: prev,
 })
 if (!hit || hit.rule !== 'chapter_seam_replay') {
-  throw new Error('expected seam replay on bad opening')
+  throw new Error('expected lexical seam replay on bad opening')
 }
 
 const s = stripSeamReplayOpening({
@@ -35,7 +35,7 @@ const s = stripSeamReplayOpening({
 if (!s.stripped) throw new Error('expected strip')
 if (/带着一丝若有若无/.test(s.text)) throw new Error('overlap phrase remains')
 if (/糠饼又往她手里推/.test(s.text)) throw new Error('delivery replay remains')
-const hit2 = detectChapterSeamReplay({
+const hit2 = detectChapterSeamLexicalReplay({
   content: s.text,
   chapterNumber: 2,
   prevChapterTail: prev,

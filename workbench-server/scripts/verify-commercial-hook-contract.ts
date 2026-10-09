@@ -381,4 +381,32 @@ if (listOpeningAppealHardFails(goodOpen, 1).length) {
   throw new Error('good open should pass all L1')
 }
 
+const lordOpen = [
+  '“林默！三日之内交不出三千石军粮，本侯收回青石堡兵权，残部即刻交割！”',
+  '王府使者把通牒拍在案上。堂下三十名残兵衣甲不全，账房摊开一本烂账。',
+  '林默当堂拔剑立威：“兵权我自己收。签到的人马，今晚就到。”令牌悬在案沿。',
+].join('')
+// 有大纲时按大纲冲突物审开篇，禁止靠扩写「通牒/军粮」词表放行
+const lordOutline = [
+  '【恨】王府通牒：三日交不出三千石军粮则收回青石堡兵权',
+  '【本章起因】使者把通牒拍在案上逼交军粮',
+  '【阻碍】残兵衣甲不全、账房烂账交不出粮',
+  '【信息增量】林默拔剑立威，签到兵马未到，令牌悬案',
+].join('\n')
+if (!detectAppealOpeningSellPoint(lordOpen, 1)) {
+  throw new Error('lord open without outline must not auto-pass via genre lexicon')
+}
+if (detectAppealOpeningSellPoint(lordOpen, 1, lordOutline)) {
+  throw new Error('lord open + matching outline must pass sell')
+}
+if (detectAppealOpeningPressureWindow(lordOpen, 1, lordOutline)) {
+  throw new Error('lord open + matching outline must pass pressure')
+}
+if (listOpeningAppealHardFails(lordOpen, 1, undefined, lordOutline).length) {
+  throw new Error(`lord open + outline must not L1-fail, got ${listOpeningAppealHardFails(lordOpen, 1, undefined, lordOutline).map((f) => f.code).join(',')}`)
+}
+if (!detectAppealOpeningSellPoint(goodOpen, 1, lordOutline)) {
+  throw new Error('farm prose vs lord outline must fail sell (audit the outline, not 工分词表)')
+}
+
 console.log('verify-commercial-hook-contract OK')

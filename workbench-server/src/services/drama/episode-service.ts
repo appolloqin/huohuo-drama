@@ -288,6 +288,28 @@ export async function updateOwnedEpisode(
 
   await episodesRepo.updateEpisode(id, drizzleUpdates)
 
+  // 小说：本章大纲（description）更新 → 同步写入总大纲对应分章，消除双源漂移
+  if (
+    isNovelProject(ownedEpisode.drama)
+    && 'description' in updates
+    && typeof updates.description === 'string'
+  ) {
+    try {
+      const { syncChapterOutlineToBookOutline } = await import('../novel/novel-chapter-outline-sync.js')
+      await syncChapterOutlineToBookOutline({
+        dramaId: ownedEpisode.drama.id,
+        chapterNumber: ownedEpisode.episode.episodeNumber,
+        chapterOutline: updates.description,
+        fallbackTitle: ownedEpisode.episode.title || undefined,
+      })
+    } catch (err: any) {
+      logTaskError('Novel', 'chapter-outline-sync-to-book', {
+        chapterId: id,
+        error: err?.message || String(err),
+      })
+    }
+  }
+
   if (
     isNovelProject(ownedEpisode.drama)
     && 'content' in updates

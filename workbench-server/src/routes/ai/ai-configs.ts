@@ -34,7 +34,10 @@ serviceConfigRouter.post('/huohuo-preset', requireAdmin, async (c) => {
   const body = await c.req.json()
   const apiKey = String(body.api_key || '').trim()
   if (!apiKey) return badRequest(c, 'api_key is required')
-  return success(c, await aiConfigService.applyHuohuoPreset(apiKey))
+  const opts = 'minimax_reasoning_split' in body
+    ? { minimaxReasoningSplit: body.minimax_reasoning_split === true }
+    : undefined
+  return success(c, await aiConfigService.applyHuohuoPreset(apiKey, opts))
 })
 
 serviceConfigRouter.get('/readiness', async (c) => {

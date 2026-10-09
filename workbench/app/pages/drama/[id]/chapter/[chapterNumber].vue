@@ -41,6 +41,18 @@
           >{{ savedAiDetection.probability }}%</span>
         </button>
         <button
+          class="btn ai-detect-btn chapter-review-btn"
+          :disabled="!chapterBody.trim() || reviewRunning"
+          @click="openChapterReviewModal"
+        >
+          {{ reviewRunning ? tm.novel.chapterReviewRunning : tm.novel.chapterReviewRun }}
+          <span
+            v-if="chapterReview?.verdict"
+            class="ai-detect-badge"
+            :class="chapterReviewBadgeClass"
+          >{{ chapterReviewVerdictShort(chapterReview.verdict) }}</span>
+        </button>
+        <button
           v-if="prevChapterNum"
           type="button"
           class="btn chapter-nav-btn"
@@ -485,6 +497,126 @@
         </div>
       </div>
     </div>
+
+    <div v-if="reviewSheetOpen" class="overlay ai-detect-overlay" @click.self="closeChapterReviewModal">
+      <div class="modal card ai-detect-modal chapter-review-modal">
+        <div class="modal-header">
+          <div class="modal-header-row">
+            <div class="modal-header-text">
+              <h2 class="modal-title">{{ tm.novel.chapterReviewTitle }}</h2>
+              <p class="modal-desc">
+                {{ reviewStep === 'pick' ? tm.novel.chapterReviewPickHint : tm.novel.chapterReviewHint }}
+              </p>
+            </div>
+            <button type="button" class="modal-close-btn" :aria-label="tm.common.closeAria" @click="closeChapterReviewModal">
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
+                <line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/>
+              </svg>
+            </button>
+          </div>
+        </div>
+
+        <!-- 步骤 1：选平台 -->
+        <template v-if="reviewStep === 'pick'">
+          <div class="ai-detect-body-wrap">
+            <div class="ai-detect-body">
+              <p class="field-label">{{ tm.novel.chapterReviewPlatform }}</p>
+              <div class="chapter-review-platform-grid" role="radiogroup" :aria-label="tm.novel.chapterReviewPlatform">
+                <button
+                  v-for="p in reviewPlatforms"
+                  :key="p.id"
+                  type="button"
+                  class="chapter-review-platform-card"
+                  :class="{ active: reviewPlatform === p.id }"
+                  role="radio"
+                  :aria-checked="reviewPlatform === p.id"
+                  @click="reviewPlatform = p.id"
+                >
+                  <span class="chapter-review-platform-name">{{ p.label }}</span>
+                  <span v-if="p.id === 'fanqie'" class="chapter-review-platform-tag">{{ tm.novel.chapterReviewPlatformDefault }}</span>
+                </button>
+              </div>
+              <p v-if="chapterReview" class="side-hint">
+                {{ tx(tm.novel.chapterReviewLastHint, {
+                  platform: chapterReview.platform_label || chapterReview.platform || '',
+                  verdict: chapterReviewVerdictLabel(chapterReview.verdict),
+                }) }}
+              </p>
+            </div>
+          </div>
+          <div class="ai-detect-actions">
+            <button
+              v-if="chapterReview"
+              type="button"
+              class="btn"
+              @click="reviewStep = 'result'"
+            >{{ tm.novel.chapterReviewViewLast }}</button>
+            <button type="button" class="btn" @click="closeChapterReviewModal">{{ tm.common.cancel }}</button>
+            <button
+              type="button"
+              class="btn btn-primary"
+              :disabled="!reviewPlatform || !chapterBody.trim() || !canGenerate"
+              @click="confirmPlatformAndReview"
+            >{{ tm.novel.chapterReviewStart }}</button>
+          </div>
+        </template>
+
+        <!-- 步骤 2：审稿中 / 结果 -->
+        <template v-else>
+          <div class="ai-detect-body-wrap">
+            <div v-if="reviewRunning" class="ai-detect-loading-overlay">
+              {{ tm.novel.chapterReviewAnalyzing }}
+            </div>
+            <div class="ai-detect-body" :class="{ 'is-busy': reviewRunning }">
+              <template v-if="chapterReview">
+                <div class="ai-detect-score" :class="chapterReviewScoreClass">
+                  <p class="ai-detect-score-label">{{ tm.novel.chapterReviewSummary }}</p>
+                  <p class="ai-detect-verdict">{{ chapterReviewVerdictLabel(chapterReview.verdict) }}</p>
+                  <p v-if="chapterReview.platform_label" class="ai-detect-confidence">{{ chapterReview.platform_label }}</p>
+                </div>
+                <p v-if="chapterReview.summary" class="continuity-check-summary">{{ chapterReview.summary }}</p>
+                <p v-if="chapterReview.checked_at" class="ai-detect-time">
+                  {{ tx(tm.novel.chapterReviewLastAt, { time: formatDetectTime(chapterReview.checked_at) }) }}
+                </p>
+                <div v-if="chapterReview.findings?.length" class="ai-detect-suggestions">
+                  <p class="ai-detect-suggestions-title">
+                    {{ tm.novel.chapterReviewFindings }}
+                    <span class="dim">（{{ chapterReview.findings.length }}）</span>
+                  </p>
+                  <ul class="continuity-issue-list">
+                    <li v-for="(f, idx) in chapterReview.findings" :key="'rev-' + idx" class="continuity-issue-item">
+                      <div class="continuity-issue-head">
+                        <span class="continuity-issue-badge" :class="f.severity === 'S1' || f.severity === 'S2' ? 'hard' : 'model'">
+                          {{ f.severity }} · {{ f.category }}
+                        </span>
+                        <span class="continuity-issue-label">{{ f.location || tm.novel.chapterReviewFindings }}</span>
+                      </div>
+                      <p class="continuity-issue-msg">{{ f.issue }}</p>
+                      <p v-if="f.evidence" class="continuity-issue-msg dim">「{{ f.evidence }}」</p>
+                      <p v-if="f.fix" class="continuity-issue-msg">{{ tm.novel.chapterReviewFix }}：{{ f.fix }}</p>
+                    </li>
+                  </ul>
+                </div>
+                <p v-else-if="!reviewRunning" class="ai-detect-loading">{{ tm.novel.chapterReviewNoFindings }}</p>
+              </template>
+              <div v-else-if="!reviewRunning" class="ai-detect-loading">{{ tm.novel.chapterReviewIdle }}</div>
+            </div>
+          </div>
+          <div class="ai-detect-actions">
+            <button type="button" class="btn" :disabled="reviewRunning" @click="reviewStep = 'pick'">
+              {{ tm.novel.chapterReviewChangePlatform }}
+            </button>
+            <button type="button" class="btn" @click="closeChapterReviewModal">{{ tm.common.close }}</button>
+            <button
+              type="button"
+              class="btn btn-primary"
+              :disabled="reviewRunning || !chapterBody.trim() || !canGenerate"
+              @click="reviewStep = 'pick'"
+            >{{ tm.novel.chapterReviewRerun }}</button>
+          </div>
+        </template>
+      </div>
+    </div>
   </div>
 </template>
 
@@ -526,7 +658,7 @@ const saving = ref(false)
 const continuing = ref(false)
 const generating = ref(false)
 const rewriting = ref(false)
-const chapterBusy = computed(() => continuing.value || generating.value || rewriting.value)
+const chapterBusy = computed(() => continuing.value || generating.value || rewriting.value || reviewRunning.value)
 const targetChapterChars = ref(3000)
 const continueSegmentChars = ref(800)
 const contextChars = ref(4000)
@@ -538,9 +670,21 @@ const streamWaiting = ref(false)
 const streamStatusText = ref('')
 const aiProbeRunning = ref(false)
 const aiDetectSheetOpen = ref(false)
+const reviewSheetOpen = ref(false)
+/** 'pick' 选平台 → 'result' 审稿中/结果 */
+const reviewStep = ref('pick')
 const savedAiDetection = ref(null)
 const aiDetectionResult = ref(null)
 const continuityCheck = ref(null)
+const chapterReview = ref(null)
+const reviewRunning = ref(false)
+const reviewPlatform = ref('fanqie')
+const reviewPlatforms = ref([
+  { id: 'fanqie', label: '番茄小说' },
+  { id: 'qidian', label: '起点中文网' },
+  { id: 'jinjiang', label: '晋江文学城' },
+  { id: 'generic', label: '通用网文' },
+])
 const stateCardBusy = ref(false)
 const stateCardStale = ref(false)
 const stateCardSummaryLine = ref('')
@@ -832,6 +976,8 @@ async function reloadChapterWorkbench() {
     generatePrompt.value = savedBrief || chapterOutline.value.trim()
     savedAiDetection.value = brief.ai_detection || null
     continuityCheck.value = brief.continuity_check || null
+    chapterReview.value = brief.chapter_review || null
+    if (brief.review_platform) reviewPlatform.value = brief.review_platform
     await refreshStateCardHint()
   } catch {
     chapterOutline.value = epLite.chapter_outline || ep.description || ''
@@ -941,6 +1087,93 @@ function openAiDetectModal() {
   probeChapterAi()
 }
 
+function chapterReviewVerdictLabel(verdict) {
+  if (verdict === 'APPROVE') return tm.value.novel.chapterReviewVerdictApprove
+  if (verdict === 'REJECT') return tm.value.novel.chapterReviewVerdictReject
+  return tm.value.novel.chapterReviewVerdictConcerns
+}
+
+function chapterReviewVerdictShort(verdict) {
+  if (verdict === 'APPROVE') return tm.value.novel.chapterReviewBadgeApprove
+  if (verdict === 'REJECT') return tm.value.novel.chapterReviewBadgeReject
+  return tm.value.novel.chapterReviewBadgeConcerns
+}
+
+const chapterReviewBadgeClass = computed(() => {
+  const v = chapterReview.value?.verdict
+  if (v === 'REJECT') return 'verdict-reject'
+  if (v === 'CONCERNS') return 'verdict-concerns'
+  if (v === 'APPROVE') return 'verdict-approve'
+  return ''
+})
+
+const chapterReviewScoreClass = computed(() => {
+  const v = chapterReview.value?.verdict
+  if (v === 'REJECT') return 'verdict-ai'
+  if (v === 'CONCERNS') return 'verdict-mixed'
+  if (v === 'APPROVE') return 'verdict-human'
+  return ''
+})
+
+function openChapterReviewModal() {
+  if (!chapterBody.value.trim()) {
+    toast.error(tm.value.novel.chapterReviewEmpty)
+    return
+  }
+  if (reviewRunning.value) {
+    reviewStep.value = 'result'
+    reviewSheetOpen.value = true
+    return
+  }
+  reviewStep.value = 'pick'
+  reviewSheetOpen.value = true
+}
+
+function closeChapterReviewModal() {
+  if (reviewRunning.value) return
+  reviewSheetOpen.value = false
+  reviewStep.value = 'pick'
+}
+
+async function persistReviewPlatform() {
+  try {
+    await novelAPI.saveMeta(dramaId, { review_platform: reviewPlatform.value })
+  } catch { /* ignore */ }
+}
+
+async function confirmPlatformAndReview() {
+  if (!reviewPlatform.value) return
+  await persistReviewPlatform()
+  await runChapterReview()
+}
+
+async function runChapterReview() {
+  if (!guardGenerate()) return
+  if (!activeChapter.value?.id) return
+  if (!chapterBody.value.trim()) {
+    toast.error(tm.value.novel.chapterReviewEmpty)
+    return
+  }
+  try {
+    reviewSheetOpen.value = true
+    reviewStep.value = 'result'
+    reviewRunning.value = true
+    const result = await novelAPI.reviewChapter(activeChapter.value.id, {
+      text: chapterBody.value,
+      platform: reviewPlatform.value,
+    })
+    if (result.platform) reviewPlatform.value = result.platform
+    notifyChapterReview(result)
+    if (result.verdict === 'APPROVE') {
+      toast.success(chapterReviewVerdictLabel(result.verdict))
+    }
+  } catch (e) {
+    toast.error(e.message)
+    reviewStep.value = 'pick'
+  } finally {
+    reviewRunning.value = false
+  }
+}
 async function probeChapterAi() {
   if (!guardGenerate()) return
   if (!activeChapter.value?.id) return
@@ -1236,6 +1469,18 @@ function notifyAiHumanize(det) {
   }
 }
 
+function notifyChapterReview(rev) {
+  if (!rev?.verdict) return
+  chapterReview.value = rev
+  const platform = rev.platform_label || rev.platform || ''
+  const summary = rev.summary || ''
+  if (rev.verdict === 'REJECT') {
+    toast.error(tx(tm.value.novel.chapterReviewToastReject, { platform, summary }))
+  } else if (rev.verdict === 'CONCERNS') {
+    toast.warning(tx(tm.value.novel.chapterReviewToastConcerns, { platform, summary }))
+  }
+}
+
 function aiDetectionMethodLabel(method) {
   if (!method) return ''
   if (String(method).includes('perplexity')) return tm.value.novel.aiDetectMethodPerplexityShort
@@ -1321,6 +1566,7 @@ async function enqueueAiRewrite() {
           if (meta?.continuity_check !== undefined) {
             continuityCheck.value = meta.continuity_check
           }
+          notifyChapterReview(meta?.chapter_review)
           notifyOutlineCompliance(meta?.outline_compliance)
           notifyChapterCraft(meta?.chapter_craft)
           notifyAiHumanize(meta?.ai_detection)
@@ -1337,7 +1583,7 @@ async function enqueueAiRewrite() {
           // 润色/审校阶段保留已流式正文，仅更新状态条
           streamStatusText.value = status
           // 勿用「大纲」匹配拍点进度（会把 streamWaiting 又拉回 true，盖住已流出的正文）
-          if (/润色|审校|AI 痕迹|去AI|降低 AI/.test(status)) streamWaiting.value = true
+          if (/润色|审校|审稿|AI 痕迹|去AI|降低 AI/.test(status)) streamWaiting.value = true
         },
       )
     } else {
@@ -1351,6 +1597,7 @@ async function enqueueAiRewrite() {
       if (res.continuity_check !== undefined) {
         continuityCheck.value = res.continuity_check
       }
+      notifyChapterReview(res.chapter_review)
       notifyOutlineCompliance(res.outline_compliance)
       notifyChapterCraft(res.chapter_craft)
       notifyAiHumanize(res.ai_detection)
@@ -1427,6 +1674,7 @@ async function enqueueFullGeneration() {
           if (meta?.continuity_check !== undefined) {
             continuityCheck.value = meta.continuity_check
           }
+          notifyChapterReview(meta?.chapter_review)
           notifyOutlineCompliance(meta?.outline_compliance)
           notifyChapterCraft(meta?.chapter_craft)
           notifyAiHumanize(meta?.ai_detection)
@@ -1442,7 +1690,7 @@ async function enqueueFullGeneration() {
         (status) => {
           streamStatusText.value = status
           // 勿用「大纲」匹配拍点进度（会把 streamWaiting 又拉回 true，盖住已流出的正文）
-          if (/润色|审校|AI 痕迹|去AI|降低 AI/.test(status)) streamWaiting.value = true
+          if (/润色|审校|审稿|AI 痕迹|去AI|降低 AI/.test(status)) streamWaiting.value = true
         },
       )
     } else {
@@ -1455,6 +1703,7 @@ async function enqueueFullGeneration() {
       if (res.continuity_check !== undefined) {
         continuityCheck.value = res.continuity_check
       }
+      notifyChapterReview(res.chapter_review)
       notifyOutlineCompliance(res.outline_compliance)
       notifyChapterCraft(res.chapter_craft)
       notifyAiHumanize(res.ai_detection)
@@ -1519,6 +1768,8 @@ onMounted(async () => {
     if (saved === 'stream' || saved === 'batch') generationMode.value = saved
   }
   try {
+    const plat = await novelAPI.listReviewPlatforms().catch(() => null)
+    if (plat?.platforms?.length) reviewPlatforms.value = plat.platforms
     await reloadChapterWorkbench()
   } catch (e) {
     toast.error(e.message)
@@ -1597,6 +1848,61 @@ onMounted(async () => {
   font-family: var(--font-mono);
 }
 .head-actions { display: flex; gap: 8px; flex-shrink: 0; align-items: center; flex-wrap: wrap; }
+.ai-detect-badge.verdict-reject {
+  background: color-mix(in srgb, var(--danger, #e55) 18%, transparent);
+  color: var(--danger, #c43);
+}
+.ai-detect-badge.verdict-concerns {
+  background: color-mix(in srgb, #d97706 18%, transparent);
+  color: #b45309;
+}
+.ai-detect-badge.verdict-approve {
+  background: color-mix(in srgb, #16a34a 18%, transparent);
+  color: #15803d;
+}
+.chapter-review-platform-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px;
+}
+.chapter-review-platform-card {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 4px;
+  padding: 12px 14px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius, 8px);
+  background: var(--bg-1, var(--bg-2));
+  color: var(--text-1);
+  cursor: pointer;
+  text-align: left;
+  transition: border-color 0.15s, background 0.15s;
+}
+.chapter-review-platform-card:hover {
+  border-color: color-mix(in srgb, var(--primary, #3b82f6) 45%, var(--border));
+}
+.chapter-review-platform-card.active {
+  border-color: var(--primary, #3b82f6);
+  background: color-mix(in srgb, var(--primary, #3b82f6) 8%, var(--bg-1, var(--bg-2)));
+}
+.chapter-review-platform-name {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--text-0);
+}
+.chapter-review-platform-tag {
+  font-size: 11px;
+  color: var(--primary, #3b82f6);
+}
+.chapter-review-modal .continuity-issue-list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
 .ai-detect-btn {
   display: inline-flex;
   align-items: center;
@@ -2101,6 +2407,7 @@ html[data-theme="dark"] .ai-detect-loading-overlay {
   line-height: 1.85;
   resize: none;
   font-family: var(--font-body, inherit);
+  white-space: pre-wrap;
 }
 .editor-textarea:focus {
   outline: none;

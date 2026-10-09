@@ -5,34 +5,93 @@ import { stripNovelChapterEndMeta } from '../../services/novel/novel-memory/nove
 const CHANGE_RECORD_RE = /^【变更记录】/m
 const CHANGE_RECORD_SPLIT_RE = /(?=^【变更记录】)/m
 
-/** 结构化块：至少一条「- 维: …」+「因果:」≥4 字（散文冒充则否） */
+/**
+ * 结构化块：
+ * - 「- 维: …」+ 下一「因果:」≥4 字
+ * - 或无维名的「甲 → 乙」状态迁移行 + 「因果:」（模型常漏掉 `- 人物:` 前缀）
+ */
 const STRUCTURED_CHANGE_RE =
-  /(?:^|\n)\s*[-*]\s*[^:：\n]+[:：][^\n]+\n\s*因果\s*[:：]\s*\S{4,}/
+  /(?:^|\n)\s*(?:[-*]\s*[^:：\n]+[:：][^\n]+|(?:[-*]\s*)?[^\n:：【]{1,40}\s*→\s*[^\n:：]{1,40})\n\s*因果\s*[:：]\s*\S{4,}/
 
 /**
  * 模型常写成 `**【变更记录】**` / `## 【变更记录】` / 全角空格等，
  * 必须先归一成行首 `【变更记录】`，否则整段会当正文留下。
+ * 亦处理粘在句末的行中标题：`……起来。”【变更记录】- 场景:` → 强制换行后再规范化。
  */
 export function canonicalizeChangeRecordHeaders(text: string): string {
-  return (text || '').replace(
-    /(^|\n)[ \t]*(?:#{1,3}[ \t]*)?(?:\*{1,2}[ \t]*)?【[ \t]*变更记录[ \t]*】(?:[ \t]*\*{1,2})?[ \t]*(?=\r?\n|$)/g,
+  let t = text || ''
+  // 行中标题：正文句号/引号后直接接【变更记录】
+  t = t.replace(/([^\n])([ \t]*)【[ \t]*变更记录[ \t]*】/g, '$1\n【变更记录】')
+  t = t.replace(
+    /(^|\n)[ \t]*(?:#{1,3}[ \t]*)?(?:\*{1,2}[ \t]*)?【[ \t]*变更记录[ \t]*】(?:[ \t]*\*{1,2})?[ \t]*(?=\r?\n|$|[ \t]*[-*])/g,
     '$1【变更记录】',
   )
+  // 标题与首条条目粘在同一行：【变更记录】- 场景:
+  t = t.replace(/^(【变更记录】)[ \t]*([-*])/m, '$1\n$2')
+  // 正文/上条耗时后直接接下一条：……”- 人物/…:  / 当场- 物品/…:
+  t = t.replace(/([^\n])[ \t]*(-\s*[^:：\n]{1,48}[:：])/g, '$1\n$2')
+  // 子字段粘行：…变化）因果: … / …衔接触发: …
+  t = t.replace(/([^\n])[ \t]*(因果|触发|代价|感知|耗时)\s*[:：]/g, '$1\n  $2:')
+  return t
 }
 
-/** 结构化条目续行（子弹 / 因果字段 / 空行） */
+/** 短行「甲 → 乙」状态迁移（非整句叙述） */
+function isArrowStateTransitionLine(line: string): boolean {
+  const t = line.trim()
+  if (!t || [...t].length > 48) return false
+  if (/[。！？!?…]$/.test(t)) return false
+  if (/^(因果|触发|代价|感知|耗时)\s*[:：]/.test(t)) return false
+  // 允许可选 `- ` 前缀；中间为短状态迁移
+  return /^(?:[-*]\s*)?.{1,24}\s*→\s*.{1,24}$/.test(t) && /→/.test(t)
+}
+
+const META_SUBFIELD_LINE_RE = /^(因果|触发|代价|感知|耗时)\s*[:：]/
+
+function isMetaSubfieldLine(line: string): boolean {
+  return META_SUBFIELD_LINE_RE.test((line || '').trim())
+}
+
+/** 结构化条目续行（子弹 / 因果字段 / 空行 / 箭头状态行） */
 function isChangeRecordMetaLine(line: string): boolean {
   const t = line.trim()
   if (!t) return true
   if (/^[-*]\s*[^:：\n]+[:：]/.test(t)) return true
   if (/^[-*]\s*.*无状态变化/.test(t)) return true
-  if (/^(因果|触发|代价|感知|耗时)\s*[:：]/.test(t)) return true
+  if (isMetaSubfieldLine(t)) return true
+  if (isArrowStateTransitionLine(t)) return true
   return false
 }
 
 function looksLikeChangeEntryStart(line: string): boolean {
   const t = line.trim()
-  return /^[-*]\s*[^:：\n]+[:：]/.test(t) || /^[-*]\s*.*无状态变化/.test(t)
+  if (/^[-*]\s*[^:：\n]+[:：]/.test(t)) return true
+  if (/^[-*]\s*.*无状态变化/.test(t)) return true
+  if (isArrowStateTransitionLine(t)) return true
+  // 模型常漏「- 维:」与「因果:」，只剩缩进子字段粘进正文
+  if (isMetaSubfieldLine(t)) return true
+  return false
+}
+
+/**
+ * 不完整变更记录残片（题材无关）：
+ * - 仅有「感知:/耗时:/触发:/代价:/因果:」子字段
+ * - 或「- 维:」+ 子字段但缺完整「因果:」门槛
+ */
+function isOrphanMetaFragment(chunk: string): boolean {
+  const lines = (chunk || '')
+    .split(/\r?\n/)
+    .map(l => l.trim())
+    .filter(Boolean)
+  if (!lines.length) return false
+  if (!lines.every(l => isChangeRecordMetaLine(l))) return false
+  if (lines.every(isMetaSubfieldLine)) return true
+  const hasEntry = lines.some(l =>
+    /^[-*]\s*[^:：\n]+[:：]/.test(l)
+    || /^[-*]\s*.*无状态变化/.test(l)
+    || isArrowStateTransitionLine(l),
+  )
+  const hasSub = lines.some(isMetaSubfieldLine)
+  return hasEntry && hasSub
 }
 
 /**
@@ -94,16 +153,19 @@ function stripChangeRecordHeader(block: string): string {
 }
 
 /**
- * 无「【变更记录】」标题时，模型仍可能把「- 维: / 因果:」条目插进正文。
+ * 无「【变更记录】」标题时，模型仍可能把「- 维: / 因果:」或裸「感知:/耗时:」插进正文。
  * 按行扫描连续元数据块并剥离；块后故事正文保留。
  */
 export function peelOrphanedStructuredFromProse(prose: string): {
   prose: string
   changeBlocks: string[]
 } {
-  const raw = (prose || '').trim()
+  const raw = canonicalizeChangeRecordHeaders(prose || '').trim()
   if (!raw) return { prose: '', changeBlocks: [] }
-  if (!STRUCTURED_CHANGE_RE.test(raw) && !(/无状态变化/.test(raw) && /因果\s*[:：]\s*\S{4,}/.test(raw))) {
+  const hasStructuredGate = STRUCTURED_CHANGE_RE.test(raw)
+    || (/无状态变化/.test(raw) && /因果\s*[:：]\s*\S{4,}/.test(raw))
+  const hasOrphanSubfields = /(?:^|\n)\s*(?:因果|触发|代价|感知|耗时)\s*[:：]/.test(raw)
+  if (!hasStructuredGate && !hasOrphanSubfields) {
     return { prose: raw, changeBlocks: [] }
   }
 
@@ -123,7 +185,10 @@ export function peelOrphanedStructuredFromProse(prose: string): {
       j += 1
     }
     const chunk = lines.slice(i, lastNonEmpty + 1).join('\n')
-    if (isStructuredChangeRecordBlock(chunk) || isStructuredChangeRecordBlock(ensureChangeRecordHeader(chunk))) {
+    const peel = isStructuredChangeRecordBlock(chunk)
+      || isStructuredChangeRecordBlock(ensureChangeRecordHeader(chunk))
+      || isOrphanMetaFragment(chunk)
+    if (peel) {
       changeBlocks.push(ensureChangeRecordHeader(chunk))
       for (let k = i; k <= lastNonEmpty; k++) keep[k] = false
       i = lastNonEmpty + 1

@@ -32,6 +32,14 @@ import { extractOutlineBeatPhrases } from './novel-chapter-seam.js'
 import { filterDraftByChapterOutline } from './novel-draft-outline-filter.js'
 import { stripOutlinePoisonProse } from './novel-outline-poison-strip.js'
 import { outlineHasExplicitEmotionBeats } from './novel-outline-drama-fields.js'
+import {
+  collectLockedMoneyForInfoDelta,
+  extractOutlineInfoDelta,
+  infoDeltaPointCovered,
+  outlineInfoDeltaCovered,
+  splitInfoDeltaPointsForCover,
+} from './novel-outline-beat-cover.js'
+import { buildInfoDeltaMustLandBlock } from './novel-chapter-emotion-beats.js'
 
 /** ??????????????????????? */
 export const OUTLINE_COMPLIANCE_MAX_ROUNDS = 3
@@ -111,6 +119,7 @@ function scoreOutlineCandidate(args: {
   let score = 500 - check.reasons.length * 40
   const hard = new Set([
     'early_beats_missing',
+    'info_delta_missing',
     'chapter_seam_cold_open',
     'next_chapter_beat_leak',
     'outline_endpoint_overshoot',
@@ -120,6 +129,7 @@ function scoreOutlineCandidate(args: {
   // overshoot / leak 权重提高，促使修写优先砍掉下章结果态
   for (const r of check.reasons) {
     if (r.code === 'chapter_seam_cold_open') score -= 160
+    else if (r.code === 'info_delta_missing') score -= 150
     else if (r.code === 'outline_endpoint_overshoot' || r.code === 'next_chapter_beat_leak') score -= 140
     else if (hard.has(r.code)) score -= 80
     else if (
@@ -135,6 +145,68 @@ function scoreOutlineCandidate(args: {
     score += hits * 35
   }
   return score
+}
+
+/**
+ * 信息增量专修：整章重写易丢掉标签事实；改为在现稿上插入缺失要点（保留章末钩子）。
+ */
+async function patchInfoDeltaMissingOnce(args: {
+  content: string
+  chapterOutline?: string
+  amountContext?: string
+  chapterNumber: number
+  billing?: TextBillingContext
+  novelGenreSkillKey?: string
+}): Promise<string | null> {
+  const { content, chapterOutline, amountContext, chapterNumber, billing, novelGenreSkillKey } = args
+  const delta = extractOutlineInfoDelta(chapterOutline)
+  if ([...delta].length < 4) return null
+  const amountContexts = [chapterOutline || '', amountContext || '']
+  const locked = collectLockedMoneyForInfoDelta(delta, amountContexts)
+  const missing = splitInfoDeltaPointsForCover(delta)
+    .filter(p => !infoDeltaPointCovered(content, p, { amountContexts }))
+  if (!missing.length) return content
+
+  const system = [
+    await buildNovelAgentSystem('novel_chapter_writer', { novelGenreSkillKey }),
+    `你在修补第${chapterNumber}章：只补写大纲【信息增量】缺失要点，禁止另起高潮、禁止揭晓章末悬念、禁止删号角/未决钩。`,
+    '输出完整简体中文章节正文（可含原有情节）；数量/名号/本章结果态已锁钱数须用原文用词字面出现。',
+  ].join('\n')
+  const user = [
+    '【任务】在现有正文中插入或改写若干句，使下列缺失的信息增量要点场面化落地。',
+    '硬性：',
+    '1. 保留原情节与章末未决钩子；禁止回答章末「是要A还是B/能否」',
+    '2. 结果态要点须写已发生/已完成；禁止改日再办、另册待交、仍欠/尚未',
+    '3. 量词/数字须按要点原文写进正文（缺字面即失败）',
+    locked.length
+      ? `4. 本章结果态条已锁定钱数必须用字面：${locked.join('、')}——禁止另造`
+      : '4. 本章信息增量无锁定钱数时，勿无故改写他章已立金额',
+    '5. 只输出完整正文，无解释',
+    buildInfoDeltaMustLandBlock(delta, locked),
+    '【本轮缺失要点】',
+    ...missing.map((p, i) => `${i + 1}. ${p}`),
+    '【现有正文】',
+    content.trim().slice(0, 12000),
+  ].join('\n')
+
+  const options = await novelAgentCompletionOptions('novel_chapter_writer', {
+    maxTokens: 8192,
+    temperature: 0.35,
+  })
+  const raw = await chatCompletionText(
+    [{ role: 'system', content: system }, { role: 'user', content: user }],
+    {
+      ...options,
+      billing: billing
+        ? { ...billing, reason: `小说信息增量补写第${chapterNumber}章` }
+        : undefined,
+    },
+  )
+  const draft = sanitizeModelCreativeOutput(raw)
+  if (!isUsableNovelCreativeOutput(draft, 'chapter_prose')) return null
+  const fixed = normalizeNovelTemporalNumerals(draft)
+  if (countNovelChars(fixed) < Math.round(countNovelChars(content) * 0.72)) return null
+  return fixed
 }
 
 async function rewriteOnceForOutline(args: {
@@ -333,6 +405,15 @@ export async function maybeFixOutlineCompliance(args: {
     Math.floor(args.maxLen ?? Math.round(targetFallback * 1.12)),
   )
 
+  // 全书大纲：信息增量锁定钱数（如前章已立「两百四十两」）
+  let amountContext = ''
+  try {
+    const drama = await dramasRepo.findDramaById(dramaId)
+    amountContext = parseNovelMetadata(drama?.metadata).outline || ''
+  } catch {
+    amountContext = ''
+  }
+
   const prevChapterTail = chapterNumber >= 2
     ? await loadPrevChapterContentTail(dramaId, chapterNumber, 8000)
     : ''
@@ -392,6 +473,7 @@ export async function maybeFixOutlineCompliance(args: {
     prevChapterTail,
     nextChapterOutline: considerNext ? (nextChapterOutline || undefined) : undefined,
     nextChapterHead: considerNext ? (nextChapterHead || undefined) : undefined,
+    amountContext: amountContext || undefined,
     chapterNumber,
     prevSnapshot,
   })
@@ -554,6 +636,7 @@ export async function maybeFixOutlineCompliance(args: {
     const hard = new Set([
       'outline_endpoint_overshoot',
       'early_beats_missing',
+      'info_delta_missing',
       'chapter_seam_cold_open',
       'next_chapter_beat_leak',
       'outline_boundary_model',
@@ -563,6 +646,7 @@ export async function maybeFixOutlineCompliance(args: {
     ])
     return reasons.reduce((s, r) => {
       if (r.code === 'chapter_seam_cold_open') return s + 220
+      if (r.code === 'info_delta_missing') return s + 200
       if (r.code === 'catalyst_agency_fail') return s + 180
       return s + (hard.has(r.code) ? 100 : 40)
     }, 0)
@@ -572,6 +656,7 @@ export async function maybeFixOutlineCompliance(args: {
   const seamHardRank = (reasons: OutlineComplianceReason[]): number => {
     let rank = 0
     if (reasons.some(r => r.code === 'chapter_seam_cold_open')) rank += 1000
+    if (reasons.some(r => r.code === 'info_delta_missing')) rank += 700
     if (reasons.some(r => r.code === 'catalyst_agency_fail')) rank += 500
     if (reasons.some(r => r.code === 'early_beats_missing')) rank += 300
     // soft: overshoot / replay / orphan ? do not dominate adoption
@@ -648,25 +733,87 @@ export async function maybeFixOutlineCompliance(args: {
 
   for (let round = 1; round <= maxRounds; round++) {
     attempts = round
-    onProgress?.(`???????? ${round}/${maxRounds} ??`)
+    onProgress?.(`大纲合规修写 ${round}/${maxRounds}`)
     const orphan = lastReasons.find(r => r.code === 'draft_orphan_replay')?.detail
-    // ??????????? best ???????????????????
     const rewriteBase = bestStillOriginal ? original : best
-    let next = await rewriteOnceForOutline({
-      content: rewriteBase,
-      reasons: lastReasons,
-      chapterOutline,
-      writingBrief: fixBrief,
-      orphanDraftExcerpt: orphan,
-      nextChapterOutline: nextChapterOutline || undefined,
-      nextChapterHead: nextChapterHead || undefined,
-      prevChapterTail: prevChapterTail || undefined,
-      chapterNumber,
-      billing,
-      minLen,
-      maxLen,
-      novelGenreSkillKey,
-    })
+    let next: string | null = null
+
+    // 信息增量缺失：章缝未清时禁止补丁（写前引导为主；坏章缝上插入只会叠伤）
+    const seamStillOpen = lastReasons.some(r => r.code === 'chapter_seam_cold_open')
+    if (
+      !seamStillOpen
+      && lastReasons.some(r => r.code === 'info_delta_missing')
+      && chapterOutline?.trim()
+    ) {
+      onProgress?.('信息增量补写')
+      const patched = await patchInfoDeltaMissingOnce({
+        content: rewriteBase,
+        chapterOutline,
+        amountContext,
+        chapterNumber,
+        billing,
+        novelGenreSkillKey,
+      })
+      if (patched) {
+        const patchCheck = await detect(patched, fixBrief)
+        logTaskWarn('Novel', 'outline-compliance-info-delta-patch', {
+          chapterNumber,
+          round,
+          ok: patchCheck.ok,
+          codes: patchCheck.reasons.map(r => r.code),
+          chars: countNovelChars(patched),
+          covered: outlineInfoDeltaCovered(patched, chapterOutline, amountContext),
+        })
+        if (patchCheck.ok) {
+          return {
+            content: patched,
+            fixed: true,
+            passed: true,
+            attempts,
+            reasons: [],
+          }
+        }
+        if (!patchCheck.reasons.some(r => r.code === 'info_delta_missing')) {
+          next = patched
+          lastReasons = patchCheck.reasons
+          const patchScore = scoreOf(patched, fixBrief) - reasonPenalty(patchCheck.reasons)
+          if (shouldAdoptFailedCandidate(patched, patchCheck.reasons, best, bestReasons)) {
+            best = patched
+            bestScore = patchScore
+            bestReasons = patchCheck.reasons
+            bestStillOriginal = false
+          }
+        } else {
+          // 专修未消缺失：仍把稿交给本轮整章修写作底
+          next = patched
+        }
+      }
+    }
+
+    if (!next || lastReasons.some(r => r.code === 'info_delta_missing') || lastReasons.some(r =>
+      r.code === 'chapter_seam_cold_open'
+      || r.code === 'outline_endpoint_overshoot'
+      || r.code === 'early_beats_missing'
+      || r.code === 'catalyst_agency_fail'
+      || r.code === 'draft_orphan_replay'
+      || r.code === 'next_chapter_beat_leak'
+    )) {
+      next = await rewriteOnceForOutline({
+        content: next || rewriteBase,
+        reasons: lastReasons,
+        chapterOutline,
+        writingBrief: fixBrief,
+        orphanDraftExcerpt: orphan,
+        nextChapterOutline: nextChapterOutline || undefined,
+        nextChapterHead: nextChapterHead || undefined,
+        prevChapterTail: prevChapterTail || undefined,
+        chapterNumber,
+        billing,
+        minLen,
+        maxLen,
+        novelGenreSkillKey,
+      })
+    }
 
     if (!next) {
       logTaskWarn('Novel', 'outline-compliance-fix-unusable', { chapterNumber, round })
@@ -915,6 +1062,61 @@ export async function maybeFixOutlineCompliance(args: {
       codes: lastReasons.map(r => r.code),
       chars: deliverChars,
       originalHasSeamIssue,
+    })
+    return {
+      content: '',
+      fixed: false,
+      passed: false,
+      attempts,
+      reasons: lastReasons.length ? lastReasons : check.reasons,
+      hardReject: true,
+    }
+  }
+
+  // 【信息增量】未兑现：硬拒前再专修一次（章缝仍开则跳过，避免逆序补丁）
+  let deliverStillInfoDelta = lastReasons.some(r => r.code === 'info_delta_missing')
+  const deliverStillSeamForPatch = lastReasons.some(r => r.code === 'chapter_seam_cold_open')
+  if (
+    deliverStillInfoDelta
+    && !deliverStillSeamForPatch
+    && chapterOutline?.trim()
+    && deliver.trim()
+  ) {
+    onProgress?.('信息增量补写·末轮')
+    const lastPatch = await patchInfoDeltaMissingOnce({
+      content: deliver,
+      chapterOutline,
+      amountContext,
+      chapterNumber,
+      billing,
+      novelGenreSkillKey,
+    })
+    if (lastPatch && outlineInfoDeltaCovered(lastPatch, chapterOutline, amountContext)) {
+      const after = await detect(lastPatch, fixBrief)
+      logTaskWarn('Novel', 'outline-compliance-info-delta-patch-final', {
+        chapterNumber,
+        ok: after.ok,
+        codes: after.reasons.map(r => r.code),
+        chars: countNovelChars(lastPatch),
+      })
+      if (after.ok || !after.reasons.some(r => r.code === 'info_delta_missing')) {
+        return {
+          content: lastPatch,
+          fixed: true,
+          passed: after.ok,
+          attempts: attempts + 1,
+          reasons: after.ok ? [] : after.reasons,
+          hardReject: false,
+        }
+      }
+    }
+    deliverStillInfoDelta = true
+  }
+  if (deliverStillInfoDelta) {
+    logTaskWarn('Novel', 'outline-compliance-hard-reject-info-delta', {
+      chapterNumber,
+      codes: lastReasons.map(r => r.code),
+      chars: deliverChars,
     })
     return {
       content: '',

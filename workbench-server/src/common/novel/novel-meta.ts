@@ -71,6 +71,13 @@ export type NovelMetadata = {
    * true 时同系检测 warning 加前缀；不阻断、不改写作模型。默认 false。
    */
   prefer_cross_model_detect?: boolean
+  /**
+   * 章节审稿目标平台：fanqie | qidian | jinjiang | generic。
+   * 默认 fanqie（番茄过审痛点最高）。
+   */
+  review_platform?: string
+  /** 生成后自动跑平台审稿（建议级，不阻断落库），默认 true */
+  chapter_review_auto?: boolean
 }
 
 export function parseNovelMetadata(raw: JsonColumnInput): NovelMetadata {
@@ -140,6 +147,8 @@ export function parseNovelMetadata(raw: JsonColumnInput): NovelMetadata {
         return Math.min(60, Math.max(20, Math.round(n)))
       })(),
       prefer_cross_model_detect: parsed.prefer_cross_model_detect === true ? true : undefined,
+      review_platform: typeof parsed.review_platform === 'string' ? parsed.review_platform : undefined,
+      chapter_review_auto: parsed.chapter_review_auto === false ? false : undefined,
     }
   } catch {
     return {}
@@ -273,4 +282,9 @@ export function resolveAiHumanizeTarget(meta: NovelMetadata): number {
 /** C2：小说 meta 优先；未设则 false（文本服务 settings 由检测侧另读） */
 export function resolvePreferCrossModelDetect(meta: NovelMetadata): boolean {
   return meta.prefer_cross_model_detect === true
+}
+
+/** 生成后自动平台审稿，默认开（建议级） */
+export function isChapterReviewAutoEnabled(meta: NovelMetadata): boolean {
+  return meta.chapter_review_auto !== false
 }

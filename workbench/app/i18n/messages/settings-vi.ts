@@ -96,6 +96,8 @@ export const settingsVi: ConsoleMessages['settings'] = {
   creditTokenHint: 'Điểm tính theo token thực tế (làm tròn lên). Ví dụ: 3000 token = 10 điểm.',
   enableThinking: 'Chế độ suy luận',
   enableThinkingHint: 'Mặc định tắt: vô hiệu chuỗi suy luận để tránh lẫn vào nội dung. Nên tắt khi viết/ chỉnh văn. Bật có thể tốn thêm token trên R1 / MiniMax M2.',
+  minimaxReasoningSplit: 'Tách suy luận (reasoning_split)',
+  minimaxReasoningSplitHint: 'Bật: suy luận vào trường riêng, nội dung sạch. MiniMax-M3.1-Flash-Preview yêu cầu bật. Tắt: suy luận có thể lẫn vào content (server sẽ lọc).',
   testConfig: 'Kiểm tra',
   testing: 'Đang kiểm tra…',
   save: 'Lưu',

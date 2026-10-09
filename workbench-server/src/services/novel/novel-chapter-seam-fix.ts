@@ -4,7 +4,11 @@
  */
 import { chatCompletionText, sanitizeModelCreativeOutput, type TextBillingContext } from '../ai/ai.js'
 import { buildNovelAgentSystem, novelAgentCompletionOptions } from './novel-agent-prompt.js'
-import { detectChapterSeamReplay, stripSeamReplayOpening } from './novel-chapter-seam.js'
+import {
+  detectChapterSeamLexicalReplay,
+  detectChapterSeamReplay,
+  stripSeamReplayOpening,
+} from './novel-chapter-seam.js'
 import { loadPrevChapterContentTail } from './novel-continuity.js'
 import { logTaskWarn } from '../../common/task/task-logger.js'
 import { normalizeNovelTemporalNumerals } from '../../common/novel/novel-temporal-numerals.js'
@@ -40,7 +44,13 @@ export async function maybeFixChapterSeamOpening(args: {
   if (chapterNumber < 2 || !content) return { content, fixed: false }
 
   const prevTail = await loadPrevChapterContentTail(dramaId, chapterNumber, 1600)
+  // 结构硬伤或字面重合（后者不进硬审，但可剥开篇）
   const hit = detectChapterSeamReplay({
+    content,
+    chapterNumber,
+    prevChapterTail: prevTail,
+    chapterOutline,
+  }) || detectChapterSeamLexicalReplay({
     content,
     chapterNumber,
     prevChapterTail: prevTail,
@@ -57,7 +67,7 @@ export async function maybeFixChapterSeamOpening(args: {
   })
   if (purged0.stripped) {
     content = purged0.text
-    const afterPurge = detectChapterSeamReplay({
+    const afterPurge = detectChapterSeamLexicalReplay({
       content,
       chapterNumber,
       prevChapterTail: prevTail,
@@ -129,7 +139,7 @@ export async function maybeFixChapterSeamOpening(args: {
       chapterOutline,
     })
     next = purged.text
-    const still = detectChapterSeamReplay({
+    const still = detectChapterSeamLexicalReplay({
       content: next,
       chapterNumber,
       prevChapterTail: prevTail,

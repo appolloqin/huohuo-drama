@@ -4,6 +4,7 @@
  */
 import {
   detectChapterSeamClimaxReplay,
+  detectChapterSeamLexicalReplay,
   detectChapterSeamReplay,
 } from '../src/services/novel/novel-chapter-seam.js'
 import { detectOpeningAgainstChapterEndSnapshot } from '../src/services/novel/novel-chapter-end-snapshot.js'
@@ -65,13 +66,22 @@ if (!detectChapterSeamClimaxReplay({
   prevSnapshot: snapB,
 })) throw new Error('B: expected climax replay')
 
-if (!detectChapterSeamReplay({
+// 字面/高潮重合：剥稿探测器可命中；一致性硬审不再以此硬拦（交模型审）
+if (!detectChapterSeamLexicalReplay({
   content: openReplayB,
   chapterNumber: 5,
   prevChapterTail: prevTailB,
   chapterOutline: '设陷阱 / 剥皮 / 回程遇赵大彪',
   prevSnapshot: snapB,
-})) throw new Error('B: seam replay should catch')
+})) throw new Error('B: lexical seam should catch')
+
+if (detectChapterSeamReplay({
+  content: openReplayB,
+  chapterNumber: 5,
+  prevChapterTail: prevTailB,
+  chapterOutline: '设陷阱 / 剥皮 / 回程遇赵大彪',
+  prevSnapshot: snapB,
+})) throw new Error('B: hard seam path must not block dialogue/climax lexical replay')
 
 const cleanB = `
 日头还偏西，秦卫国绕过岔路口，把猎物往背篓里压实，没再回头。

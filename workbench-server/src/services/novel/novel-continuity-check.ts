@@ -154,6 +154,7 @@ const CHECK_SYSTEM_CAUSAL = `你是网文 continuity 审校编辑（因果链模
 
 须拦：吃书（人名/事件/地点与【因果起点】【前序正文】矛盾）；正文状态变化但【变更记录】无因果；章内事实矛盾；**稳定人设年龄**（大纲已定年龄，几岁对白写错）；**章内在场相位**（独处/离场已立后，他者无同行/赶来/切场/闪回框即以同场动作出场→人物/动作逻辑 fail）；**章内进度回卷**（已完成态过程无框换皮再演→动作逻辑等维 fail）；**章缝回放**（上章末已完成的关键对白/场面高潮在本章开篇再完整演一遍）；**章缝逻辑不自洽**（开篇时空/地点/在场/进度/过程相位与上章已成立事实冲突且无补叙框/回忆框/跨日归来/新过程等交代；无框「再演一遍」不算补叙；手法允许不免除自洽）；**章缝结构卡权威**（【章缝结构判定】场合连续 same/bridged 勿判无过渡跳变；仅 jump 可判场合不衔接；visitor_from_outline=yes 勿判空降）；**过程相位倒退**（上章已更晚/更重，开篇无交代写回才开始/初起）；**章缝后退写**（开篇早于上章末进度：过期大纲拍点重演，或较后拍点已完成却写更早拍点）；**章缝冷开篇**（开篇时空早于上章末已发生事实，或开篇未进入本章大纲前段）。
 勿拦：合法突破/连破（有因果）；与旧15维账本/一致性提醒不一致；有交代且链条闭合的倒叙/补叙；结构卡 bridged/same 的换场；仅钟点词字面顺序 alone；合法一句承接或有框回忆；同主题加深/余波延展（非把已完成过程再演一遍）。
+**章缝回放由你判定**：跨章承接/回扣上章对白以推进新冲突 ≠ 把上章已闭合高潮再演一遍；留场人物继续同场动作 ≠ 无交代空降。勿仅因同词/同人出现就 fail。
 
 **勿拦（创作层面，不是 continuity 硬伤）**：
 - 本章大纲/写作说明的**篇幅比例、详略、节奏**（如「40% 聚焦夜潜过程」「前半章写 XX」）——审校**不管**结构配比
@@ -773,6 +774,7 @@ export async function checkNovelChapterContinuity(args: {
       prevChapterBody,
       chapterOutline,
       prevSnapshot,
+      placeContinuity: seamVerdict?.place_continuity ?? null,
     })
   } else {
     local = runLocalContinuityAudit({
@@ -785,6 +787,7 @@ export async function checkNovelChapterContinuity(args: {
       bookOutline: meta.outline || '',
       prevSnapshot,
       extraGrounding: [canonBlock, canonLock].filter(Boolean).join('\n'),
+      placeContinuity: seamVerdict?.place_continuity ?? null,
     })
   }
 

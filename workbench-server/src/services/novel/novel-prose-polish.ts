@@ -12,11 +12,7 @@ import { chatCompletionText, looksLikeModelThinkingLeak, sanitizeModelCreativeOu
 import { buildNovelAgentSystem, novelAgentCompletionOptions } from './novel-agent-prompt.js'
 import { logTaskWarn } from '../../common/task/task-logger.js'
 import {
-  isOverFragmentedLayout,
-  needsParagraphSplit,
-  normalizeNovelParagraphs,
-  preserveNovelLineLayout,
-  toNaturalNovelParagraphs,
+  enforceNovelProseDeliveryLayout,
 } from '../../common/novel/novel-paragraph-format.js'
 import { normalizeNovelTemporalNumerals } from '../../common/novel/novel-temporal-numerals.js'
 import { diversifyNovelProseTells } from '../../common/novel/novel-prose-diversify.js'
@@ -29,7 +25,7 @@ export function chapterLengthTokenBudget(maxLen: number): number {
   return Math.min(32768, Math.max(1024, Math.round(n * 1.7) + 384))
 }
 
-function finalizePolishedProse(draft: string, polished: string, layoutReference?: string): string {
+function finalizePolishedProse(draft: string, polished: string): string {
   const trimmedDraft = draft.trim()
   let out = sanitizeModelCreativeOutput(polished.trim()) || trimmedDraft
   out = sanitizeModelCreativeOutput(out) || trimmedDraft
@@ -44,19 +40,9 @@ function finalizePolishedProse(draft: string, polished: string, layoutReference?
     logTaskWarn('Novel', 'prose-polish-collapsed-breaks', {})
     out = trimmedDraft
   }
-  const layoutRef = (layoutReference || trimmedDraft).trim()
-  // 过长原稿作 layout 参考会把压缩结果撑回去；仅当参考不显著长于草稿时沿用
-  const useLayout = countNovelChars(layoutRef) <= countNovelChars(trimmedDraft) * 1.08
-  const restored = useLayout ? preserveNovelLineLayout(layoutRef, out) : out
-  if (restored !== out) {
-    logTaskWarn('Novel', 'prose-polish-normalized-layout', {})
-    out = restored
-  } else if (isOverFragmentedLayout(out)) {
-    out = toNaturalNovelParagraphs(out)
-  } else if (needsParagraphSplit(out)) {
-    out = normalizeNovelParagraphs(out)
-  }
-  return diversifyNovelProseTells(normalizeNovelTemporalNumerals(out))
+  // 先打散套话，再走交付契约（引号修复 + 短段）；修不干净也不抛死整章
+  out = diversifyNovelProseTells(normalizeNovelTemporalNumerals(out))
+  return enforceNovelProseDeliveryLayout(out, { throwOnFail: false })
 }
 
 export async function polishNovelChapterProse(
@@ -77,7 +63,6 @@ export async function polishNovelChapterProse(
 
   const { prose, changeBlock } = splitProseAndChangeRecord(trimmed)
   const bodyToPolish = prose || trimmed
-  const layoutRef = (opts?.layoutReference || bodyToPolish).trim()
   const charCount = countNovelChars(bodyToPolish)
 
   const tokenCeiling = opts?.mode === 'segment'
@@ -113,7 +98,7 @@ export async function polishNovelChapterProse(
     WEBNOVEL_HUMAN_PROSE_STYLE,
     WEBNOVEL_STAT_FINGERPRINT_GUIDE,
     opts?.colloquialBoost ? WEBNOVEL_POLISH_COLLOQUIAL_BOOST : '',
-    '- **段落**：叙述每段 1～3 句（硬上限 3），满 3 句必须空行换段；对话/惊觉可一句成段；**严禁**一段塞四五句；极短句勿独占一行',
+    '- **段落**：叙述每段 1～3 句（硬上限 3），满 3 句必须空行换段；**单段含标点约≤420 字**（对白很长时提前换段）；对话/惊觉可一句成段；**严禁**一段塞四五句或文字墙；极短句勿独占一行',
     '- **引号**：用中文 “……”；禁英文 "；两句对白相连时中间加空格（！” “），勿粘死，也勿为此换段',
     '- **时间与金钱数字**：年、月、日、钟点用阿拉伯数字（如 1990年、3月、15日、凌晨3点）；金额用 800元、2000元；「一点/一些」少量义保持汉字；删掉 \`***\` / \`* * *\` 分节符，换场只用空行',
     '- **口语化**：对话用 “……” 补语气词（勿用「」）；压书面腔；删改 AI 套话与「最后/只见/不禁/心中暗道」连用',
@@ -139,7 +124,7 @@ export async function polishNovelChapterProse(
       [{ role: 'system', content: system }, { role: 'user', content: user }],
       { ...options, maxTokens, billing },
     )
-    let out = finalizePolishedProse(bodyToPolish, polished, layoutRef)
+    let out = finalizePolishedProse(bodyToPolish, polished)
       + (changeBlock ? `\n\n${changeBlock}` : '')
     if (opts?.mode !== 'segment' && opts?.minLen != null && opts?.maxLen != null) {
       out = await ensureNovelChapterWithinLength(out, opts.minLen, opts.maxLen, billing, opts.novelGenreSkillKey)
@@ -148,9 +133,11 @@ export async function polishNovelChapterProse(
   } catch (err: any) {
     logTaskWarn('Novel', 'prose-polish-skipped', { error: err?.message || 'empty' })
     const fallback = sanitizeModelCreativeOutput(bodyToPolish) || bodyToPolish
-    const laidOut = preserveNovelLineLayout(layoutRef, fallback)
-    // 润色失败也必须打散套话/开篇骨架，否则 DeepSeek 空正文时「痛。像…」会原样交付
-    let out = diversifyNovelProseTells(normalizeNovelTemporalNumerals(laidOut))
+    // 润色失败：尽量排版收口，禁止再硬抛把整单打成 fail
+    let out = enforceNovelProseDeliveryLayout(
+      diversifyNovelProseTells(normalizeNovelTemporalNumerals(fallback)),
+      { throwOnFail: false },
+    )
     if (opts?.mode !== 'segment' && opts?.minLen != null && opts?.maxLen != null) {
       out = await ensureNovelChapterWithinLength(out, opts.minLen, opts.maxLen, billing, opts.novelGenreSkillKey)
     }
@@ -226,7 +213,7 @@ export async function ensureNovelChapterWithinLength(
             : undefined,
         },
       )
-      const next = finalizePolishedProse(body, raw, body)
+      const next = finalizePolishedProse(body, raw)
       const nextN = countNovelChars(next)
       if (nextN < Math.round(minLen * 0.45)) {
         logTaskWarn('Novel', 'chapter-length-adjust-too-short', { attempt, before: n, after: nextN })
@@ -258,5 +245,6 @@ export async function ensureNovelChapterWithinLength(
   }
   const { stripIntraChapterNearDuplicate } = await import('./novel-intra-chapter-dedupe.js')
   body = stripIntraChapterNearDuplicate(body).text
+  body = enforceNovelProseDeliveryLayout(body, { throwOnFail: false })
   return changeBlock ? `${body.trim()}\n\n${changeBlock}` : body.trim()
 }

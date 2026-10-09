@@ -5,6 +5,7 @@
 import {
   listMissingOutlineChapters,
   listMissingOutlineChaptersInRange,
+  shouldUsePhasedOutlineGeneration,
   validateOutlineChapterCoverage,
 } from '../src/common/novel/novel-outline.js'
 
@@ -78,5 +79,16 @@ if (listMissingOutlineChaptersInRange(withHole, 3, 5).join(',') !== '4') {
 
 // 旧逻辑只看 max：max=5 会误判完整 —— 本校验必须挡住
 if (cov.missing !== 2) throw new Error('missing count should be 2')
+
+// 30 章单次 16k 会在约第 12 章截断（日志：缺 13～30）；须走骨架+分卷，不得用单次路径
+if (!shouldUsePhasedOutlineGeneration(30)) {
+  throw new Error('30 chapters must use phased outline generation')
+}
+if (!shouldUsePhasedOutlineGeneration(13)) {
+  throw new Error('13+ chapters must use phased outline (drama-tag blocks overflow single-shot)')
+}
+if (shouldUsePhasedOutlineGeneration(8)) {
+  throw new Error('short books may still use single-shot outline')
+}
 
 console.log('verify-outline-coverage-holes OK')

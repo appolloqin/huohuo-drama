@@ -272,11 +272,13 @@ export function extractOutlineBeatItems(outline: string, max = 12): OutlineBeatI
       const val = (m[2] || '').replace(/\s+/g, ' ').trim()
       if (DRAMA_SETTING_TAGS.has(tag) || DRAMA_META_TAGS.has(tag)) continue
       if (!DRAMA_PLOT_TAGS.has(tag)) continue
-      if ([...val].length < 4 || [...val].length > 100) continue
-      const key = normalizeText(val)
+      // 章末问题/局面变化常超 100 字；过短仍丢，过长截入拍卡（完整原文仍在【本章大纲】）
+      if ([...val].length < 4) continue
+      const beatVal = [...val].length > 160 ? `${[...val].slice(0, 160).join('')}…` : val
+      const key = normalizeText(beatVal)
       if (key.length < 4 || seen.has(key)) continue
       seen.add(key)
-      out.push({ tag, beat: val })
+      out.push({ tag, beat: beatVal })
       if (out.length >= max) break
     }
     if (out.length) return out
@@ -1014,10 +1016,10 @@ export function buildForcedSeamOpeningBlock(args: {
     : ''
   const bridgeBlock = copresent && beat1 && !quietToVisit
     ? [
-      '0c. **共处→屋外拍点桥接**：上章末已在场共处，而大纲拍点1若在屋外/猎获结果，禁止开篇「推门进来/提着猎物归来」。',
-      '顺序：①轻锚承接对坐/室内 → ②离场或隔夜（须写明）→ ③再写拍点1「'
+      '0c. **共处→新拍点**：上章末已在场共处时，开篇须与已在场状态相容。',
+      '可同场续写、可先离场/跨日再进入拍点1「'
         + beat1
-        + '」及之后；拍点1可出现在离场之后，不必硬塞进第一段。',
+        + '」；禁止无交代地把已在场者再写成首次抵达/进门归来。',
     ].join('\n')
     : ''
   const visitBlock = quietToVisit
@@ -1033,16 +1035,16 @@ export function buildForcedSeamOpeningBlock(args: {
     : quietToVisit
       ? '1. 开篇须轻锚承接【上章末契约】完成态之后的新信息（手法自选），勿重做收束、勿复述已闭合交付。'
       : copresent
-        ? '1. 第一段：轻锚承接【上章末契约】已在场状态（一句即可），禁止推门进来、禁止雪光重开直接提猎物进门。'
+        ? '1. 第一段：与【上章末契约】已在场状态相容起笔（一句轻锚即可）；禁止把已在场写成尚未到达的首次进门。'
         : prevEndsWithDeparture(args.prevTail)
           ? '1. 第一段：轻锚承接【上章末契约】已在途/离场状态，禁止倒退到封闭场合重演出发；可回忆半句，勿整段重演离家。'
-          : '1. 第一段：轻锚点明【上章末契约】场合/状态后进入本章新拍（一句即可），禁止复述上章闭合高潮；禁止清晨离家、目送叮嘱、重起炉灶式开篇。'
+          : '1. 第一段：轻锚点明【上章末契约】场合/状态后进入本章新拍（一句即可），禁止复述上章闭合高潮；禁止无交代的清晨重起炉灶式开篇。'
   const step2 = !beat1
     ? '2. 轻锚之后：立刻进入【本章大纲】第一个情节拍点。'
     : quietToVisit
       ? `2. 开篇窗口内须交代外来冲突如何接上，再落实「${beat1}」；可先果后因，但须补清来者/起势。`
       : copresent
-        ? `2. 轻锚之后：写离场/隔夜后进入大纲拍点1「${beat1}」，不得跳过离场直接写归来收获。`
+        ? `2. 在状态相容前提下进入大纲拍点1「${beat1}」；勿无无交代回卷重演已完成抵达。`
         : `2. 轻锚之后：进入本章大纲拍点1「${beat1}」，不得跳过拍点1直接写更后拍点；亦勿为凑接缝而把拍点1之前灌成半章。`
   return [
     '【开篇轻锚接缝 — 第2章起生效】',
@@ -1334,7 +1336,8 @@ export function detectChapterSeamClimaxReplay(args: {
     ? sharedCast.slice(0, 3).join('、')
     : (eventFp.slice(0, 20) || '上章末场面')
   return {
-    layer: 'hard',
+    // 高潮字面回放：剥稿/提示用，不进硬审清空正文（与 detectChapterSeamReplay 注释一致）
+    layer: 'rule',
     rule: 'chapter_seam_replay',
     message:
       `章缝回放：本章开篇再次铺开上章末已发生的情节`
@@ -1344,6 +1347,10 @@ export function detectChapterSeamClimaxReplay(args: {
   }
 }
 
+/**
+ * 一致性硬审用的章缝：仅结构信号（交付重演 / 离场再出发 / 过程相位倒退）。
+ * 对白·场面「是否回放」交模型审，不在此硬拦。
+ */
 export function detectChapterSeamReplay(args: {
   content: string
   chapterNumber: number
@@ -1353,8 +1360,10 @@ export function detectChapterSeamReplay(args: {
   /** 本章大纲：用于识别「大纲过期 / 拍点倒序后退写」 */
   chapterOutline?: string
   prevSnapshot?: ChapterEndSnapshot | null
+  /** 结构卡场合连续：same/bridged 时离场吃书不硬拦（权威卡优先） */
+  placeContinuity?: 'same' | 'bridged' | 'jump' | null
 }): AuditConflict | null {
-  const { content, chapterNumber, prevChapterTail, chapterOutline, prevSnapshot } = args
+  const { content, chapterNumber, prevChapterTail, prevSnapshot } = args
   if (chapterNumber < 2 || (!prevChapterTail?.trim() && !prevSnapshot && !args.prevChapterBody?.trim())) {
     return null
   }
@@ -1375,18 +1384,17 @@ export function detectChapterSeamReplay(args: {
 
   if ([...opening].length < 80) return null
 
-  // 高置信结构自洽（机械证据；模型审曾对本案软放行）：
-  // - 已离场/在途 → 开篇再演封闭场合出发
-  // - 过程相位倒退（如雨雪已密 → 才开始）
-  // 仍交模型审、不进硬审：地点字面 miss、大纲冷开篇、弱承接+过期、拍点倒序、钟点词序 alone。
-  // 参见 docs/superpowers/specs/2026-08-08-seam-causality-model-audit-design.md
-  const presenceHit = detectChapterSeamPresenceReentry({
-    content,
-    chapterNumber,
-    prevChapterTail: prevTail || prevChapterTail,
-    prevSnapshot,
-  })
-  if (presenceHit) return presenceHit
+  // same/bridged：结构卡已认承接，离场吃书交模型审，不硬拦
+  const bridgedOk = args.placeContinuity === 'same' || args.placeContinuity === 'bridged'
+  if (!bridgedOk) {
+    const presenceHit = detectChapterSeamPresenceReentry({
+      content,
+      chapterNumber,
+      prevChapterTail: prevTail || prevChapterTail,
+      prevSnapshot,
+    })
+    if (presenceHit) return presenceHit
+  }
 
   const weatherHit = detectChapterSeamWeatherRewind({
     content,
@@ -1395,9 +1403,28 @@ export function detectChapterSeamReplay(args: {
   })
   if (weatherHit) return weatherHit
 
+  return null
+}
+
+/**
+ * 开篇与上章末对白/场面字面高度重合（供剥稿/提示，不进一致性硬审）。
+ */
+export function detectChapterSeamLexicalReplay(args: {
+  content: string
+  chapterNumber: number
+  prevChapterTail?: string
+  prevChapterBody?: string
+  chapterOutline?: string
+  prevSnapshot?: ChapterEndSnapshot | null
+}): AuditConflict | null {
+  const { content, chapterNumber, prevChapterTail, prevSnapshot } = args
+  if (chapterNumber < 2) return null
+  const prevTail = (prevChapterTail || args.prevChapterBody || '').trim().slice(-1200)
   if (!prevTail) return null
 
-  // 1) 上章末冲突高潮被整段换皮重演（机械字面重合）
+  const opening = content.trim().slice(0, Math.min(content.trim().length, 1800))
+  if ([...opening].length < 80) return null
+
   const climaxHit = detectChapterSeamClimaxReplay({
     content,
     chapterNumber,
@@ -1457,7 +1484,8 @@ export function detectChapterSeamReplay(args: {
       || opening.slice(0, 40)
     ).replace(/\s+/g, ' ').slice(0, 48)
     return {
-      layer: 'hard',
+      // 字面重合供剥稿/提示，不进一致性硬审清空正文
+      layer: 'rule',
       rule: 'chapter_seam_replay',
       message: `章缝回放：本章开篇与上章结尾在关键对白/收束句/场面描写上高度重合（摘录「${excerpt}…」）。请从上章已发生事实之后起笔，只写承接与新冲突，勿把上章高潮再演一遍。`,
     }
@@ -1524,9 +1552,9 @@ export function stripSeamReplayOpening(args: {
     }
   }
 
-  // 第二轮：若仍「高度重合」，继续剥首句
+  // 第二轮：若仍「高度重合」，继续剥首句（字面重合探测器，非硬审）
   for (let guard = 0; guard < 10; guard++) {
-    const hit = detectChapterSeamReplay({
+    const hit = detectChapterSeamLexicalReplay({
       content: text,
       chapterNumber: args.chapterNumber,
       prevChapterTail: prev,
@@ -1660,10 +1688,16 @@ export function mergeSeamIntoLocalAudit(
     prevChapterBody?: string
     chapterOutline?: string
     prevSnapshot?: ChapterEndSnapshot | null
+    placeContinuity?: 'same' | 'bridged' | 'jump' | null
   },
 ): { hard: AuditConflict[]; rule: AuditConflict[] } {
   const hit = detectChapterSeamReplay(args)
   if (!hit) return local
+  // 与 runLocalContinuityAudit 一致：rule 层（如交付重演）不得升格硬拦清空正文
+  if (hit.layer === 'rule') {
+    if (local.rule.some(r => r.message === hit.message)) return local
+    return { hard: local.hard, rule: [...local.rule, hit] }
+  }
   if (local.hard.some(h => h.rule === 'chapter_seam_replay')) return local
   return { hard: [...local.hard, hit], rule: local.rule }
 }

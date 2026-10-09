@@ -39,8 +39,7 @@ import {
   prepareOutlineDramaForChapterWrite,
 } from '../../services/novel/novel-outline-drama-ensure.js'
 import { upgradePromptToDramaOutline } from '../../services/novel/novel-outline-drama-fields.js'
-import { checkNovelChapterContinuity } from '../../services/novel/novel-continuity-check.js'
-import { resolveFullChapterForAudit, detachChangeRecordForStorage, ensureCausalChangeRecordAppended, isCausalChainEnabled } from '../../services/novel/novel-causal-chain/index.js'
+import { detachChangeRecordForStorage } from '../../services/novel/novel-causal-chain/index.js'
 import type { TextBillingContext } from '../../services/ai/ai.js'
 
 function novelTextBilling(
@@ -258,7 +257,7 @@ app.put('/dramas/:id/meta', async (c) => {
   const drama = await requireNovelDrama(id, user.id)
   if (!drama) return notFound(c, '小说项目不存在')
   const body = await c.req.json().catch(() => ({}))
-  const patch: Record<string, string | number | undefined> = {}
+  const patch: Partial<NovelMetadata> = {}
   if (typeof body.outline === 'string') patch.outline = body.outline
   if (typeof body.premise === 'string') patch.premise = body.premise
   if (typeof body.novel_genre === 'string') patch.novel_genre = body.novel_genre
@@ -284,6 +283,11 @@ app.put('/dramas/:id/meta', async (c) => {
     const n = Number(body.continue_segment_chars)
     if (Number.isFinite(n) && n >= 200 && n <= 8000) patch.continue_segment_chars = n
   }
+  if (typeof body.review_platform === 'string' && body.review_platform.trim()) {
+    patch.review_platform = body.review_platform.trim()
+  }
+  if (body.chapter_review_auto === false) patch.chapter_review_auto = false
+  if (body.chapter_review_auto === true) patch.chapter_review_auto = true
   const metadata = mergeNovelMetadata(drama.metadata, patch)
   const updates: Record<string, unknown> = { metadata, updatedAt: now() }
   if (typeof body.novel_genre === 'string') updates.genre = body.novel_genre
@@ -399,6 +403,8 @@ app.get('/chapters/:id/brief', async (c) => {
     ai_detection: aiDetection,
     continuity_ledger: epMeta.continuity_ledger ?? null,
     continuity_check: epMeta.continuity_check ?? null,
+    chapter_review: epMeta.chapter_review ?? null,
+    review_platform: meta.review_platform || 'fanqie',
   })
 })
 
@@ -424,51 +430,24 @@ app.post('/chapters/:id/continuity/check', async (c) => {
 
   const body = await c.req.json().catch(() => ({}))
   const fromBody = typeof body.text === 'string' ? body.text.trim() : ''
-  const epMeta = parseEpisodeMetadata(pack.episode.metadata)
   const prose = fromBody || (pack.episode.content || pack.episode.scriptContent || '').trim()
   if (!prose) return badRequest(c, '章节正文为空，无法审校')
-  const content = fromBody
-    ? prose
-    : resolveFullChapterForAudit(prose, epMeta.causal_change_record)
 
   const { text: chapterOutline } = resolveChapterOutline(pack)
   const meta = parseNovelMetadata(pack.drama.metadata)
 
   logTaskStart('Novel', 'continuity-check', { chapterId: id })
   try {
-    let auditContent = content
-    let proseToSave: string | undefined
-    let changeRecordToSave: string | undefined
-    if (isCausalChainEnabled(meta)) {
-      const ensured = await ensureCausalChangeRecordAppended({
-        content: auditContent,
-        chapterNumber: pack.episode.episodeNumber,
-        billing: novelTextBilling(user, '小说一致性审校补变更记录', id),
-      })
-      if (ensured.fixed) {
-        auditContent = ensured.content
-        const detached = detachChangeRecordForStorage(ensured.content)
-        proseToSave = detached.prose || undefined
-        changeRecordToSave = detached.changeBlock || undefined
-      }
-    }
-    const check = await checkNovelChapterContinuity({
-      content: auditContent,
-      chapterNumber: pack.episode.episodeNumber,
+    // 与流式降级审校共用：先补【变更记录】再审
+    const check = await checkAndSaveChapterContinuity({
+      content: prose,
       dramaId: pack.drama.id,
+      episodeId: id,
+      chapterNumber: pack.episode.episodeNumber,
       dramaTitle: pack.drama.title,
       meta,
       chapterOutline,
       billing: novelTextBilling(user, '小说一致性审校', id),
-    })
-    const metadata = mergeEpisodeMetadata(pack.episode.metadata, {
-      continuity_check: check,
-      ...(changeRecordToSave ? { causal_change_record: changeRecordToSave } : {}),
-    })
-    await updateNovelChapter(id, {
-      ...(proseToSave ? { content: proseToSave } : {}),
-      metadata,
-      updatedAt: now(),
     })
     logTaskSuccess('Novel', 'continuity-check', { chapterId: id, score: check.score, passed: check.passed })
     return success(c, check)
@@ -797,6 +776,73 @@ function aiDetectionIsStale(
   if (!trimmed) return true
   return saved.content_hash !== hashNovelContent(trimmed)
 }
+
+// GET /novel/review-platforms — 可选审稿平台列表
+app.get('/review-platforms', async (c) => {
+  const { listNovelReviewPlatforms } = await import('../../common/novel/novel-review-platforms.js')
+  return success(c, { platforms: listNovelReviewPlatforms() })
+})
+
+// POST /novel/chapters/:id/review — 多维审稿（平台标准 + novel_review + 句式预检）
+app.post('/chapters/:id/review', async (c) => {
+  const user = getAuthUser(c)
+  try {
+    await assertUserCanGenerate(user.id, user.role)
+  } catch (err: any) {
+    return badRequest(c, err.message)
+  }
+  const id = Number(c.req.param('id'))
+  const pack = await episodeAndDramaForUser(id, user.id)
+  if (!pack || !isNovelProject(pack.drama)) return notFound(c, '章节不存在')
+
+  const body = await c.req.json().catch(() => ({} as Record<string, unknown>))
+  const fromBody = typeof body.text === 'string' ? body.text.trim() : ''
+  const content = fromBody || (pack.episode.content || '').trim()
+  if (!content) return badRequest(c, '章节正文为空，无法审稿')
+
+  let meta = parseNovelMetadata(pack.drama.metadata)
+  const platformRaw = typeof body.platform === 'string' ? body.platform : meta.review_platform
+  if (typeof body.platform === 'string' && body.platform.trim() && body.platform !== meta.review_platform) {
+    const nextMeta = mergeNovelMetadata(pack.drama.metadata, { review_platform: body.platform.trim() })
+    await updateNovelDrama(pack.drama.id, { metadata: nextMeta, updatedAt: now() })
+    meta = parseNovelMetadata(nextMeta)
+  }
+
+  const chapterNumber = Number(pack.episode.episodeNumber) || 1
+  const chapterOutline = extractChapterOutline(meta.outline || '', chapterNumber) || undefined
+  const writingBrief = typeof pack.episode.scriptContent === 'string'
+    ? pack.episode.scriptContent
+    : undefined
+
+  logTaskStart('Novel', 'chapter-review', { chapterId: id, charCount: content.length, platform: platformRaw })
+  try {
+    const { runChapterReviewPipelineHook } = await import('../../services/novel/novel-chapter-review-hook.js')
+    const result = await runChapterReviewPipelineHook({
+      content,
+      episodeId: id,
+      chapterNumber,
+      dramaTitle: pack.drama.title,
+      meta,
+      writingBrief,
+      chapterOutline: chapterOutline || undefined,
+      platform: platformRaw,
+      force: true,
+      billing: novelTextBilling(user, '小说章节审稿', id),
+    })
+    if (!result) return badRequest(c, '审稿未返回结果')
+    logTaskSuccess('Novel', 'chapter-review', {
+      chapterId: id,
+      verdict: result.verdict,
+      findings: result.findings.length,
+      platform: result.platform,
+      blocking: result.pattern_scan.blocking_count,
+    })
+    return success(c, toSnakeCase(result))
+  } catch (err: any) {
+    logTaskError('Novel', 'chapter-review', { chapterId: id, error: err?.message })
+    return badRequest(c, err?.message || '审稿失败')
+  }
+})
 
 // POST /novel/chapters/:id/detect-ai — 困惑度检测（优先）+ 统计特征回退
 app.post('/chapters/:id/detect-ai', async (c) => {
@@ -1154,6 +1200,7 @@ app.post('/chapters/:id/generate/stream', async (c) => {
     endpointPending: outlineAlignForBeats.endpointPending,
     prevChapterTail: prevTailForBeats,
     chapterNumber: pack.episode.episodeNumber,
+    title: pack.drama.title,
   })
   const useBeatSequential = shouldUseBeatSequentialGenerate({
     beatCount: beatBudgets.beatCount,
@@ -1206,6 +1253,7 @@ app.post('/chapters/:id/generate/stream', async (c) => {
             chapter_craft: post.craft,
             outline_compliance: post.outline_compliance,
             ai_detection: post.ai_detection,
+            chapter_review: post.chapter_review,
             hard_reject: hardReject,
             status: hardReject ? '未通过' : '完成',
           })
@@ -1360,6 +1408,7 @@ app.post('/chapters/:id/generate/stream', async (c) => {
           chapter_craft: post.craft,
           outline_compliance: post.outline_compliance,
           ai_detection: post.ai_detection,
+          chapter_review: post.chapter_review,
           hard_reject: post.hard_reject === true,
         }
       } catch (err: any) {
@@ -1529,6 +1578,7 @@ app.post('/chapters/:id/generate', async (c) => {
       outline_compliance: pipeline.outline_compliance,
       chapter_craft: pipeline.craft,
       ai_detection: pipeline.ai_detection,
+      chapter_review: pipeline.chapter_review,
       hard_reject: hardReject,
     })
   } catch (err: any) {

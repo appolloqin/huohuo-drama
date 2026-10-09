@@ -126,6 +126,8 @@ export type EpisodeMetadata = {
   chapter_craft?: Record<string, unknown>
   /** 吸引力审（独立于 continuity_check；可与 chapter_craft.appeal 同源） */
   chapter_appeal?: Record<string, unknown>
+  /** 多维审稿（novel_review solo + 句式预检） */
+  chapter_review?: Record<string, unknown>
 }
 
 function parseContinuityCheck(raw: unknown): ContinuityCheckResult | undefined {
@@ -384,6 +386,9 @@ export function parseEpisodeMetadata(raw: JsonColumnInput): EpisodeMetadata {
   const causal_change_record = typeof obj.causal_change_record === 'string' && obj.causal_change_record.trim()
     ? obj.causal_change_record.trim()
     : undefined
+  const chapter_review = obj.chapter_review && typeof obj.chapter_review === 'object'
+    ? obj.chapter_review as Record<string, unknown>
+    : undefined
   return {
     ai_detection,
     continuity_ledger,
@@ -391,6 +396,7 @@ export function parseEpisodeMetadata(raw: JsonColumnInput): EpisodeMetadata {
     chapter_state_card,
     continuity_check,
     causal_change_record,
+    chapter_review,
   }
 }
 
@@ -491,6 +497,10 @@ export function mergeEpisodeMetadata(
   if ('chapter_appeal' in patch) {
     if (patch.chapter_appeal && typeof patch.chapter_appeal === 'object') next.chapter_appeal = patch.chapter_appeal
     else delete next.chapter_appeal
+  }
+  if ('chapter_review' in patch) {
+    if (patch.chapter_review && typeof patch.chapter_review === 'object') next.chapter_review = patch.chapter_review
+    else delete next.chapter_review
   }
   return JSON.stringify(next)
 }

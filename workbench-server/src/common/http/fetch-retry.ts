@@ -1,5 +1,5 @@
 const TRANSIENT_NETWORK_PATTERN =
-  /ECONNRESET|ETIMEDOUT|ECONNREFUSED|ENOTFOUND|EAI_AGAIN|socket hang up|fetch failed|Cannot connect to API|network error|aborted/i
+  /ECONNRESET|ETIMEDOUT|ECONNREFUSED|ENOTFOUND|EAI_AGAIN|socket hang up|fetch failed|Cannot connect to API|network error|network timeout|timeout at:|Headers Timeout|Connect Timeout|UND_ERR_|aborted|TimeoutError/i
 
 export function isTransientNetworkError(err: unknown): boolean {
   if (!err) return false

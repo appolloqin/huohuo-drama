@@ -21,6 +21,8 @@ const NOVEL_AGENT_TYPES = [
   'novel_outline',
   'novel_writing_brief',
   'novel_chapter_writer',
+  'novel_review',
+  'ai_dehumanizer',
 ]
 
 function trunc(s: string, max: number) {

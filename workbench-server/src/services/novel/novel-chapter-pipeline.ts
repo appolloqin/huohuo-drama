@@ -14,6 +14,7 @@ import {
   ensureCausalChangeRecordAppended,
   needsCausalChangeRecordFix,
   isOnlyCausalChangeRecordIssue,
+  hasValidChangeRecord,
   resolveFullChapterForAudit,
 } from './novel-causal-chain/index.js'
 import { hashNovelContent } from '../ai/ai-text-detection.js'
@@ -76,12 +77,13 @@ function buildHardRejectContinuityCheck(
 
 import { generateNovelChapterFull } from './novel-writing.js'
 import { normalizeNovelTemporalNumerals } from '../../common/novel/novel-temporal-numerals.js'
-import { preserveNovelLineLayout } from '../../common/novel/novel-paragraph-format.js'
+import { enforceNovelProseDeliveryLayout } from '../../common/novel/novel-paragraph-format.js'
 import {
   ContinuityRewriteAbortError,
   type ContinuityAbortReason,
 } from './novel-continuity-errors.js'
 import { runChapterCraftPipelineHook } from './novel-chapter-craft-hook.js'
+import { runChapterReviewPipelineHook } from './novel-chapter-review-hook.js'
 import { maybeFixChapterSeamOpening } from './novel-chapter-seam-fix.js'
 import { maybeFixOutlineCompliance } from './novel-outline-compliance-fix.js'
 import { maybeRepairNovelReplacementChars } from './novel-replacement-char-fix.js'
@@ -189,6 +191,7 @@ export type NovelChapterPipelineResult = {
   craft?: import('./novel-chapter-craft-check.js').ChapterCraftResult | null
   outline_compliance?: import('./novel-outline-compliance-fix.js').OutlineComplianceReport | null
   ai_detection?: EpisodeAiDetection | null
+  chapter_review?: import('./novel-chapter-review.js').ChapterReviewResult | null
   hard_reject?: boolean
 }
 
@@ -216,6 +219,7 @@ export async function postProcessNovelChapterContent(args: {
   causal_change_record?: string
   outline_compliance?: import('./novel-outline-compliance-fix.js').OutlineComplianceReport | null
   ai_detection?: EpisodeAiDetection | null
+  chapter_review?: import('./novel-chapter-review.js').ChapterReviewResult | null
   hard_reject?: boolean
 }> {
   const {
@@ -245,49 +249,32 @@ export async function postProcessNovelChapterContent(args: {
   let check: ContinuityCheckResult | null = null
   let outlineCompliance: import('./novel-outline-compliance-fix.js').OutlineComplianceReport | null = null
 
+  /** 与正文分离的变更记录；审校临时拼接，禁止写回 content */
+  let workingChangeRecord: string | undefined
+
   const runStreamContinuityCheck = async (reason: string) => {
-    // ??????? rewrite ????????????????????/Craft ???????????
+    // 写章不附变更记录：审前固定补一次（正文 / 记录分离）
     if (isCausalChainEnabled(meta)) {
-      onProgress?.('?????')
+      onProgress?.('生成变更记录')
       const ensured = await ensureCausalChangeRecordAppended({
         content,
         chapterNumber,
         force: true,
+        storedChangeRecord: workingChangeRecord,
         billing: billing ? { ...billing, reason: `流式审校前生成变更记录（${reason}）` } : undefined,
       })
-      content = ensured.content
+      content = ensured.prose
+      if (ensured.changeBlock) workingChangeRecord = ensured.changeBlock
     }
-    let checkResult = await checkNovelChapterContinuity({
-      content,
+    return checkNovelChapterContinuity({
+      content: resolveFullChapterForAudit(content, workingChangeRecord),
       chapterNumber,
       dramaId,
       dramaTitle,
       meta,
       chapterOutline,
-      billing: billing ? { ...billing, reason: `???????${reason}` } : undefined,
+      billing: billing ? { ...billing, reason: `小说一致性审校${reason}` } : undefined,
     })
-    if (!checkResult.passed && isOnlyCausalChangeRecordIssue(checkResult) && isCausalChainEnabled(meta)) {
-      onProgress?.('?????')
-      const fixed = await ensureCausalChangeRecordAppended({
-        content,
-        chapterNumber,
-        force: true,
-        billing: billing ? { ...billing, reason: `流式审校补生成变更记录（${reason}）` } : undefined,
-      })
-      if (fixed.fixed) {
-        content = fixed.content
-        checkResult = await checkNovelChapterContinuity({
-          content,
-          chapterNumber,
-          dramaId,
-          dramaTitle,
-          meta,
-          chapterOutline,
-          billing: billing ? { ...billing, reason: `???????${reason}?????????` } : undefined,
-        })
-      }
-    }
-    return checkResult
   }
 
   if (!skipCheck) {
@@ -446,6 +433,7 @@ export async function postProcessNovelChapterContent(args: {
     } else {
       content = humanizeOut.content
       aiDetection = humanizeOut.ai_detection
+      if (humanizeOut.causal_change_record) workingChangeRecord = humanizeOut.causal_change_record
     }
     if (chapterNumber >= 2 && prevTail.trim()) {
       const { stripSeamReplayOpening, detectChapterSeamReplay } = await import('./novel-chapter-seam.js')
@@ -560,9 +548,11 @@ export async function postProcessNovelChapterContent(args: {
       content,
       chapterNumber,
       force: true,
+      storedChangeRecord: workingChangeRecord,
       billing: billing ? { ...billing, reason: '跳过审校时生成变更记录' } : undefined,
     })
-    content = ensured.content
+    content = ensured.prose
+    if (ensured.changeBlock) workingChangeRecord = ensured.changeBlock
   }
 
   let ledger: NovelContinuityLedger | null = null
@@ -588,12 +578,15 @@ export async function postProcessNovelChapterContent(args: {
     })
   }
 
-  let causalChangeRecord: string | undefined
+  let causalChangeRecord: string | undefined = workingChangeRecord
   if (isCausalChainEnabled(meta)) {
+    // 兜底：若正文仍粘有记录则拆出；正常路径 content 已是纯正文
     const detached = detachChangeRecordForStorage(content)
     if (detached.changeBlock) {
       content = detached.prose
       causalChangeRecord = detached.changeBlock
+    }
+    if (causalChangeRecord) {
       const ep = await episodesRepo.findEpisodeById(episodeId)
       const metadata = mergeEpisodeMetadata(ep?.metadata, {
         causal_change_record: causalChangeRecord,
@@ -610,10 +603,12 @@ export async function postProcessNovelChapterContent(args: {
     })
     content = repaired.content
   }
-  content = normalizeNovelTemporalNumerals(preserveNovelLineLayout('', content))
+  content = normalizeNovelTemporalNumerals(enforceNovelProseDeliveryLayout(content))
   {
     const { stripIntraChapterNearDuplicate } = await import('./novel-intra-chapter-dedupe.js')
     content = stripIntraChapterNearDuplicate(content).text
+    // 去重后可能粘段，交付口再验一次
+    content = enforceNovelProseDeliveryLayout(content)
   }
   {
     const target = Math.min(20000, Math.max(500, Number(generateArgs?.targetLength) || 3000))
@@ -636,6 +631,22 @@ export async function postProcessNovelChapterContent(args: {
     assertNovelChapterLengthBand({ text: content, minLen, maxLen, chapterNumber })
   }
 
+  // 平台审稿（建议级：落库供 UI，不因 REJECT 清空正文）
+  let chapterReview: import('./novel-chapter-review.js').ChapterReviewResult | null = null
+  if (content.trim()) {
+    onProgress?.('平台审稿中…')
+    chapterReview = await runChapterReviewPipelineHook({
+      content,
+      episodeId,
+      chapterNumber,
+      dramaTitle,
+      meta,
+      writingBrief: generateArgs?.prompt,
+      chapterOutline,
+      billing: billing ? { ...billing, reason: '小说章节平台审稿' } : undefined,
+    })
+  }
+
   // 一致性未通过：不交付正文（避免覆盖/落库毒稿；审校结果仍返回给 UI）
   if (check && check.passed === false) {
     logTaskWarn('Novel', 'post-process-continuity-fail-block-deliver', {
@@ -651,6 +662,7 @@ export async function postProcessNovelChapterContent(args: {
       causal_change_record: causalChangeRecord,
       outline_compliance: outlineCompliance,
       ai_detection: aiDetection,
+      chapter_review: chapterReview,
       hard_reject: true,
     }
   }
@@ -663,6 +675,7 @@ export async function postProcessNovelChapterContent(args: {
     causal_change_record: causalChangeRecord,
     outline_compliance: outlineCompliance,
     ai_detection: aiDetection,
+    chapter_review: chapterReview,
   }
 }
 
@@ -721,6 +734,8 @@ export async function runNovelChapterPipeline(args: {
   let stagnantRewrites = 0
   let rejectedIssueStreak = 0
   let lastRejectedFingerprint = ''
+  /** 与正文分离；审校用 resolveFullChapterForAudit，禁止写回 content */
+  let workingChangeRecord: string | undefined
   const rewriteLog: ContinuityRewriteLogEntry[] = []
 
   const rejectedFingerprint = (check: ContinuityCheckResult): string => {
@@ -765,19 +780,21 @@ export async function runNovelChapterPipeline(args: {
       content,
       chapterNumber,
       force: true,
+      storedChangeRecord: workingChangeRecord,
       billing: billing ? { ...billing, reason } : undefined,
     })
-    content = ensured.content
+    content = ensured.prose
+    if (ensured.changeBlock) workingChangeRecord = ensured.changeBlock
     return ensured.fixed
   }
 
   const runCheck = async (reasonSuffix = '') => {
-    await maybeEnsureChangeRecord(`?????????${reasonSuffix}`)
+    await maybeEnsureChangeRecord(`审前补变更记录${reasonSuffix}`)
     onPhase?.('check')
     assertNotStopped()
-    const reason = `???????${reasonSuffix}`
+    const reason = `小说一致性审校${reasonSuffix}`
     const checkResult = await checkNovelChapterContinuity({
-      content,
+      content: resolveFullChapterForAudit(content, workingChangeRecord),
       chapterNumber,
       dramaId,
       dramaTitle,
@@ -1058,6 +1075,7 @@ export async function runNovelChapterPipeline(args: {
     } else {
       content = humanizeOut.content
       aiDetection = humanizeOut.ai_detection
+      if (humanizeOut.causal_change_record) workingChangeRecord = humanizeOut.causal_change_record
       if (humanizeOut.humanize_attempts > 0) rewritten = true
     }
     if (chapterNumber >= 2 && prevTailBatch.trim()) {
@@ -1163,20 +1181,20 @@ export async function runNovelChapterPipeline(args: {
         await updateCausalChainFromChapter({
           dramaId,
           chapterNumber,
-          fullContent: content,
+          fullContent: resolveFullChapterForAudit(content, workingChangeRecord),
           dramaTitle,
-          billing: billing ? { ...billing, reason: '?????' } : undefined,
+          billing: billing ? { ...billing, reason: '更新因果链' } : undefined,
         })
       } catch (err: any) {
         logTaskError('Novel', 'causal-chain-update', {
           chapterId: episodeId,
-          error: err?.message || '???????',
+          error: err?.message || '因果链更新失败',
         })
       }
     }
   }
 
-  let causalChangeRecord: string | undefined
+  let causalChangeRecord: string | undefined = workingChangeRecord
   if (isCausalChainEnabled(meta)) {
     const detached = detachChangeRecordForStorage(content)
     if (detached.changeBlock) {
@@ -1194,10 +1212,11 @@ export async function runNovelChapterPipeline(args: {
       })
       content = repaired.content
     }
-    content = normalizeNovelTemporalNumerals(preserveNovelLineLayout('', content))
+    content = normalizeNovelTemporalNumerals(enforceNovelProseDeliveryLayout(content))
     {
       const { stripIntraChapterNearDuplicate } = await import('./novel-intra-chapter-dedupe.js')
       content = stripIntraChapterNearDuplicate(content).text
+      content = enforceNovelProseDeliveryLayout(content)
     }
     const target = Math.min(20000, Math.max(500, Number(generateArgs?.targetLength) || 3000))
     const minLen = Math.round(target * 0.88)
@@ -1219,6 +1238,21 @@ export async function runNovelChapterPipeline(args: {
     assertNovelChapterLengthBand({ text: content, minLen, maxLen, chapterNumber })
   }
 
+  let chapterReview: import('./novel-chapter-review.js').ChapterReviewResult | null = null
+  if (content.trim()) {
+    onPhase?.('rewrite', { status: '平台审稿中…', review: true })
+    chapterReview = await runChapterReviewPipelineHook({
+      content,
+      episodeId,
+      chapterNumber,
+      dramaTitle,
+      meta,
+      writingBrief: generateArgs.prompt,
+      chapterOutline,
+      billing: billing ? { ...billing, reason: '小说章节平台审稿' } : undefined,
+    })
+  }
+
   // 一致性未通过：不交付正文，避免覆盖原文 / 数字作家落库毒稿
   if (check && check.passed === false) {
     logTaskWarn('Novel', 'pipeline-continuity-fail-block-deliver', {
@@ -1237,6 +1271,7 @@ export async function runNovelChapterPipeline(args: {
       outline_compliance: outlineCompliance,
       craft,
       ai_detection: aiDetection,
+      chapter_review: chapterReview,
       hard_reject: true,
     }
   }
@@ -1252,6 +1287,7 @@ export async function runNovelChapterPipeline(args: {
     outline_compliance: outlineCompliance,
     craft,
     ai_detection: aiDetection,
+    chapter_review: chapterReview,
   }
 }
 
@@ -1267,7 +1303,10 @@ async function saveContinuityCheck(episodeId: number, check: ContinuityCheckResu
   await episodesRepo.updateEpisode(episodeId, { metadata, updatedAt: now() })
 }
 
-/** ???????????? metadata?????? */
+/**
+ * 一致性审校入口（含流式降级、手动复审）：
+ * 因果链模式下先补【变更记录】再审，与正常 postProcess 对齐，避免「只审正文 → 硬挂缺记录」。
+ */
 export async function checkAndSaveChapterContinuity(args: {
   content: string
   dramaId: number
@@ -1278,16 +1317,47 @@ export async function checkAndSaveChapterContinuity(args: {
   chapterOutline?: string
   billing?: TextBillingContext
 }): Promise<ContinuityCheckResult> {
-  const ep = await episodesRepo.findEpisodeById(args.episodeId)
+  const { episodeId, chapterNumber, meta, billing } = args
+  const ep = await episodesRepo.findEpisodeById(episodeId)
   const epMeta = parseEpisodeMetadata(ep?.metadata)
-  const auditContent = resolveFullChapterForAudit(args.content, epMeta.causal_change_record)
+
+  // 写章禁止附【变更记录】：审前补记录并与正文分离落库
+  let proseToSave = detachChangeRecordForStorage(args.content).prose || args.content.trim()
+  let changeRecordToSave: string | undefined
+  let auditContent = resolveFullChapterForAudit(proseToSave, epMeta.causal_change_record)
+
+  if (isCausalChainEnabled(meta)) {
+    const ensured = await ensureCausalChangeRecordAppended({
+      content: proseToSave,
+      chapterNumber,
+      force: true,
+      storedChangeRecord: epMeta.causal_change_record,
+      billing: billing
+        ? { ...billing, reason: '一致性审校前补变更记录' }
+        : undefined,
+    })
+    proseToSave = ensured.prose
+    if (ensured.changeBlock && hasValidChangeRecord(ensured.changeBlock)) {
+      changeRecordToSave = ensured.changeBlock
+    }
+    auditContent = ensured.auditContent
+  }
 
   const check = await checkNovelChapterContinuity({
     ...args,
     content: auditContent,
-    billing: args.billing ? { ...args.billing, reason: '???????' } : undefined,
+    billing: billing ? { ...billing, reason: '小说一致性审校' } : undefined,
   })
-  await saveContinuityCheck(args.episodeId, check)
+
+  const metadata = mergeEpisodeMetadata(ep?.metadata, {
+    continuity_check: check,
+    ...(changeRecordToSave ? { causal_change_record: changeRecordToSave } : {}),
+  })
+  await episodesRepo.updateEpisode(episodeId, {
+    content: proseToSave,
+    metadata,
+    updatedAt: now(),
+  })
   return check
 }
 

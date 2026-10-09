@@ -6,7 +6,11 @@
  * - 引号内句末标点不拆句；跨段未闭合对白须粘回
  */
 
-import { normalizeNovelDialogueQuotes } from './novel-dialogue-quotes.js'
+import {
+  dialogueQuoteOpenDepth,
+  normalizeNovelDialogueQuotes,
+  repairUnbalancedDialogueQuotes,
+} from './novel-dialogue-quotes.js'
 
 const QUOTE_OPEN = new Set(['“', '「', '『'])
 const QUOTE_CLOSE = new Set(['”', '」', '』'])
@@ -50,10 +54,19 @@ function splitSentences(text: string): string[] {
 
     if (!/[。！？!?]/.test(ch)) continue
     const next = text[i + 1]
-    // “十九。” —— 句号后紧跟收引号，同属一句
-    if (next && QUOTE_CLOSE.has(next)) continue
-    // 引号内多句对白：保持同一句单元，避免拆段后右引号落在下一段
-    if (depth > 0) continue
+    // “西口。” / “人呢？”——句末标点+收引号：纳入同句并断句
+    // （旧逻辑 continue 不拆，会把整章对白糊成一段墙）
+    if (next && QUOTE_CLOSE.has(next)) {
+      buf += next
+      i += 1
+      if (depth > 0) depth -= 1
+      const trimmedClose = buf.trim()
+      if (trimmedClose) out.push(trimmedClose)
+      buf = ''
+      continue
+    }
+    // 引号内多句对白：保持同一句单元；但丢收引号时不得锁死整章
+    if (depth > 0 && buf.length < MAX_OPEN_QUOTE_PROTECT_CHARS) continue
     const trimmed = buf.trim()
     if (trimmed) out.push(trimmed)
     buf = ''
@@ -122,6 +135,10 @@ function isUltraShortFragment(sentence: string): boolean {
 }
 
 const MAX_SENTENCES_PER_PARAGRAPH = 3
+/** 引号内对白保护上限：丢收引号时禁止锁死整章拆句 */
+const MAX_OPEN_QUOTE_PROTECT_CHARS = 160
+/** 桶内强制换段字数（含未闭合引号） */
+const HARD_FLUSH_CHARS = 280
 
 /** 用引号感知拆句计数，避免引号内多句被当成超限而硬拆 */
 function sentenceCountInBlock(block: string): number {
@@ -174,8 +191,10 @@ function splitWallIntoParagraphs(text: string): string[] {
     const preferFlush = bucket.length >= sentTarget
       || bucket.length >= MAX_SENTENCES_PER_PARAGRAPH
       || bucketChars >= charTarget
-    // 桶内若仍有未闭合引号，禁止换段
-    if (preferFlush && !isUltraShortFragment(sent) && quoteOpenDepth(bucket.join('')) === 0) {
+    const openDepth = quoteOpenDepth(bucket.join(''))
+    // 正常：引号未闭合不换段；硬上限：丢收引号也必须换段，避免文字墙
+    const canFlush = openDepth === 0 || bucketChars >= HARD_FLUSH_CHARS
+    if (preferFlush && !isUltraShortFragment(sent) && canFlush) {
       flush()
     }
   }
@@ -255,6 +274,55 @@ export function enforceMaxSentencesPerParagraph(
   return repairNovelQuoteParagraphs(mergeOrphanShortParagraphs(out.join('\n\n')))
 }
 
+/**
+ * 与交付闸门 DELIVERY_MAX_PARAGRAPH_CHARS 对齐：句数合规但字数超限时按句/硬切。
+ * 写侧已要求 ≤420 字/段；此处保证程序可修，避免「模型按 3 句写却因长句被闸门打回」。
+ */
+export function enforceMaxCharsPerParagraph(
+  text: string,
+  maxChars = 420,
+): string {
+  const trimmed = text.replace(/\r\n/g, '\n').trim()
+  if (!trimmed) return trimmed
+  const blocks = paragraphBlocks(trimmed)
+  const out: string[] = []
+  for (const block of blocks) {
+    if (block.length <= maxChars) {
+      out.push(block)
+      continue
+    }
+    const bySent = splitWallIntoParagraphs(block)
+    if (bySent.length > 1 && bySent.every(p => p.length <= maxChars)) {
+      out.push(...bySent)
+      continue
+    }
+    // 仍超长：按句累加；单句超长则硬切
+    const sents = splitSentences(block)
+    let bucket = ''
+    const flush = () => {
+      const t = bucket.trim()
+      if (t) out.push(t)
+      bucket = ''
+    }
+    for (const sent of sents) {
+      if (!sent) continue
+      if (sent.length > maxChars) {
+        flush()
+        const step = Math.max(120, Math.floor(maxChars * 0.7))
+        for (let i = 0; i < sent.length; i += step) {
+          const chunk = sent.slice(i, i + step).trim()
+          if (chunk) out.push(chunk)
+        }
+        continue
+      }
+      if (bucket && bucket.length + sent.length > maxChars) flush()
+      bucket += sent
+    }
+    flush()
+  }
+  return repairNovelQuoteParagraphs(mergeOrphanShortParagraphs(out.join('\n\n')))
+}
+
 function isOrphanShortBeat(block: string): boolean {
   const t = block.trim()
   if (!t || t.length > 12) return false
@@ -283,7 +351,24 @@ export function mergeLeadingCloseQuoteParagraphs(text: string): string {
 }
 
 /**
- * 上一段对白未闭合（开引号多于收引号）时，与下一段粘回，避免右引号落在下一段开头。
+ * 下一段是否像「未闭合对白的续句」（含收引号或短碎片）。
+ * 禁止：仅因上段丢收引号就把整章后文全部粘回。
+ */
+function looksLikeUnclosedDialogueContinuation(next: string): boolean {
+  const t = next.trim()
+  if (!t) return false
+  if (/^[」』”]/.test(t)) return true
+  // 续句里很快出现收引号（模型把右引号拆到下一段）
+  const early = t.slice(0, 96)
+  if (/[」』”]/.test(early)) return true
+  // 极短碎片（非新叙述墙）
+  if ([...t].length <= 36 && sentenceCountInBlock(t) <= 1) return true
+  return false
+}
+
+/**
+ * 上一段对白未闭合（开引号多于收引号）时，与「像续句」的下一段粘回。
+ * 若下一段已是新叙述墙，不粘——否则丢一个收引号会把整章糊成一段。
  */
 export function mergeUnclosedDialogueParagraphs(text: string): string {
   const blocks = paragraphBlocks(text)
@@ -292,7 +377,11 @@ export function mergeUnclosedDialogueParagraphs(text: string): string {
   for (const raw of blocks) {
     const b = raw.trim()
     if (!b) continue
-    if (merged.length && quoteOpenDepth(merged[merged.length - 1]!) > 0) {
+    if (
+      merged.length
+      && quoteOpenDepth(merged[merged.length - 1]!) > 0
+      && looksLikeUnclosedDialogueContinuation(b)
+    ) {
       merged[merged.length - 1] = `${merged[merged.length - 1]}${b}`
       continue
     }
@@ -425,4 +514,78 @@ export function normalizeNovelParagraphs(text: string): string {
   const trimmed = text.replace(/\r\n/g, '\n').trim()
   if (!trimmed) return trimmed
   return toNaturalNovelParagraphs(trimmed)
+}
+
+const DELIVERY_MAX_PARAGRAPH_CHARS = 420
+
+export type NovelProseLayoutContract = {
+  ok: boolean
+  reasons: string[]
+}
+
+/** 交付合同：引号成对 + 不得文字墙（程序可验，不靠题材词表） */
+export function assertNovelProseLayoutContract(text: string): NovelProseLayoutContract {
+  const trimmed = (text || '').replace(/\r\n/g, '\n').trim()
+  const reasons: string[] = []
+  if (!trimmed) return { ok: true, reasons }
+  if (dialogueQuoteOpenDepth(trimmed) > 0) {
+    reasons.push('对白引号未闭合')
+  }
+  const opens = (trimmed.match(/“/g) || []).length
+  const closes = (trimmed.match(/”/g) || []).length
+  if (opens !== closes) {
+    reasons.push(`对白引号不成对（开${opens}/收${closes}）`)
+  }
+  const blocks = paragraphBlocks(trimmed)
+  const maxLen = blocks.length ? Math.max(...blocks.map(b => b.length)) : 0
+  // 只拦句数墙/超长段；勿把「短段较多」当成墙（字数硬切后常见）
+  if (blocks.some(b => sentenceCountInBlock(b) > MAX_SENTENCES_PER_PARAGRAPH) || maxLen > DELIVERY_MAX_PARAGRAPH_CHARS) {
+    reasons.push('存在超长段或单段墙，须短段空行')
+  }
+  if (maxLen > DELIVERY_MAX_PARAGRAPH_CHARS) {
+    reasons.push(`单段过长（${maxLen}>${DELIVERY_MAX_PARAGRAPH_CHARS}）`)
+  }
+  // 正文够长却几乎无段间空行 → 墙
+  const chars = [...trimmed.replace(/\s+/g, '')].length
+  if (chars >= 400 && blocks.length <= 1) {
+    reasons.push('整章无分段')
+  }
+  return { ok: reasons.length === 0, reasons }
+}
+
+export class NovelProseLayoutError extends Error {
+  readonly reasons: string[]
+  constructor(reasons: string[]) {
+    super(`正文排版交付合同未通过：${reasons.join('；')}`)
+    this.name = 'NovelProseLayoutError'
+    this.reasons = reasons
+  }
+}
+
+/**
+ * 交付口强制排版（方案 B）：
+ * 1) 修未闭合引号 2) 强制自然短段 3) 再验合同；仍失败则抛错，禁止落库文字墙。
+ */
+export function enforceNovelProseDeliveryLayout(text: string, opts?: { throwOnFail?: boolean }): string {
+  const throwOnFail = opts?.throwOnFail !== false
+  let out = (text || '').replace(/\r\n/g, '\n').trim()
+  if (!out) return out
+
+  out = repairUnbalancedDialogueQuotes(out)
+  out = toNaturalNovelParagraphs(out)
+  out = enforceMaxSentencesPerParagraph(mergeOrphanShortParagraphs(out))
+  out = enforceMaxCharsPerParagraph(out, DELIVERY_MAX_PARAGRAPH_CHARS)
+
+  let gate = assertNovelProseLayoutContract(out)
+  if (!gate.ok) {
+    // 第二轮：再修引号 + 全量重切 + 字数硬切（与写侧 420 字合同对齐）
+    out = toNaturalNovelParagraphs(repairUnbalancedDialogueQuotes(out))
+    out = enforceMaxSentencesPerParagraph(mergeOrphanShortParagraphs(out))
+    out = enforceMaxCharsPerParagraph(out, DELIVERY_MAX_PARAGRAPH_CHARS)
+    gate = assertNovelProseLayoutContract(out)
+  }
+  if (!gate.ok && throwOnFail) {
+    throw new NovelProseLayoutError(gate.reasons)
+  }
+  return out
 }
