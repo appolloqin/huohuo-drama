@@ -35,6 +35,7 @@ export type PaymentProviderConfigRow = typeof sqliteSchema.paymentProviderConfig
 export type BatchJobRow = typeof sqliteSchema.batchJobs.$inferSelect
 export type AiDetectRunRow = typeof sqliteSchema.aiDetectRuns.$inferSelect
 export type AiDetectFeedbackRow = typeof sqliteSchema.aiDetectFeedback.$inferSelect
+export type NovelHotRankItemRow = typeof sqliteSchema.novelHotRankItems.$inferSelect
 
 export type AiDetectRunCacheKey = {
   contentHash: string

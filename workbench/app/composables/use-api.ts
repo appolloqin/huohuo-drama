@@ -630,7 +630,46 @@ export type NovelHotSource = {
   title: string
 }
 
+export type HotRankPlatform = 'fanqie' | 'qidian' | 'jinjiang' | 'qimao'
+
+export type HotRankMapped = {
+  genrePrimary?: string
+  genreSecondary?: string[]
+  worldviewId?: string
+  cultivationId?: string
+  goldenFingerId?: string
+}
+
+export type HotRankItem = {
+  platform: HotRankPlatform
+  externalId: string
+  title: string
+  tags: string[]
+  heat: number
+  blurbShort: string
+  mapped: HotRankMapped
+  fetchedAt: string
+}
+
+export type HotRankListResult = {
+  items: HotRankItem[]
+  stale: boolean
+  error?: string
+}
+
+export type HotRankRefreshResult = {
+  platforms: Array<{ platform: HotRankPlatform; count: number; skipped?: boolean; error?: string }>
+  total: number
+}
+
 export const novelAPI = {
+  hotRank: (platform: HotRankPlatform) =>
+    api.get<HotRankListResult>(`/novel/hot-rank?platform=${encodeURIComponent(platform)}`),
+  refreshHotRank: (platform?: HotRankPlatform) =>
+    api.post<HotRankRefreshResult>(
+      '/novel/hot-rank/refresh',
+      platform ? { platform } : {},
+    ),
   generatePremise: (body: {
     keywords: string
     title?: string

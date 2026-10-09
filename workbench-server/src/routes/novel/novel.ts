@@ -41,20 +41,12 @@ import {
 import { upgradePromptToDramaOutline } from '../../services/novel/novel-outline-drama-fields.js'
 import { detachChangeRecordForStorage } from '../../services/novel/novel-causal-chain/index.js'
 import type { TextBillingContext } from '../../services/ai/ai.js'
-
-function novelTextBilling(
-  user: { id: number; role?: string },
-  reason: string,
-  resourceId?: number,
-): TextBillingContext {
-  return {
-    userId: user.id,
-    role: user.role,
-    reason,
-    resourceType: 'novel',
-    resourceId,
-  }
-}
+import {
+  HOT_RANK_PLATFORMS,
+  isHotRankPlatform,
+  listHotRank,
+  refreshHotRank,
+} from '../../services/novel/novel-hot-rank/index.js'
 import {
   isNovelProject,
   mergeNovelMetadata,
@@ -109,6 +101,20 @@ import * as episodesRepo from '../../db/repos/episodes/index.js'
 import { NovelMemoryManager, novelMemoryPaths, readAnchor, writeAnchor } from '../../services/novel/novel-memory/index.js'
 import fs from 'fs'
 
+function novelTextBilling(
+  user: { id: number; role?: string },
+  reason: string,
+  resourceId?: number,
+): TextBillingContext {
+  return {
+    userId: user.id,
+    role: user.role,
+    reason,
+    resourceType: 'novel',
+    resourceId,
+  }
+}
+
 function resolveChapterOutline(pack: { episode: { episodeNumber: number; description: string | null }; drama: { metadata: string | null } }) {
   const custom = pack.episode.description?.trim()
   if (custom) return { text: custom, source: 'episode' as const }
@@ -135,6 +141,35 @@ function resolveContinueSegmentChars(body: { length?: unknown }, meta: NovelMeta
 }
 
 const app = new Hono()
+
+// GET /novel/hot-rank?platform= — 平台热榜缓存（失败仍 200 + error）
+app.get('/hot-rank', async (c) => {
+  getAuthUser(c)
+  const platform = (c.req.query('platform') || '').trim()
+  if (!isHotRankPlatform(platform)) {
+    return badRequest(
+      c,
+      `platform 须为 ${HOT_RANK_PLATFORMS.join('|')}`,
+    )
+  }
+  const result = await listHotRank(platform)
+  return success(c, result)
+})
+
+// POST /novel/hot-rank/refresh — 拉取 Provider 并写缓存（P1：任意登录用户可用）
+app.post('/hot-rank/refresh', async (c) => {
+  getAuthUser(c)
+  const body = await c.req.json().catch(() => ({} as { platform?: string }))
+  const raw = typeof body.platform === 'string' ? body.platform.trim() : ''
+  if (raw && !isHotRankPlatform(raw)) {
+    return badRequest(
+      c,
+      `platform 须为 ${HOT_RANK_PLATFORMS.join('|')}`,
+    )
+  }
+  const result = await refreshHotRank(raw ? raw : undefined)
+  return success(c, result)
+})
 
 // GET /novel/import-sources — 短剧原始内容可引用的小说项目列表
 app.get('/import-sources', async (c) => {

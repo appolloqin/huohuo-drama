@@ -15,13 +15,80 @@
 
     <div class="ideate-layout" :class="{ 'hot-collapsed': !hotOpen }">
       <aside v-show="hotOpen" class="ideate-hot card">
-        <h2 class="panel-title">{{ tm.ideate.hotPlaceholderTitle }}</h2>
-        <p class="panel-desc">{{ tm.ideate.hotPlaceholderDesc }}</p>
-        <div class="hot-placeholder-block">
+        <div class="hot-panel-head">
+          <div>
+            <h2 class="panel-title">
+              {{ tm.ideate.hotTitle }}
+              <span v-if="hotStale" class="hot-stale-badge">{{ tm.ideate.hotStale }}</span>
+            </h2>
+            <p class="panel-desc">{{ tm.ideate.hotDesc }}</p>
+          </div>
+          <button
+            type="button"
+            class="btn hot-refresh-btn"
+            :disabled="hotRefreshBusy || hotLoading"
+            @click="refreshHot"
+          >{{ hotRefreshBusy ? tm.ideate.hotRefreshing : tm.ideate.hotRefresh }}</button>
+        </div>
+
+        <div class="hot-platform-tabs" role="tablist">
+          <button
+            v-for="p in hotPlatforms"
+            :key="p"
+            type="button"
+            role="tab"
+            :class="['hot-platform-tab', { active: hotPlatform === p }]"
+            :aria-selected="hotPlatform === p"
+            @click="selectHotPlatform(p)"
+          >{{ tm.ideate.hotPlatforms[p] }}</button>
+        </div>
+
+        <div v-if="hotGenreChips.length" class="hot-genre-block">
+          <span class="hot-genre-label">{{ tm.ideate.hotGenreChips }}</span>
+          <div class="hot-genre-chips">
+            <button
+              v-for="tag in hotGenreChips"
+              :key="tag"
+              type="button"
+              class="hot-genre-chip"
+              @click="onHotGenreChip(tag)"
+            >{{ tag }}</button>
+          </div>
+        </div>
+
+        <p class="hot-disclaimer">{{ tm.ideate.hotDisclaimer }}</p>
+
+        <div v-if="hotLoading" class="hot-placeholder-block">
           <div class="hot-skeleton" />
           <div class="hot-skeleton" />
           <div class="hot-skeleton short" />
         </div>
+        <template v-else>
+          <p v-if="hotError" class="hot-state hot-state-error">{{ hotError }}</p>
+          <p v-else-if="!hotItems.length" class="hot-state">{{ tm.ideate.hotEmpty }}</p>
+          <div v-if="hotItems.length" class="hot-list">
+          <article
+            v-for="item in hotItems"
+            :key="`${item.platform}-${item.externalId}`"
+            class="hot-card"
+          >
+            <div class="hot-card-top">
+              <h3 class="hot-card-title">{{ item.title }}</h3>
+              <span class="hot-card-heat">{{ tm.ideate.hotHeat }} {{ formatHeat(item.heat) }}</span>
+            </div>
+            <div v-if="item.tags?.length" class="hot-card-tags">
+              <span v-for="tag in item.tags.slice(0, 6)" :key="tag" class="hot-tag">{{ tag }}</span>
+            </div>
+            <p v-if="item.blurbShort" class="hot-card-blurb">{{ item.blurbShort }}</p>
+            <button
+              type="button"
+              class="btn btn-primary hot-apply-btn"
+              :disabled="applyBusy || premiseBusy"
+              @click="applyHotItem(item)"
+            >{{ applyBusyKey === itemKey(item) ? tm.ideate.hotApplying : tm.ideate.hotApply }}</button>
+          </article>
+          </div>
+        </template>
       </aside>
 
       <section class="ideate-form card">
@@ -33,6 +100,7 @@
               class="input"
               :placeholder="tm.ideate.titlePlaceholder"
               required
+              @input="markDirty('title')"
             />
             <button
               type="button"
@@ -102,6 +170,7 @@
             class="input textarea"
             rows="2"
             :placeholder="tm.ideate.worldviewCustomPlaceholder"
+            @input="markDirty('worldview')"
           />
         </div>
 
@@ -133,6 +202,7 @@
             class="input textarea"
             rows="2"
             :placeholder="tm.ideate.cultivationCustomPlaceholder"
+            @input="markDirty('cultivation')"
           />
         </div>
 
@@ -164,6 +234,7 @@
             class="input textarea"
             rows="2"
             :placeholder="tm.ideate.goldenFingerCustomPlaceholder"
+            @input="markDirty('goldenFinger')"
           />
         </div>
 
@@ -174,6 +245,7 @@
               v-model="keywords"
               class="input"
               :placeholder="tm.ideate.keywordsPlaceholder"
+              @input="markDirty('keywords')"
               @keydown.enter.prevent="synthesizePremise"
             />
             <button
@@ -192,6 +264,7 @@
             class="input textarea"
             rows="5"
             :placeholder="tm.ideate.premisePlaceholder"
+            @input="markDirty('premise')"
           />
         </label>
 
@@ -227,6 +300,9 @@ definePageMeta({ name: 'novel-ideate' })
 const { messages: tm, init } = useI18n()
 const { canGenerate, guardGenerate } = useCreditsGate()
 
+const HOT_PLATFORMS = ['fanqie', 'qidian', 'jinjiang', 'qimao']
+const HOT_CHIP_LIMIT = 12
+
 const title = ref('')
 const totalChapters = ref(10)
 const primarySkillKey = ref('')
@@ -243,6 +319,18 @@ const premiseBusy = ref(false)
 const createBusy = ref(false)
 const titleBusy = ref(false)
 const hotOpen = ref(true)
+
+const hotPlatforms = HOT_PLATFORMS
+const hotPlatform = ref('fanqie')
+const hotItems = ref([])
+const hotStale = ref(false)
+const hotLoading = ref(false)
+const hotRefreshBusy = ref(false)
+const hotError = ref('')
+const applyBusy = ref(false)
+const applyBusyKey = ref('')
+const dirtyFields = ref(new Set())
+let suppressDirty = false
 
 const worldviewCustomEl = ref(null)
 const cultivationCustomEl = ref(null)
@@ -261,6 +349,51 @@ const showCultivation = computed(() => isCultivationPowerGenre(primaryLabel.valu
 const worldviewOptions = computed(() => listWorldviews(primarySkillKey.value || undefined))
 const cultivationOptions = computed(() => listCultivations(primarySkillKey.value || undefined))
 const goldenFingerOptions = computed(() => listGoldenFingers(primarySkillKey.value || undefined))
+
+const hotGenreChips = computed(() => {
+  const freq = new Map()
+  for (const item of hotItems.value) {
+    for (const tag of item.tags || []) {
+      const t = String(tag || '').trim()
+      if (!t) continue
+      freq.set(t, (freq.get(t) || 0) + 1)
+    }
+  }
+  return [...freq.entries()]
+    .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0], 'zh'))
+    .slice(0, HOT_CHIP_LIMIT)
+    .map(([tag]) => tag)
+})
+
+function markDirty(field) {
+  if (suppressDirty) return
+  const next = new Set(dirtyFields.value)
+  next.add(field)
+  dirtyFields.value = next
+}
+
+function isDirty(field) {
+  return dirtyFields.value.has(field)
+}
+
+function runWithoutDirty(fn) {
+  suppressDirty = true
+  try {
+    fn()
+  } finally {
+    suppressDirty = false
+  }
+}
+
+function itemKey(item) {
+  return `${item.platform}:${item.externalId}`
+}
+
+function formatHeat(heat) {
+  const n = Number(heat) || 0
+  if (n >= 10000) return `${(n / 10000).toFixed(n >= 100000 ? 0 : 1)}万`
+  return String(n)
+}
 
 function genreChipClass(skillKey) {
   if (skillKey === primarySkillKey.value) return ['genre-chip', 'is-primary']
@@ -288,7 +421,16 @@ function pruneIncompatibleSettings(nextPrimary) {
       cleared = true
     }
   }
-  if (cleared) toast.info(tm.value.ideate.clearedIncompatible)
+  // Non-power primary: clear cultivation so hide logic stays consistent
+  const nextLabel = genrePresets.find(g => g.skillKey === nextPrimary)?.value || ''
+  if (!isCultivationPowerGenre(nextLabel)) {
+    if (cultivationId.value || cultivationCustom.value.trim()) {
+      cultivationId.value = ''
+      cultivationCustom.value = ''
+      cleared = true
+    }
+  }
+  if (cleared && !suppressDirty) toast.info(tm.value.ideate.clearedIncompatible)
 }
 
 function applyPrimaryChange(nextPrimary) {
@@ -304,10 +446,12 @@ function applyPrimaryChange(nextPrimary) {
 function onGenreChipClick(skillKey) {
   if (skillKey === primarySkillKey.value) return
   if (secondarySkillKeys.value.includes(skillKey)) {
+    markDirty('secondary')
     secondarySkillKeys.value = secondarySkillKeys.value.filter(k => k !== skillKey)
     return
   }
   if (!primarySkillKey.value) {
+    markDirty('primary')
     applyPrimaryChange(skillKey)
     return
   }
@@ -315,10 +459,13 @@ function onGenreChipClick(skillKey) {
     toast.error(tm.value.ideate.secondaryFull)
     return
   }
+  markDirty('secondary')
   secondarySkillKeys.value = [...secondarySkillKeys.value, skillKey]
 }
 
 function promoteToPrimary(skillKey) {
+  markDirty('primary')
+  markDirty('secondary')
   const oldPrimary = primarySkillKey.value
   const nextSecondary = secondarySkillKeys.value.filter(k => k !== skillKey)
   // 原主降为辅；若辅因此会超过 3，则丢掉原主（不进辅）
@@ -330,16 +477,19 @@ function promoteToPrimary(skillKey) {
 }
 
 function pickWorldview(id) {
+  markDirty('worldview')
   worldviewId.value = id
   worldviewCustom.value = ''
 }
 
 function pickCultivation(id) {
+  markDirty('cultivation')
   cultivationId.value = id
   cultivationCustom.value = ''
 }
 
 function pickGoldenFinger(id) {
+  markDirty('goldenFinger')
   goldenFingerId.value = id
   goldenFingerCustom.value = ''
 }
@@ -350,6 +500,166 @@ function focusCustom(kind) {
     else if (kind === 'cultivation') cultivationCustomEl.value?.focus?.()
     else goldenFingerCustomEl.value?.focus?.()
   })
+}
+
+function appendKeywords(tags) {
+  const existing = keywords.value
+    .split(/[,，、\s]+/)
+    .map(s => s.trim())
+    .filter(Boolean)
+  const seen = new Set(existing)
+  const add = []
+  for (const tag of tags || []) {
+    const t = String(tag || '').trim()
+    if (!t || seen.has(t)) continue
+    seen.add(t)
+    add.push(t)
+  }
+  if (!add.length) return
+  keywords.value = [...existing, ...add].join('、')
+}
+
+function matchGenrePresetByTag(tag) {
+  const t = String(tag || '').trim()
+  if (!t) return null
+  const hits = genrePresets.filter(g => {
+    const label = String(g.value || '')
+    return label.includes(t) || t.includes(label) || g.skillKey === t
+  })
+  return hits.length === 1 ? hits[0] : null
+}
+
+function onHotGenreChip(tag) {
+  appendKeywords([tag])
+  toast.info(tm.value.ideate.hotChipAdded)
+  if (!primarySkillKey.value) {
+    const preset = matchGenrePresetByTag(tag)
+    if (preset) {
+      runWithoutDirty(() => applyPrimaryChange(preset.skillKey))
+    }
+  }
+}
+
+async function loadHotRank() {
+  hotLoading.value = true
+  hotError.value = ''
+  try {
+    const res = await novelAPI.hotRank(hotPlatform.value)
+    hotItems.value = Array.isArray(res?.items) ? res.items : []
+    hotStale.value = !!res?.stale
+    if (res?.error) {
+      hotError.value = hotItems.value.length
+        ? String(res.error)
+        : tm.value.ideate.hotError
+    }
+  } catch (e) {
+    hotItems.value = []
+    hotStale.value = false
+    hotError.value = e?.message || tm.value.ideate.hotError
+  } finally {
+    hotLoading.value = false
+  }
+}
+
+function selectHotPlatform(platform) {
+  if (hotPlatform.value === platform) return
+  hotPlatform.value = platform
+  loadHotRank()
+}
+
+async function refreshHot() {
+  try {
+    hotRefreshBusy.value = true
+    await novelAPI.refreshHotRank(hotPlatform.value)
+    await loadHotRank()
+  } catch (e) {
+    toast.error(e?.message || tm.value.ideate.hotError)
+  } finally {
+    hotRefreshBusy.value = false
+  }
+}
+
+async function applyHotItem(item) {
+  if (!item || applyBusy.value) return
+  applyBusy.value = true
+  applyBusyKey.value = itemKey(item)
+  const mapped = item.mapped || {}
+
+  try {
+    runWithoutDirty(() => {
+      if (!title.value.trim() && item.title) {
+        title.value = item.title
+      }
+
+      if (mapped.genrePrimary && !isDirty('primary')) {
+        applyPrimaryChange(mapped.genrePrimary)
+      }
+
+      if (!isDirty('secondary') && Array.isArray(mapped.genreSecondary) && mapped.genreSecondary.length) {
+        const primary = primarySkillKey.value
+        secondarySkillKeys.value = mapped.genreSecondary
+          .filter(k => k && k !== primary)
+          .slice(0, 3)
+      }
+
+      const primary = primarySkillKey.value || undefined
+
+      if (mapped.worldviewId && !isDirty('worldview')) {
+        if (listWorldviews(primary).some(e => e.id === mapped.worldviewId)) {
+          worldviewId.value = mapped.worldviewId
+          worldviewCustom.value = ''
+        }
+      }
+
+      // Cultivation only when power-genre (hide logic intact)
+      const label = genrePresets.find(g => g.skillKey === primary)?.value || primaryLabel.value
+      if (isCultivationPowerGenre(label) && mapped.cultivationId && !isDirty('cultivation')) {
+        if (listCultivations(primary).some(e => e.id === mapped.cultivationId)) {
+          cultivationId.value = mapped.cultivationId
+          cultivationCustom.value = ''
+        }
+      }
+
+      if (mapped.goldenFingerId && !isDirty('goldenFinger')) {
+        if (listGoldenFingers(primary).some(e => e.id === mapped.goldenFingerId)) {
+          goldenFingerId.value = mapped.goldenFingerId
+          goldenFingerCustom.value = ''
+        }
+      }
+
+      if (!isDirty('keywords')) {
+        appendKeywords(item.tags || [])
+      }
+    })
+
+    toast.info(tm.value.ideate.hotApplyDone)
+
+    // Generate premise unless user already edited it
+    if (!isDirty('premise') && keywords.value.trim()) {
+      if (!guardGenerate()) return
+      try {
+        premiseBusy.value = true
+        const settings = settingPayload()
+        const { premise: next } = await novelAPI.generatePremise({
+          keywords: keywords.value.trim(),
+          title: title.value.trim() || undefined,
+          genre: primaryLabel.value || undefined,
+          total_chapters: totalChapters.value || undefined,
+          ...settings,
+        })
+        runWithoutDirty(() => {
+          premise.value = next || ''
+        })
+      } catch (e) {
+        toast.error(e?.message || tm.value.ideate.hotApplyPremiseFail)
+      } finally {
+        premiseBusy.value = false
+      }
+    }
+  } finally {
+    applyBusy.value = false
+    applyBusyKey.value = ''
+  }
 }
 
 function settingPayload() {
@@ -404,7 +714,10 @@ async function synthesizeTitle() {
       genre: primaryLabel.value || undefined,
       total_chapters: totalChapters.value || undefined,
     })
-    if (next?.trim()) title.value = next.trim()
+    if (next?.trim()) {
+      title.value = next.trim()
+      markDirty('title')
+    }
   } catch (e) {
     toast.error(e.message)
   } finally {
@@ -427,6 +740,7 @@ async function synthesizePremise() {
       ...settings,
     })
     premise.value = next || ''
+    markDirty('premise')
   } catch (e) {
     toast.error(e.message)
   } finally {
@@ -460,6 +774,7 @@ onMounted(() => {
   if (typeof window !== 'undefined' && window.matchMedia('(max-width: 860px)').matches) {
     hotOpen.value = false
   }
+  loadHotRank()
 })
 </script>
 
@@ -516,7 +831,86 @@ onMounted(() => {
   font-size: 12px;
   color: var(--text-3);
   line-height: 1.5;
-  margin-bottom: 16px;
+  margin-bottom: 12px;
+}
+.hot-panel-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 10px;
+}
+.hot-refresh-btn {
+  flex-shrink: 0;
+  font-size: 12px;
+  padding: 0 12px;
+  min-height: 32px;
+}
+.hot-stale-badge {
+  margin-left: 8px;
+  font-size: 10px;
+  font-weight: 600;
+  color: var(--text-3);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  padding: 2px 8px;
+  vertical-align: middle;
+}
+.hot-platform-tabs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-bottom: 12px;
+}
+.hot-platform-tab {
+  border: 1px dashed var(--border);
+  background: var(--bg-0);
+  color: var(--text-2);
+  font-size: 12px;
+  font-weight: 600;
+  padding: 4px 10px;
+  border-radius: 999px;
+  cursor: pointer;
+  transition: border-color 0.15s, background 0.15s, color 0.15s;
+}
+.hot-platform-tab.active {
+  border-style: solid;
+  border-color: var(--accent);
+  background: var(--accent-bg);
+  color: var(--accent-text);
+}
+.hot-genre-block { margin-bottom: 10px; }
+.hot-genre-label {
+  display: block;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--text-3);
+  margin-bottom: 6px;
+}
+.hot-genre-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.hot-genre-chip {
+  border: 1px dashed var(--border);
+  background: var(--bg-0);
+  color: var(--text-2);
+  font-size: 11px;
+  font-weight: 600;
+  padding: 3px 8px;
+  border-radius: 999px;
+  cursor: pointer;
+  transition: border-color 0.15s, background 0.15s, color 0.15s;
+}
+.hot-genre-chip:hover {
+  border-color: var(--accent);
+  color: var(--accent-text);
+}
+.hot-disclaimer {
+  font-size: 11px;
+  color: var(--text-3);
+  margin: 0 0 12px;
+  line-height: 1.4;
 }
 .hot-placeholder-block { display: flex; flex-direction: column; gap: 8px; }
 .hot-skeleton {
@@ -526,6 +920,79 @@ onMounted(() => {
   border: 1px dashed var(--border);
 }
 .hot-skeleton.short { width: 70%; }
+.hot-state {
+  font-size: 12px;
+  color: var(--text-3);
+  line-height: 1.5;
+  margin: 0;
+  padding: 12px 0;
+}
+.hot-state-error { color: var(--danger, #e25555); }
+.hot-list {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  max-height: min(70vh, 720px);
+  overflow-y: auto;
+  padding-right: 2px;
+}
+.hot-card {
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--bg-0);
+  padding: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.hot-card-top {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 8px;
+}
+.hot-card-title {
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--text-0);
+  margin: 0;
+  line-height: 1.35;
+}
+.hot-card-heat {
+  flex-shrink: 0;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--text-3);
+}
+.hot-card-tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+.hot-tag {
+  font-size: 10px;
+  font-weight: 600;
+  color: var(--text-2);
+  background: var(--bg-2);
+  border-radius: 999px;
+  padding: 2px 7px;
+}
+.hot-card-blurb {
+  margin: 0;
+  font-size: 11px;
+  color: var(--text-3);
+  line-height: 1.45;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+.hot-apply-btn {
+  align-self: flex-start;
+  font-size: 12px;
+  padding: 0 12px;
+  min-height: 30px;
+}
 
 .field { display: flex; flex-direction: column; gap: 6px; margin-bottom: 16px; }
 .field-label { font-size: 12px; font-weight: 600; color: var(--text-2); }

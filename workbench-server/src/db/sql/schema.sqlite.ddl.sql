@@ -585,6 +585,23 @@ CREATE TABLE IF NOT EXISTS ai_detect_feedback (
   created_at TEXT NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS novel_hot_rank_items (
+  id TEXT PRIMARY KEY,
+  platform TEXT NOT NULL,
+  external_id TEXT NOT NULL,
+  title TEXT NOT NULL,
+  tags_json TEXT,
+  heat INTEGER NOT NULL DEFAULT 0,
+  blurb_short TEXT,
+  mapped_genre_primary TEXT,
+  mapped_genre_secondary_json TEXT,
+  mapped_worldview_id TEXT,
+  mapped_cultivation_id TEXT,
+  mapped_golden_finger_id TEXT,
+  map_source TEXT,
+  fetched_at TEXT NOT NULL
+);
+
 -- >>> INDEXES
 
 -- Secondary indexes and uniqueness constraints (P1).
@@ -648,3 +665,8 @@ CREATE INDEX IF NOT EXISTS idx_ai_detect_runs_hash
 
 CREATE INDEX IF NOT EXISTS idx_ai_detect_feedback_label
   ON ai_detect_feedback (admin_label, declared_label);
+
+CREATE UNIQUE INDEX IF NOT EXISTS uq_novel_hot_rank_platform_external
+  ON novel_hot_rank_items (platform, external_id);
+CREATE INDEX IF NOT EXISTS idx_novel_hot_rank_platform_heat
+  ON novel_hot_rank_items (platform, heat);

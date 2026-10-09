@@ -7,7 +7,7 @@
  *
  * 行类型见 repos/types.ts；领域字面量见 schema-types.ts。
  */
-import { mysqlTable, text, int, double, primaryKey } from 'drizzle-orm/mysql-core'
+import { mysqlTable, text, int, double, primaryKey, uniqueIndex, index } from 'drizzle-orm/mysql-core'
 
 export type {
   AiServiceType,
@@ -649,3 +649,31 @@ export const aiDetectFeedback = mysqlTable('ai_detect_feedback', {
   genre: text('genre').notNull(),
   createdAt: text('created_at').notNull(),
 })
+
+/** 小说平台热榜缓存（仅元数据，无章节正文） */
+export const novelHotRankItems = mysqlTable(
+  'novel_hot_rank_items',
+  {
+    id: text('id').primaryKey(),
+    platform: text('platform').notNull(),
+    externalId: text('external_id').notNull(),
+    title: text('title').notNull(),
+    tagsJson: text('tags_json'),
+    heat: int('heat').notNull().default(0),
+    blurbShort: text('blurb_short'),
+    mappedGenrePrimary: text('mapped_genre_primary'),
+    mappedGenreSecondaryJson: text('mapped_genre_secondary_json'),
+    mappedWorldviewId: text('mapped_worldview_id'),
+    mappedCultivationId: text('mapped_cultivation_id'),
+    mappedGoldenFingerId: text('mapped_golden_finger_id'),
+    mapSource: text('map_source'),
+    fetchedAt: text('fetched_at').notNull(),
+  },
+  (t) => ({
+    platformExternalUnique: uniqueIndex('uq_novel_hot_rank_platform_external').on(
+      t.platform,
+      t.externalId,
+    ),
+    platformHeatIdx: index('idx_novel_hot_rank_platform_heat').on(t.platform, t.heat),
+  }),
+)

@@ -580,6 +580,25 @@ CREATE TABLE IF NOT EXISTS ai_detect_feedback (
   KEY idx_ai_detect_feedback_label (admin_label, declared_label)
 );
 
+CREATE TABLE IF NOT EXISTS novel_hot_rank_items (
+  id VARCHAR(64) PRIMARY KEY,
+  platform VARCHAR(32) NOT NULL,
+  external_id VARCHAR(128) NOT NULL,
+  title VARCHAR(512) NOT NULL,
+  tags_json TEXT,
+  heat INT NOT NULL DEFAULT 0,
+  blurb_short TEXT,
+  mapped_genre_primary VARCHAR(64),
+  mapped_genre_secondary_json TEXT,
+  mapped_worldview_id VARCHAR(64),
+  mapped_cultivation_id VARCHAR(64),
+  mapped_golden_finger_id VARCHAR(64),
+  map_source VARCHAR(32),
+  fetched_at TEXT NOT NULL,
+  UNIQUE KEY uq_novel_hot_rank_platform_external (platform, external_id),
+  KEY idx_novel_hot_rank_platform_heat (platform, heat)
+);
+
 -- >>> INDEXES
 
 -- Secondary indexes and uniqueness constraints (P1, MySQL).
