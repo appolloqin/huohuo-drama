@@ -22,7 +22,10 @@ export type NovelMetadata = {
   novel_genre_secondary_keys?: string[]
   worldview_id?: string
   worldview_custom?: string
+  /** @deprecated 兼容旧单选；读写时与 cultivation_ids[0] 同步 */
   cultivation_id?: string
+  /** 修炼体系多选（目录 id），最多 8 */
+  cultivation_ids?: string[]
   cultivation_custom?: string
   golden_finger_id?: string
   golden_finger_custom?: string
@@ -104,9 +107,7 @@ export function parseNovelMetadata(raw: JsonColumnInput): NovelMetadata {
       novel_genre_secondary_keys: parseSecondaryGenreKeys(parsed.novel_genre_secondary_keys),
       worldview_id: typeof parsed.worldview_id === 'string' ? parsed.worldview_id : undefined,
       worldview_custom: typeof parsed.worldview_custom === 'string' ? parsed.worldview_custom : undefined,
-      cultivation_id: typeof parsed.cultivation_id === 'string' ? parsed.cultivation_id : undefined,
-      cultivation_custom:
-        typeof parsed.cultivation_custom === 'string' ? parsed.cultivation_custom : undefined,
+      ...parseCultivationFields(parsed),
       golden_finger_id: typeof parsed.golden_finger_id === 'string' ? parsed.golden_finger_id : undefined,
       golden_finger_custom:
         typeof parsed.golden_finger_custom === 'string' ? parsed.golden_finger_custom : undefined,
@@ -217,7 +218,6 @@ export function mergeNovelMetadata(
   if (patch.novel_genre_skill_key === '') delete next.novel_genre_skill_key
   if (patch.worldview_id === '') delete next.worldview_id
   if (patch.worldview_custom === '') delete next.worldview_custom
-  if (patch.cultivation_id === '') delete next.cultivation_id
   if (patch.cultivation_custom === '') delete next.cultivation_custom
   if (patch.golden_finger_id === '') delete next.golden_finger_id
   if (patch.golden_finger_custom === '') delete next.golden_finger_custom
@@ -225,7 +225,77 @@ export function mergeNovelMetadata(
   if (Array.isArray(patch.novel_genre_secondary_keys)) {
     next.novel_genre_secondary_keys = parseSecondaryGenreKeys(patch.novel_genre_secondary_keys) || []
   }
+  if (Array.isArray(patch.cultivation_ids) || typeof patch.cultivation_id === 'string') {
+    const synced = syncCultivationFields({
+      cultivation_ids: Array.isArray(patch.cultivation_ids)
+        ? patch.cultivation_ids
+        : next.cultivation_ids,
+      cultivation_id: typeof patch.cultivation_id === 'string' ? patch.cultivation_id : next.cultivation_id,
+    })
+    if (synced.cultivation_ids?.length) {
+      next.cultivation_ids = synced.cultivation_ids
+      next.cultivation_id = synced.cultivation_id
+    } else {
+      delete next.cultivation_ids
+      delete next.cultivation_id
+    }
+  } else if (patch.cultivation_id === '') {
+    delete next.cultivation_id
+    delete next.cultivation_ids
+  }
   return JSON.stringify(next)
+}
+
+const CULTIVATION_IDS_MAX = 8
+
+function parseCultivationIdList(raw: unknown): string[] {
+  if (!Array.isArray(raw)) return []
+  const out: string[] = []
+  const seen = new Set<string>()
+  for (const item of raw) {
+    if (typeof item !== 'string') continue
+    const id = item.trim()
+    if (!id || seen.has(id)) continue
+    seen.add(id)
+    out.push(id)
+    if (out.length >= CULTIVATION_IDS_MAX) break
+  }
+  return out
+}
+
+function syncCultivationFields(input: {
+  cultivation_ids?: string[]
+  cultivation_id?: string
+}): { cultivation_ids?: string[]; cultivation_id?: string } {
+  let ids = parseCultivationIdList(input.cultivation_ids)
+  const legacy = (input.cultivation_id || '').trim()
+  if (!ids.length && legacy) ids = [legacy]
+  if (legacy && ids.length && !ids.includes(legacy)) {
+    // 仅传了旧字段且与多选不一致时，以多选为准
+  }
+  if (!ids.length) return {}
+  return { cultivation_ids: ids, cultivation_id: ids[0] }
+}
+
+function parseCultivationFields(parsed: Record<string, unknown>): {
+  cultivation_id?: string
+  cultivation_ids?: string[]
+  cultivation_custom?: string
+} {
+  const synced = syncCultivationFields({
+    cultivation_ids: parseCultivationIdList(parsed.cultivation_ids),
+    cultivation_id: typeof parsed.cultivation_id === 'string' ? parsed.cultivation_id : undefined,
+  })
+  return {
+    ...synced,
+    cultivation_custom:
+      typeof parsed.cultivation_custom === 'string' ? parsed.cultivation_custom : undefined,
+  }
+}
+
+/** 归一化修炼多选 id（供 inject/validate） */
+export function resolveCultivationIds(meta: Pick<NovelMetadata, 'cultivation_ids' | 'cultivation_id'>): string[] {
+  return syncCultivationFields(meta).cultivation_ids || []
 }
 
 /** 路由用 skillKey：优先 metadata；旧数据按 preset.value 精确回填 */

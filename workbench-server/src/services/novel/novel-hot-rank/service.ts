@@ -5,7 +5,6 @@ import * as hotRankRepo from '../../../db/repos/novel-hot-rank/index.js'
 import type { NovelHotRankItemRow } from '../../../db/repos/types.js'
 import { applyHeuristicMapping } from './mapper.js'
 import { resolveProvider, isProviderEnabled } from './providers/index.js'
-import { fetchSeedRank } from './providers/seed.js'
 import {
   HOT_RANK_PLATFORMS,
   type HotRankItem,
@@ -16,12 +15,22 @@ import {
 
 export const HOT_RANK_STALE_MS = 12 * 60 * 60 * 1000
 
+function isDisplayableTag(tag: string): boolean {
+  const t = (tag || '').trim()
+  if (!t || t.length > 24) return false
+  // 拦截番茄 categoryV2 等误入库的 JSON 碎片
+  if (/^[\[{]/.test(t) || /ObjectId|ExternalDesc|MainCategory|byteimg|https?:\/\//i.test(t)) {
+    return false
+  }
+  return true
+}
+
 function parseJsonStringArray(raw: string | null | undefined): string[] {
   if (!raw) return []
   try {
     const v = JSON.parse(raw) as unknown
     if (!Array.isArray(v)) return []
-    return v.map((x) => String(x)).filter(Boolean)
+    return v.map((x) => String(x)).filter(isDisplayableTag)
   } catch {
     return []
   }
@@ -59,7 +68,7 @@ function providerItemToRow(item: HotRankProviderItem, fetchedAt: string): NovelH
     platform: mapped.platform,
     externalId: mapped.externalId,
     title: mapped.title,
-    tagsJson: JSON.stringify(mapped.tags),
+    tagsJson: JSON.stringify((mapped.tags || []).filter(isDisplayableTag)),
     heat: mapped.heat,
     blurbShort: truncateBlurb(mapped.blurbShort || ''),
     mappedGenrePrimary: mapped.mapped.genrePrimary ?? null,
@@ -92,26 +101,42 @@ async function persistProviderItems(platform: HotRankPlatform, items: HotRankPro
   return rows.length
 }
 
-/** Auto-fill empty cache from seed (ignores booklist env for bootstrap reliability). */
-async function ensureSeedForPlatform(platform: HotRankPlatform): Promise<void> {
-  const seed = await fetchSeedRank(platform)
-  await persistProviderItems(platform, seed)
+/** 缓存为空或过期时拉取真实 Provider */
+async function ensureLiveForPlatform(platform: HotRankPlatform): Promise<{ error?: string }> {
+  const provider = resolveProvider(platform)
+  if (!provider) return { error: `平台 ${platform} Provider 已关闭` }
+  try {
+    const items = await provider(platform)
+    await persistProviderItems(platform, items)
+    return {}
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err)
+    return { error: message || '热榜拉取失败' }
+  }
 }
 
 export async function listHotRank(platform: HotRankPlatform): Promise<ListHotRankResult> {
   try {
     let rows = await hotRankRepo.listByPlatform(platform)
+    let fetchError: string | undefined
+    // 仅空缓存时自动拉取（避免每次打开页都打详情）；过期由前端 stale + 刷新按钮触发
     if (!rows.length) {
-      await ensureSeedForPlatform(platform)
+      const ensured = await ensureLiveForPlatform(platform)
+      fetchError = ensured.error
       rows = await hotRankRepo.listByPlatform(platform)
     }
     if (!rows.length) {
-      return { items: [], stale: true, error: `平台 ${platform} 暂无热榜数据` }
+      return {
+        items: [],
+        stale: true,
+        error: fetchError || `平台 ${platform} 暂无热榜数据`,
+      }
     }
     const fetchedAt = rows[0]?.fetchedAt
     return {
       items: rows.map(toHotRankItem),
       stale: isStale(fetchedAt),
+      error: fetchError,
     }
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err)
@@ -146,16 +171,7 @@ export async function refreshHotRank(platform?: HotRankPlatform): Promise<Refres
       total += count
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err)
-      // Soft-fail single platform: try seed fallback so cache is not empty
-      try {
-        const seed = await fetchSeedRank(p)
-        const count = await persistProviderItems(p, seed)
-        platforms.push({ platform: p, count, error: `${message}; fell back to seed` })
-        total += count
-      } catch (seedErr) {
-        const seedMsg = seedErr instanceof Error ? seedErr.message : String(seedErr)
-        platforms.push({ platform: p, count: 0, error: `${message}; seed failed: ${seedMsg}` })
-      }
+      platforms.push({ platform: p, count: 0, error: message })
     }
   }
 

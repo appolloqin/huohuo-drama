@@ -17,8 +17,9 @@ export function listWorldviews(genreSkillKey?: string): NovelSettingCatalogEntry
   return filterCatalogByGenre(NOVEL_WORLDVIEW_CATALOG, genreSkillKey)
 }
 
-export function listCultivations(genreSkillKey?: string): NovelSettingCatalogEntry[] {
-  return filterCatalogByGenre(NOVEL_CULTIVATION_CATALOG, genreSkillKey)
+/** 修炼体系不按题材过滤，始终返回全部 active 项 */
+export function listCultivations(_genreSkillKey?: string): NovelSettingCatalogEntry[] {
+  return filterCatalogByGenre(NOVEL_CULTIVATION_CATALOG)
 }
 
 export function listGoldenFingers(genreSkillKey?: string): NovelSettingCatalogEntry[] {

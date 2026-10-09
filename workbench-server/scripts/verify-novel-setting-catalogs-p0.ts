@@ -55,7 +55,19 @@ const injectRomance = buildNovelSettingInjectBlock({
   golden_finger_id: 'gf_no_cheat',
   cultivation_id: 'cu_standard_xianxia',
 })
-assert(!injectRomance.includes('【修炼体系】'), 'romance must not inject cultivation')
+assert(injectRomance.includes('【修炼体系】'), 'any genre injects cultivation when set')
+
+const injectMulti = buildNovelSettingInjectBlock({
+  novel_genre: '玄幻文',
+  novel_genre_skill_key: 'xuanhuan',
+  worldview_id: 'wv_generic_fantasy',
+  golden_finger_id: 'gf_checkin',
+  cultivation_ids: ['cu_douqi', 'cu_physique_rank', 'cu_alchemy_rank'],
+})
+assert(injectMulti.includes('可并行多套'), 'multi cultivation inject')
+assert(injectMulti.includes('斗气'), 'multi includes douqi')
+assert(injectMulti.includes('体质'), 'multi includes physique')
+assert(injectMulti.includes('炼药'), 'multi includes alchemy')
 
 assert(
   validateNovelIdeationSettings({
@@ -63,8 +75,8 @@ assert(
     novel_genre: '仙侠文',
     worldview_id: 'wv_three_realms',
     golden_finger_id: 'gf_checkin',
-  }) !== null,
-  'power genre missing cultivation must fail',
+  }) === null,
+  'cultivation optional even for power genre',
 )
 
 assert(
@@ -105,7 +117,10 @@ const cleared = parseNovelMetadata(mergeNovelMetadata(merged, { hot_source: null
 assert(!cleared.hot_source, 'hot_source null deletes')
 
 assert(isCultivationPowerGenre('仙侠文'), 'power genre helper')
+assert(isCultivationPowerGenre('武侠文'), 'wuxia is power (martial realm)')
+assert(isCultivationPowerGenre('高武文'), 'martial_peak is power')
 assert(!isCultivationPowerGenre('言情文'), 'romance not power')
+assert(!isCultivationPowerGenre('乡村文'), 'rural not power')
 
 const powerBody = ideationPatchFromBody({
   novel_genre_skill_key: 'xianxia',
@@ -131,14 +146,14 @@ const romanceBody = ideationPatchFromBody({
 const romanceMerged = stripCultivationIfNonPower(
   parseNovelMetadata(mergeNovelMetadata(null, romanceBody)),
 )
-assert(!romanceMerged.cultivation_id, 'non-power strips cultivation')
+assert(romanceMerged.cultivation_id === 'cu_standard_xianxia', 'any genre keeps cultivation')
 assert(
   validateNovelIdeationSettings({
     ...romanceMerged,
     worldview_custom: undefined,
   }) === null
   || validateNovelIdeationSettings(romanceMerged) === null,
-  'romance with worldview+gf ok',
+  'romance with worldview+gf+cultivation ok',
 )
 assert(
   validateNovelIdeationSettings({

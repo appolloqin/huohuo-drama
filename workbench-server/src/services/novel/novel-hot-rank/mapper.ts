@@ -7,6 +7,7 @@ const TAG_TO_GENRE: Array<{ needles: string[]; skillKey: string }> = [
   { needles: ['仙侠', '修仙', '飞升'], skillKey: 'xianxia' },
   { needles: ['武侠', '江湖', '侠义'], skillKey: 'wuxia' },
   { needles: ['高武', '武道'], skillKey: 'martial_peak' },
+  { needles: ['乡村', '乡土', '返乡', '乡镇'], skillKey: 'rural' },
   { needles: ['末世', '废土', '丧尸'], skillKey: 'apocalypse' },
   { needles: ['诡异', '怪谈', '规则怪谈'], skillKey: 'weird' },
   { needles: ['脑洞', '高概念'], skillKey: 'brainhole' },
@@ -19,7 +20,8 @@ const TAG_TO_GENRE: Array<{ needles: string[]; skillKey: string }> = [
   { needles: ['校园', '青春'], skillKey: 'campus' },
   { needles: ['悬疑', '推理', '侦探'], skillKey: 'mystery' },
   { needles: ['驱魔', '道士', '收邪'], skillKey: 'exorcism' },
-  { needles: ['都市', '职场'], skillKey: 'urban' },
+  { needles: ['都市', '职场', '都市高手', '神医', '战神'], skillKey: 'urban' },
+  { needles: ['军婚', '军少', '随军', '宫闱', '宅斗', '年代重生'], skillKey: 'romance' },
   { needles: ['科幻', '星际'], skillKey: 'scifi' },
   { needles: ['官场', '权谋'], skillKey: 'officialdom' },
   { needles: ['谍战', '潜伏'], skillKey: 'spy' },
@@ -42,13 +44,17 @@ const GENRE_DEFAULT_SETTINGS: Record<
   },
   wuxia: {
     worldviewId: 'wv_sect_jianghu',
-    cultivationId: 'cu_generic_realm',
+    cultivationId: 'cu_wuxia_jianghu',
     goldenFingerId: 'gf_no_cheat',
   },
   martial_peak: {
-    worldviewId: 'wv_modern_hidden',
+    worldviewId: 'wv_global_martial',
     cultivationId: 'cu_martial_peak',
     goldenFingerId: 'gf_face_slap_halo',
+  },
+  rural: {
+    worldviewId: 'wv_rural_village',
+    goldenFingerId: 'gf_craft_bonus',
   },
   apocalypse: {
     worldviewId: 'wv_apocalypse',
@@ -167,7 +173,8 @@ export function mapTagsToSettings(genrePrimary?: string): HotRankMapped {
  * Fill missing mapped_* from tag heuristics. Does not overwrite existing mapped fields.
  */
 export function applyHeuristicMapping(item: HotRankProviderItem): HotRankProviderItem {
-  const genres = mapTagsToGenres(item.tags)
+  // 标题也参与题材启发（榜单标签稀疏时）
+  const genres = mapTagsToGenres([...(item.tags || []), item.title || ''])
   const primary = item.mapped.genrePrimary || genres.primary
   const secondary =
     item.mapped.genreSecondary?.length > 0

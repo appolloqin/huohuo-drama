@@ -5,7 +5,6 @@ import {
   getNovelGenreEntryByValue,
   isActiveNovelGenreSkillKey,
 } from './novel-genre-registry.js'
-import { isCultivationPowerGenre } from './novel-power-genre.js'
 import type { NovelMetadata, NovelMetadataPatch } from './novel-meta.js'
 
 function str(v: unknown): string | undefined {
@@ -29,6 +28,25 @@ function secondaryKeys(v: unknown): string[] {
   return out
 }
 
+function cultivationIds(v: unknown, legacyId?: string): string[] {
+  const out: string[] = []
+  const seen = new Set<string>()
+  const push = (raw: string) => {
+    const id = raw.trim()
+    if (!id || seen.has(id)) return
+    seen.add(id)
+    out.push(id)
+  }
+  if (Array.isArray(v)) {
+    for (const item of v) {
+      if (typeof item === 'string') push(item)
+      if (out.length >= 8) break
+    }
+  }
+  if (!out.length && legacyId) push(legacyId)
+  return out
+}
+
 export function ideationPatchFromBody(body: Record<string, any>): NovelMetadataPatch {
   const genreLabel =
     str(body.novel_genre)
@@ -48,15 +66,17 @@ export function ideationPatchFromBody(body: Record<string, any>): NovelMetadataP
     novel_genre_secondary_keys: secondaryKeys(body.novel_genre_secondary_keys),
     worldview_id: str(body.worldview_id),
     worldview_custom: str(body.worldview_custom),
-    cultivation_id: str(body.cultivation_id),
     cultivation_custom: str(body.cultivation_custom),
     golden_finger_id: str(body.golden_finger_id),
     golden_finger_custom: str(body.golden_finger_custom),
   }
-
-  if (!isCultivationPowerGenre(resolvedLabel || '')) {
-    patch.cultivation_id = ''
-    patch.cultivation_custom = ''
+  if (
+    Object.prototype.hasOwnProperty.call(body, 'cultivation_ids')
+    || Object.prototype.hasOwnProperty.call(body, 'cultivation_id')
+  ) {
+    const cuIds = cultivationIds(body.cultivation_ids, str(body.cultivation_id))
+    patch.cultivation_ids = cuIds
+    patch.cultivation_id = cuIds[0] || ''
   }
 
   if (body.hot_source === null) {
@@ -74,15 +94,7 @@ export function ideationPatchFromBody(body: Record<string, any>): NovelMetadataP
   return patch
 }
 
-/** 合并后剥离非力量题材的修炼字段 */
+/** @deprecated 修炼体系已不与题材绑定；保留空操作以兼容旧调用 */
 export function stripCultivationIfNonPower(meta: NovelMetadata): NovelMetadata {
-  const label =
-    (meta.novel_genre || '').trim()
-    || getNovelGenreEntryBySkillKey(meta.novel_genre_skill_key || '')?.value
-    || ''
-  if (isCultivationPowerGenre(label)) return meta
-  const next = { ...meta }
-  delete next.cultivation_id
-  delete next.cultivation_custom
-  return next
+  return meta
 }

@@ -1,5 +1,8 @@
 import { fetchBooklistRank } from './booklist.js'
-import { fetchSeedRank } from './seed.js'
+import { fetchFanqieRank } from './fanqie.js'
+import { fetchJinjiangRank } from './jinjiang.js'
+import { fetchQidianRank } from './qidian.js'
+import { fetchQimaoRank } from './qimao.js'
 import type { HotRankPlatform, HotRankProviderItem } from '../types.js'
 
 export type HotRankProviderFn = (platform: HotRankPlatform) => Promise<HotRankProviderItem[]>
@@ -15,13 +18,22 @@ export function isProviderEnabled(platform: HotRankPlatform): boolean {
   return envProviderFlag(platform)
 }
 
+const LIVE_PROVIDERS: Record<HotRankPlatform, HotRankProviderFn> = {
+  fanqie: fetchFanqieRank,
+  qidian: fetchQidianRank,
+  jinjiang: fetchJinjiangRank,
+  qimao: fetchQimaoRank,
+}
+
 /**
- * Prefer booklist when NOVEL_HOT_BOOKLIST_BASE_URL is set; otherwise seed.
- * Returns null when platform provider is disabled via NOVEL_HOT_PROVIDER_<PLATFORM>=0.
+ * 优先级：
+ * 1) NOVEL_HOT_BOOKLIST_BASE_URL 外部 API（若配置）
+ * 2) 各平台真实公开接口 / 页面元数据抓取
+ * 不再默认使用内置种子。
  */
 export function resolveProvider(platform: HotRankPlatform): HotRankProviderFn | null {
   if (!isProviderEnabled(platform)) return null
   const base = (process.env.NOVEL_HOT_BOOKLIST_BASE_URL || '').trim()
   if (base) return fetchBooklistRank
-  return fetchSeedRank
+  return LIVE_PROVIDERS[platform] || null
 }

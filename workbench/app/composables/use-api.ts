@@ -680,6 +680,7 @@ export const novelAPI = {
     worldview_id?: string
     worldview_custom?: string
     cultivation_id?: string
+    cultivation_ids?: string[]
     cultivation_custom?: string
     golden_finger_id?: string
     golden_finger_custom?: string
@@ -696,6 +697,7 @@ export const novelAPI = {
     worldview_id?: string
     worldview_custom?: string
     cultivation_id?: string
+    cultivation_ids?: string[]
     cultivation_custom?: string
     golden_finger_id?: string
     golden_finger_custom?: string
@@ -713,6 +715,7 @@ export const novelAPI = {
     worldview_id?: string
     worldview_custom?: string
     cultivation_id?: string
+    cultivation_ids?: string[]
     cultivation_custom?: string
     golden_finger_id?: string
     golden_finger_custom?: string

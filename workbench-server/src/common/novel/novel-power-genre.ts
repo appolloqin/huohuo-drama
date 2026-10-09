@@ -5,7 +5,8 @@ export function isCultivationPowerGenre(genre?: string): boolean {
   const g = (genre || '').trim()
   if (!g) return false
   // 只要带这些力量标签就走 A；「种田」「都市」前缀不抵消
-  return /修真|玄幻|仙侠|高武|修仙|洪荒|灵气复苏|诸天|驱魔|道士|茅山|符箓|灵异斗法/.test(g)
+  // 武侠/武林：内力武道体系，与高武同属力量题材（目录见 cu_martial_peak）
+  return /修真|玄幻|仙侠|高武|武侠|武林|修仙|洪荒|灵气复苏|诸天|驱魔|道士|茅山|符箓|灵异斗法/.test(g)
 }
 
 /**
@@ -15,8 +16,10 @@ export function isCultivationPowerGenre(genre?: string): boolean {
 export function isMundaneNonCultivationGenre(genre?: string): boolean {
   const g = (genre || '').trim()
   if (!g || isCultivationPowerGenre(g)) return false
-  // 年代/现实/职场等；都市无修真/异能时也视为现实向
-  if (/年代|职场|商战|军旅|谍战|刑侦|推理|校园|官场|家庭伦理|甜宠|虐恋|言情/.test(g)) return true
+  // 年代/现实/职场/乡村等；都市无修真/异能时也视为现实向
+  if (/年代|职场|商战|军旅|谍战|刑侦|推理|校园|官场|家庭伦理|甜宠|虐恋|言情|乡村|乡土|返乡/.test(g)) {
+    return true
+  }
   if (/现实/.test(g) && !/异能|超能|系统/.test(g)) return true
   if (/都市/.test(g) && !/异能|超能|系统/.test(g)) return true
   return false

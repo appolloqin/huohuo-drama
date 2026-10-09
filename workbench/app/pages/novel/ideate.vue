@@ -76,8 +76,8 @@
               <h3 class="hot-card-title">{{ item.title }}</h3>
               <span class="hot-card-heat">{{ tm.ideate.hotHeat }} {{ formatHeat(item.heat) }}</span>
             </div>
-            <div v-if="item.tags?.length" class="hot-card-tags">
-              <span v-for="tag in item.tags.slice(0, 6)" :key="tag" class="hot-tag">{{ tag }}</span>
+            <div v-if="displayTags(item).length" class="hot-card-tags">
+              <span v-for="tag in displayTags(item)" :key="tag" class="hot-tag">{{ tag }}</span>
             </div>
             <p v-if="item.blurbShort" class="hot-card-blurb">{{ item.blurbShort }}</p>
             <button
@@ -174,16 +174,16 @@
           />
         </div>
 
-        <div v-if="showCultivation" class="field">
-          <span class="field-label">{{ tm.ideate.cultivation }} <span class="required">*</span></span>
-          <p class="field-hint">{{ tm.ideate.pickOrCustom }}</p>
+        <div class="field">
+          <span class="field-label">{{ tm.ideate.cultivation }}</span>
+          <p class="field-hint">{{ tm.ideate.cultivationOptionalHint }}</p>
           <div class="catalog-grid">
             <button
               v-for="item in cultivationOptions"
               :key="item.id"
               type="button"
-              :class="['catalog-card', { active: cultivationId === item.id && !cultivationCustom.trim() }]"
-              @click="pickCultivation(item.id)"
+              :class="['catalog-card', { active: cultivationIds.includes(item.id) }]"
+              @click="toggleCultivation(item.id)"
             >
               <span class="catalog-card-label">{{ item.label }}</span>
               <span class="catalog-card-summary">{{ item.summary }}</span>
@@ -289,7 +289,6 @@ import { useCreditsGate } from '~/composables/use-credits-gate'
 import { useI18n } from '~/composables/use-i18n'
 import {
   getActiveNovelGenrePresets,
-  isCultivationPowerGenre,
   listCultivations,
   listGoldenFingers,
   listWorldviews,
@@ -309,7 +308,7 @@ const primarySkillKey = ref('')
 const secondarySkillKeys = ref([])
 const worldviewId = ref('')
 const worldviewCustom = ref('')
-const cultivationId = ref('')
+const cultivationIds = ref([])
 const cultivationCustom = ref('')
 const goldenFingerId = ref('')
 const goldenFingerCustom = ref('')
@@ -344,19 +343,28 @@ const primaryLabel = computed(() => {
   return genrePresets.find(g => g.skillKey === key)?.value || key
 })
 
-const showCultivation = computed(() => isCultivationPowerGenre(primaryLabel.value))
-
 const worldviewOptions = computed(() => listWorldviews(primarySkillKey.value || undefined))
-const cultivationOptions = computed(() => listCultivations(primarySkillKey.value || undefined))
+const cultivationOptions = computed(() => listCultivations())
 const goldenFingerOptions = computed(() => listGoldenFingers(primarySkillKey.value || undefined))
+
+function isCleanHotTag(tag) {
+  const t = String(tag || '').trim()
+  if (!t || t.length > 24) return false
+  if (/^[\[{]/.test(t) || /ObjectId|ExternalDesc|MainCategory|byteimg|https?:\/\//i.test(t)) {
+    return false
+  }
+  return true
+}
+
+function displayTags(item) {
+  return (item?.tags || []).filter(isCleanHotTag).slice(0, 6)
+}
 
 const hotGenreChips = computed(() => {
   const freq = new Map()
   for (const item of hotItems.value) {
-    for (const tag of item.tags || []) {
-      const t = String(tag || '').trim()
-      if (!t) continue
-      freq.set(t, (freq.get(t) || 0) + 1)
+    for (const tag of displayTags(item)) {
+      freq.set(tag, (freq.get(tag) || 0) + 1)
     }
   }
   return [...freq.entries()]
@@ -409,24 +417,10 @@ function pruneIncompatibleSettings(nextPrimary) {
       cleared = true
     }
   }
-  if (cultivationId.value && !cultivationCustom.value.trim()) {
-    if (!listCultivations(nextPrimary).some(e => e.id === cultivationId.value)) {
-      cultivationId.value = ''
-      cleared = true
-    }
-  }
+  // 修炼体系不与题材绑定，换题材时保留
   if (goldenFingerId.value && !goldenFingerCustom.value.trim()) {
     if (!listGoldenFingers(nextPrimary).some(e => e.id === goldenFingerId.value)) {
       goldenFingerId.value = ''
-      cleared = true
-    }
-  }
-  // Non-power primary: clear cultivation so hide logic stays consistent
-  const nextLabel = genrePresets.find(g => g.skillKey === nextPrimary)?.value || ''
-  if (!isCultivationPowerGenre(nextLabel)) {
-    if (cultivationId.value || cultivationCustom.value.trim()) {
-      cultivationId.value = ''
-      cultivationCustom.value = ''
       cleared = true
     }
   }
@@ -482,10 +476,22 @@ function pickWorldview(id) {
   worldviewCustom.value = ''
 }
 
-function pickCultivation(id) {
+const CULTIVATION_PICK_MAX = 8
+
+function toggleCultivation(id) {
   markDirty('cultivation')
-  cultivationId.value = id
-  cultivationCustom.value = ''
+  const cur = [...cultivationIds.value]
+  const idx = cur.indexOf(id)
+  if (idx >= 0) {
+    cur.splice(idx, 1)
+  } else {
+    if (cur.length >= CULTIVATION_PICK_MAX) {
+      toast.info(tm.value.ideate.cultivationMaxHint)
+      return
+    }
+    cur.push(id)
+  }
+  cultivationIds.value = cur
 }
 
 function pickGoldenFinger(id) {
@@ -611,12 +617,11 @@ async function applyHotItem(item) {
         }
       }
 
-      // Cultivation only when power-genre (hide logic intact)
-      const label = genrePresets.find(g => g.skillKey === primary)?.value || primaryLabel.value
-      if (isCultivationPowerGenre(label) && mapped.cultivationId && !isDirty('cultivation')) {
-        if (listCultivations(primary).some(e => e.id === mapped.cultivationId)) {
-          cultivationId.value = mapped.cultivationId
-          cultivationCustom.value = ''
+      if (mapped.cultivationId && !isDirty('cultivation')) {
+        if (listCultivations().some(e => e.id === mapped.cultivationId)) {
+          if (!cultivationIds.value.includes(mapped.cultivationId)) {
+            cultivationIds.value = [...cultivationIds.value, mapped.cultivationId].slice(0, CULTIVATION_PICK_MAX)
+          }
         }
       }
 
@@ -628,7 +633,7 @@ async function applyHotItem(item) {
       }
 
       if (!isDirty('keywords')) {
-        appendKeywords(item.tags || [])
+        appendKeywords(displayTags(item))
       }
     })
 
@@ -663,14 +668,14 @@ async function applyHotItem(item) {
 }
 
 function settingPayload() {
-  const showCu = showCultivation.value
   return {
     novel_genre_skill_key: primarySkillKey.value || undefined,
     novel_genre_secondary_keys: [...secondarySkillKeys.value],
     worldview_id: worldviewId.value || undefined,
     worldview_custom: worldviewCustom.value.trim() || undefined,
-    cultivation_id: showCu ? (cultivationId.value || undefined) : undefined,
-    cultivation_custom: showCu ? (cultivationCustom.value.trim() || undefined) : undefined,
+    cultivation_ids: [...cultivationIds.value],
+    cultivation_id: cultivationIds.value[0] || undefined,
+    cultivation_custom: cultivationCustom.value.trim() || undefined,
     golden_finger_id: goldenFingerId.value || undefined,
     golden_finger_custom: goldenFingerCustom.value.trim() || undefined,
   }
@@ -691,10 +696,6 @@ function validateForm() {
   }
   if (!goldenFingerCustom.value.trim() && !goldenFingerId.value) {
     toast.error(tm.value.ideate.needGoldenFinger)
-    return false
-  }
-  if (showCultivation.value && !cultivationCustom.value.trim() && !cultivationId.value) {
-    toast.error(tm.value.ideate.needCultivation)
     return false
   }
   return true

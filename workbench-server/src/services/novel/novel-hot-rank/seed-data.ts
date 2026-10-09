@@ -154,7 +154,7 @@ const QIDIAN: SeedDraft[] = [
       genrePrimary: 'wuxia',
       genreSecondary: [],
       worldviewId: 'wv_sect_jianghu',
-      cultivationId: 'cu_generic_realm',
+      cultivationId: 'cu_wuxia_jianghu',
       goldenFingerId: 'gf_no_cheat',
     },
   },

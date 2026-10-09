@@ -310,7 +310,8 @@ app.get('/dramas/:id/meta', async (c) => {
     novel_genre_secondary_keys: meta.novel_genre_secondary_keys || [],
     worldview_id: meta.worldview_id || '',
     worldview_custom: meta.worldview_custom || '',
-    cultivation_id: meta.cultivation_id || '',
+    cultivation_id: meta.cultivation_id || meta.cultivation_ids?.[0] || '',
+    cultivation_ids: meta.cultivation_ids || (meta.cultivation_id ? [meta.cultivation_id] : []),
     cultivation_custom: meta.cultivation_custom || '',
     golden_finger_id: meta.golden_finger_id || '',
     golden_finger_custom: meta.golden_finger_custom || '',
@@ -368,11 +369,6 @@ app.put('/dramas/:id/meta', async (c) => {
     )
     const ideationErr = validateNovelIdeationSettings(mergedPreview)
     if (ideationErr) return badRequest(c, ideationErr)
-    // 非力量题材确保修炼字段被清掉
-    if (!mergedPreview.cultivation_id && !mergedPreview.cultivation_custom) {
-      patch.cultivation_id = ''
-      patch.cultivation_custom = ''
-    }
   }
 
   const metadata = mergeNovelMetadata(drama.metadata, patch)

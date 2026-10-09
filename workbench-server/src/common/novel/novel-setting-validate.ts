@@ -1,11 +1,8 @@
 /** 立项设定创建/保存校验 */
 
 import type { NovelMetadata } from './novel-meta.js'
-import {
-  getNovelGenreEntryBySkillKey,
-  isActiveNovelGenreSkillKey,
-} from './novel-genre-registry.js'
-import { isCultivationPowerGenre } from './novel-power-genre.js'
+import { resolveCultivationIds } from './novel-meta.js'
+import { isActiveNovelGenreSkillKey } from './novel-genre-registry.js'
 import { findActiveCatalogEntry } from './novel-setting-catalog-types.js'
 import { NOVEL_CULTIVATION_CATALOG } from './novel-cultivation-catalog.js'
 import { NOVEL_GOLDEN_FINGER_CATALOG } from './novel-golden-finger-catalog.js'
@@ -31,15 +28,13 @@ export function validateNovelIdeationSettings(meta: Partial<NovelMetadata>): str
     || !!findActiveCatalogEntry(NOVEL_GOLDEN_FINGER_CATALOG, meta.golden_finger_id)
   if (!hasGf) return '请选择或自定义金手指'
 
-  const genreLabel =
-    (meta.novel_genre || '').trim()
-    || getNovelGenreEntryBySkillKey(primary)?.value
-    || ''
-  if (isCultivationPowerGenre(genreLabel)) {
-    const hasCu =
-      !!(meta.cultivation_custom || '').trim()
-      || !!findActiveCatalogEntry(NOVEL_CULTIVATION_CATALOG, meta.cultivation_id)
-    if (!hasCu) return '当前题材须选择或自定义修炼体系'
+  // 修炼体系可选：多选 id 均须有效
+  const cuIds = resolveCultivationIds(meta)
+  if (cuIds.length > 8) return '修炼体系最多选 8 项'
+  for (const id of cuIds) {
+    if (!findActiveCatalogEntry(NOVEL_CULTIVATION_CATALOG, id)) {
+      return '修炼体系选项无效'
+    }
   }
 
   return null
@@ -54,6 +49,7 @@ export function bodyHasIdeationSettingKeys(body: Record<string, unknown>): boole
     'worldview_id',
     'worldview_custom',
     'cultivation_id',
+    'cultivation_ids',
     'cultivation_custom',
     'golden_finger_id',
     'golden_finger_custom',

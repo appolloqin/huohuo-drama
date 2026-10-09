@@ -156,17 +156,26 @@ export const NOVEL_GENRE_REGISTRY: NovelGenreRegistryEntry[] = [
     status: 'active',
   },
   {
+    value: '高武文',
+    skillKey: 'martial_peak',
+    keywords: '全球高武、武道境界、学院国运、现代修炼',
+    premise:
+      '现代或全球高武格局下，武道境界与学院/国运/秘境并行。战力可量化但有代价，低调发育与公开争锋交替，终局可登顶武道或守土安民。',
+    status: 'active',
+  },
+  {
+    value: '乡村文',
+    skillKey: 'rural',
+    keywords: '乡土人情、返乡创业、邻里恩怨、烟火日常、轻经营',
+    premise:
+      '以乡村或城乡结合部为舞台，邻里人情、土地与小生意推动剧情。冲突来自面子、资源与观念碰撞，基调烟火踏实，可甜可爽，禁止无铺垫硬套修真境界链。',
+    status: 'active',
+  },
+  {
     value: '都市文',
     skillKey: 'urban',
     keywords: '阶层资源、人脉博弈、职业线、轻超自然',
     premise: '现代都市背景下，主角在阶层、资源与人脉中破局崛起；可含轻超自然但不喧宾夺主。',
-    status: 'planned',
-  },
-  {
-    value: '高武文',
-    skillKey: 'martial_peak',
-    keywords: '全球高武、武道境界、学院国运、现代修炼',
-    premise: '现代或全球格局下的武道修炼体系，国运/学院/秘境与境界突破并行。',
     status: 'planned',
   },
   {

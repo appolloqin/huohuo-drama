@@ -28,9 +28,27 @@ export const NOVEL_WORLDVIEW_CATALOG: NovelSettingCatalogEntry[] = [
     id: 'wv_modern_hidden',
     label: '现代隐秘侧',
     summary: '日常都市下另有隐秘组织与非常规力量',
-    genreSkillKeys: ['urban', 'exorcism', 'superpower'],
+    genreSkillKeys: ['urban', 'exorcism', 'superpower', 'martial_peak'],
     injectPrompt:
       '世界观为现代社会表层 + 隐秘侧：普通人不知全貌，组织、执法与地下势力并行。超常事件须有掩盖代价，禁止无故全城公开超凡。',
+    status: 'active',
+  },
+  {
+    id: 'wv_global_martial',
+    label: '全球高武',
+    summary: '武道公开或半公开，学院/国运/秘境驱动长线',
+    genreSkillKeys: ['martial_peak'],
+    injectPrompt:
+      '世界观为全球或一国高武格局：武道学院、武者协会、秘境与国运任务并存；境界突破绑定代价与舆论/政治影响。禁止写成无监管的无限开挂乐园。',
+    status: 'active',
+  },
+  {
+    id: 'wv_rural_village',
+    label: '乡土烟火',
+    summary: '村落/乡镇人情、土地与邻里规则',
+    genreSkillKeys: ['rural', 'farming'],
+    injectPrompt:
+      '世界观锚定乡村或乡镇烟火：邻里面子、土地承包、亲戚人情与小生意规则可信。禁止无铺垫引入修真境界链或玄幻大陆设定。',
     status: 'active',
   },
   {
