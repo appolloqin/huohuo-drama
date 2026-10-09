@@ -15,12 +15,17 @@
           >{{ tab.label }}</button>
         </div>
       </div>
-      <button class="btn btn-primary" @click="showCreateModal">
-        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round">
-          <line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/>
-        </svg>
-        {{ tm.index.newProject }}
-      </button>
+      <div class="head-actions">
+        <button type="button" class="btn" @click="navigateTo('/novel/ideate')">
+          {{ tm.index.createNovelCta }}
+        </button>
+        <button class="btn btn-primary" @click="showCreateModal">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round">
+            <line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/>
+          </svg>
+          {{ tm.index.newProject }}
+        </button>
+      </div>
     </div>
 
     <!-- Loading -->
@@ -140,7 +145,7 @@
       </button>
     </div>
 
-    <!-- Create Dialog -->
+    <!-- Create Dialog（短剧） -->
     <div v-if="newProjectModalOpen" class="overlay" @click.self="newProjectModalOpen = false">
       <div class="modal card">
         <div class="modal-header">
@@ -152,20 +157,8 @@
               </svg>
             </div>
             <div class="modal-header-text">
-              <div class="create-kind-filter-tabs">
-                <button
-                  type="button"
-                  :class="['create-kind-filter-tab', { active: draftKind === 'drama' }]"
-                  @click="draftKind = 'drama'"
-                >{{ tm.index.projectTypeDrama }}</button>
-                <button
-                  type="button"
-                  :class="['create-kind-filter-tab', { active: draftKind === 'novel' }]"
-                  @click="draftKind = 'novel'"
-                >{{ tm.index.projectTypeNovel }}</button>
-              </div>
-              <h2 class="modal-title">{{ draftKind === 'novel' ? tm.index.createNovelTitle : tm.index.createTitle }}</h2>
-              <p class="modal-desc">{{ draftKind === 'novel' ? tm.index.createNovelDesc : tm.index.createDesc }}</p>
+              <h2 class="modal-title">{{ tm.index.createTitle }}</h2>
+              <p class="modal-desc">{{ tm.index.createDesc }}</p>
             </div>
             <button type="button" class="modal-close-btn" :aria-label="tm.common.closeAria" @click="newProjectModalOpen = false">
               <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
@@ -181,119 +174,75 @@
               <input
                 v-model="createFormDraft.title"
                 class="input"
-                :placeholder="draftKind === 'novel' ? tm.index.novelTitlePlaceholder : tm.index.projectTitlePlaceholder"
+                :placeholder="tm.index.projectTitlePlaceholder"
                 required
                 autofocus
               />
               <button
                 type="button"
                 class="btn btn-primary premise-gen-btn"
-                :title="draftKind === 'novel' ? tm.index.generateTitleHint : tm.index.generateDramaTitleHint"
-                :disabled="titleGenBusy || premiseGenBusy || !canGenerate || !createFormDraft.title.trim()"
-                @click="draftKind === 'novel' ? synthesizeNovelTitle() : synthesizeDramaTitle()"
+                :title="tm.index.generateDramaTitleHint"
+                :disabled="titleGenBusy || !canGenerate || !createFormDraft.title.trim()"
+                @click="synthesizeDramaTitle()"
               >
-                {{ titleGenBusy
-                  ? tm.index.generatingTitle
-                  : (draftKind === 'novel' ? tm.index.generateTitle : tm.index.generateDramaTitle) }}
+                {{ titleGenBusy ? tm.index.generatingTitle : tm.index.generateDramaTitle }}
               </button>
             </div>
-            <span class="field-hint">{{ draftKind === 'novel' ? tm.index.generateTitleHint : tm.index.generateDramaTitleHint }}</span>
+            <span class="field-hint">{{ tm.index.generateDramaTitleHint }}</span>
           </label>
-          <template v-if="draftKind === 'drama'">
-            <div class="field-row">
-              <label class="field">
-                <span class="field-label">{{ tm.index.planEpisodes }}</span>
-                <input v-model.number="createFormDraft.total_episodes" class="input" type="number" min="1" max="100" />
-              </label>
-              <label class="field">
-                <span class="field-label">{{ tm.index.screenOrientation }}</span>
-                <div class="orientation-tabs">
-                  <button
-                    type="button"
-                    :class="['orientation-tab', { active: createFormDraft.screen_orientation === 'portrait' }]"
-                    @click="createFormDraft.screen_orientation = 'portrait'"
-                  >{{ tm.index.screenPortrait }}</button>
-                  <button
-                    type="button"
-                    :class="['orientation-tab', { active: createFormDraft.screen_orientation === 'landscape' }]"
-                    @click="createFormDraft.screen_orientation = 'landscape'"
-                  >{{ tm.index.screenLandscape }}</button>
-                </div>
-                <span class="field-hint">{{ tm.index.screenOrientationHint }}</span>
-              </label>
-            </div>
+          <div class="field-row">
             <label class="field">
-              <span class="field-label">{{ tm.index.visualStyle }}</span>
-              <div class="style-picker-grid">
-                <button
-                  v-for="item in dramaStyleRows"
-                  :key="item.value"
-                  type="button"
-                  :class="['style-picker-card', { active: createFormDraft.style === item.value }]"
-                  @click="createFormDraft.style = item.value"
-                >
-                  <img
-                    v-if="dramaStylePreviewUrl(item.preview)"
-                    :src="dramaStylePreviewUrl(item.preview)"
-                    :alt="dramaStyleCardLabel(item, lang)"
-                    class="style-picker-thumb"
-                    loading="lazy"
-                  />
-                  <div v-else class="style-picker-thumb style-picker-thumb-fallback"></div>
-                  <span class="style-picker-label">{{ dramaStyleCardLabel(item, lang) }}</span>
-                </button>
-              </div>
+              <span class="field-label">{{ tm.index.planEpisodes }}</span>
+              <input v-model.number="createFormDraft.total_episodes" class="input" type="number" min="1" max="100" />
             </label>
             <label class="field">
-              <span class="field-label">{{ tm.index.projectSynopsis }}</span>
-              <textarea
-                v-model="createFormDraft.description"
-                class="input textarea"
-                rows="3"
-                :placeholder="tm.index.projectSynopsisPlaceholder"
-              />
-            </label>
-          </template>
-          <template v-else>
-            <div class="field-row">
-              <label class="field">
-                <span class="field-label">{{ tm.index.planChapters }}</span>
-                <input v-model.number="createFormDraft.total_chapters" class="input" type="number" min="1" max="500" />
-              </label>
-              <label class="field">
-                <span class="field-label">{{ tm.index.novelGenre }}</span>
-                <BaseSelect
-                  v-model="createFormDraft.novel_genre"
-                  :options="novelGenreOptions"
-                  searchable
-                  @update:model-value="onNovelGenreChange"
-                />
-              </label>
-            </div>
-            <label class="field">
-              <span class="field-label">{{ tm.index.premiseKeywords }}</span>
-              <div class="premise-keywords-row">
-                <input
-                  v-model="premiseKeywordLine"
-                  class="input"
-                  :placeholder="tm.index.premiseKeywordsPlaceholder"
-                  @keydown.enter.prevent="synthesizePremiseLine"
-                />
+              <span class="field-label">{{ tm.index.screenOrientation }}</span>
+              <div class="orientation-tabs">
                 <button
                   type="button"
-                  class="btn btn-primary premise-gen-btn"
-                  :disabled="premiseGenBusy || !premiseKeywordLine.trim() || !canGenerate"
-                  @click="synthesizePremiseLine"
-                >
-                  {{ premiseGenBusy ? tm.index.generatingPremise : tm.index.generatePremise }}
-                </button>
+                  :class="['orientation-tab', { active: createFormDraft.screen_orientation === 'portrait' }]"
+                  @click="createFormDraft.screen_orientation = 'portrait'"
+                >{{ tm.index.screenPortrait }}</button>
+                <button
+                  type="button"
+                  :class="['orientation-tab', { active: createFormDraft.screen_orientation === 'landscape' }]"
+                  @click="createFormDraft.screen_orientation = 'landscape'"
+                >{{ tm.index.screenLandscape }}</button>
               </div>
+              <span class="field-hint">{{ tm.index.screenOrientationHint }}</span>
             </label>
-            <label class="field">
-              <span class="field-label">{{ tm.index.premise }}</span>
-              <textarea v-model="createFormDraft.premise" class="input textarea" rows="4" :placeholder="tm.index.premisePlaceholder" />
-            </label>
-          </template>
+          </div>
+          <label class="field">
+            <span class="field-label">{{ tm.index.visualStyle }}</span>
+            <div class="style-picker-grid">
+              <button
+                v-for="item in dramaStyleRows"
+                :key="item.value"
+                type="button"
+                :class="['style-picker-card', { active: createFormDraft.style === item.value }]"
+                @click="createFormDraft.style = item.value"
+              >
+                <img
+                  v-if="dramaStylePreviewUrl(item.preview)"
+                  :src="dramaStylePreviewUrl(item.preview)"
+                  :alt="dramaStyleCardLabel(item, lang)"
+                  class="style-picker-thumb"
+                  loading="lazy"
+                />
+                <div v-else class="style-picker-thumb style-picker-thumb-fallback"></div>
+                <span class="style-picker-label">{{ dramaStyleCardLabel(item, lang) }}</span>
+              </button>
+            </div>
+          </label>
+          <label class="field">
+            <span class="field-label">{{ tm.index.projectSynopsis }}</span>
+            <textarea
+              v-model="createFormDraft.description"
+              class="input textarea"
+              rows="3"
+              :placeholder="tm.index.projectSynopsisPlaceholder"
+            />
+          </label>
           <div class="modal-actions">
             <button type="button" class="btn" @click="newProjectModalOpen = false">{{ tm.index.cancel }}</button>
             <button type="submit" class="btn btn-primary">
@@ -360,8 +309,7 @@
 definePageMeta({ name: 'index', keepalive: true })
 
 import { toast } from 'vue-sonner'
-import { dramaAPI, novelAPI, templatesAPI } from '~/composables/use-api'
-import BaseSelect from '~/components/base-select.vue'
+import { dramaAPI, templatesAPI } from '~/composables/use-api'
 import { useCreditsGate } from '~/composables/use-credits-gate'
 import { useI18n, tx } from '~/composables/use-i18n'
 import {
@@ -372,9 +320,7 @@ import {
   mergeDramaStyleCatalog,
 } from '~/common/drama/dramaStyle'
 import { formatNovelCharCount } from '~/common/novel/novelCharCount'
-import { computeNovelProjectStats } from '~/common/novel/novelProjectStats'
 import { truncateText } from '~/common/text/truncateText'
-import { applyNovelGenrePreset, novelGenreSelectOptions } from '~/common/novel/novelGenrePresets'
 
 const { messages: tm, init, lang } = useI18n()
 const { canGenerate, guardGenerate } = useCreditsGate()
@@ -393,22 +339,15 @@ const homePagination = useState('home_pagination', () => ({
 }))
 const { homeProjectsReady } = useSessionCache()
 
-// ── 新建项目弹窗 ──────────────────────────────────────────────
+// ── 新建短剧弹窗 ──────────────────────────────────────────────
 const newProjectModalOpen = ref(false)
-const draftKind = ref('drama')
 const createFormDraft = ref({
   title: '',
   total_episodes: 1,
-  total_chapters: 10,
   style: 'realistic',
   screen_orientation: 'portrait',
-  novel_genre: '',
-  novel_genre_skill_key: '',
-  premise: '',
   description: '',
 })
-const premiseKeywordLine = ref('')
-const premiseGenBusy = ref(false)
 const titleGenBusy = ref(false)
 const dramaStyleRows = ref(DRAMA_STYLE_CATALOG)
 
@@ -471,7 +410,6 @@ const kindFilterTabs = computed(() => [
 ])
 
 const visibleHomeRows = computed(() => homeProjectRows.value)
-const novelGenreOptions = novelGenreSelectOptions()
 
 function resolveRowKind(d) {
   return d.project_type || d.projectType || 'drama'
@@ -516,46 +454,12 @@ function clipRowSynopsis(d) {
 }
 
 function showCreateModal() {
-  void fetchDramaStyles()
-  draftKind.value = homeKindFilter.value === 'novel' ? 'novel' : 'drama'
-  premiseKeywordLine.value = ''
-  newProjectModalOpen.value = true
-}
-
-function onNovelGenreChange(value) {
-  const genre = String(value ?? createFormDraft.value.novel_genre ?? '').trim()
-  const applied = applyNovelGenrePreset(genre)
-  if (applied) {
-    premiseKeywordLine.value = applied.keywords
-    createFormDraft.value.premise = applied.premise
-    createFormDraft.value.novel_genre_skill_key = applied.skillKey
-  } else {
-    premiseKeywordLine.value = ''
-    createFormDraft.value.premise = ''
-    createFormDraft.value.novel_genre_skill_key = ''
-  }
-}
-
-async function synthesizeNovelTitle() {
-  if (!guardGenerate()) return
-  const keywords = createFormDraft.value.title.trim()
-  if (!keywords) {
-    toast.error(tm.value.index.generateTitleNeedKeywords)
+  if (homeKindFilter.value === 'novel') {
+    navigateTo('/novel/ideate')
     return
   }
-  try {
-    titleGenBusy.value = true
-    const { title } = await novelAPI.generateTitle({
-      keywords,
-      genre: createFormDraft.value.novel_genre?.trim() || undefined,
-      total_chapters: createFormDraft.value.total_chapters || undefined,
-    })
-    if (title?.trim()) createFormDraft.value.title = title.trim()
-  } catch (e) {
-    toast.error(e.message)
-  } finally {
-    titleGenBusy.value = false
-  }
+  void fetchDramaStyles()
+  newProjectModalOpen.value = true
 }
 
 async function synthesizeDramaTitle() {
@@ -577,26 +481,6 @@ async function synthesizeDramaTitle() {
     toast.error(e.message)
   } finally {
     titleGenBusy.value = false
-  }
-}
-
-async function synthesizePremiseLine() {
-  if (!guardGenerate()) return
-  const keywords = premiseKeywordLine.value.trim()
-  if (!keywords) return
-  try {
-    premiseGenBusy.value = true
-    const { premise } = await novelAPI.generatePremise({
-      keywords,
-      title: createFormDraft.value.title?.trim() || undefined,
-      genre: createFormDraft.value.novel_genre?.trim() || undefined,
-      total_chapters: createFormDraft.value.total_chapters || undefined,
-    })
-    createFormDraft.value.premise = premise || ''
-  } catch (e) {
-    toast.error(e.message)
-  } finally {
-    premiseGenBusy.value = false
   }
 }
 
@@ -653,37 +537,22 @@ async function fetchDramaStyles() {
 async function submitCreateForm() {
   if (!createFormDraft.value.title?.trim()) return
   try {
-    const payload = draftKind.value === 'novel'
-      ? {
-          title: createFormDraft.value.title,
-          project_type: 'novel',
-          total_chapters: createFormDraft.value.total_chapters || 10,
-          novel_genre: createFormDraft.value.novel_genre || undefined,
-          novel_genre_skill_key: createFormDraft.value.novel_genre_skill_key || undefined,
-          premise: createFormDraft.value.premise || undefined,
-        }
-      : {
-          title: createFormDraft.value.title,
-          project_type: 'drama',
-          total_episodes: createFormDraft.value.total_episodes || 1,
-          screen_orientation: createFormDraft.value.screen_orientation || 'portrait',
-          style: createFormDraft.value.style || undefined,
-          description: createFormDraft.value.description?.trim() || undefined,
-        }
-    const d = await dramaAPI.create(payload)
+    const d = await dramaAPI.create({
+      title: createFormDraft.value.title,
+      project_type: 'drama',
+      total_episodes: createFormDraft.value.total_episodes || 1,
+      screen_orientation: createFormDraft.value.screen_orientation || 'portrait',
+      style: createFormDraft.value.style || undefined,
+      description: createFormDraft.value.description?.trim() || undefined,
+    })
     newProjectModalOpen.value = false
     createFormDraft.value = {
       title: '',
       total_episodes: 1,
-      total_chapters: 10,
       style: 'realistic',
       screen_orientation: 'portrait',
-      novel_genre: '',
-      novel_genre_skill_key: '',
-      premise: '',
       description: '',
     }
-    premiseKeywordLine.value = ''
     navigateTo(`/drama/${d.id}`)
   } catch (e) {
     toast.error(e.message)
@@ -773,8 +642,10 @@ onActivated(() => {
   justify-content: space-between;
   align-items: flex-end;
   margin-bottom: 28px;
+  gap: 12px;
 }
 .head-left { display: flex; flex-direction: column; gap: 4px; }
+.head-actions { display: flex; align-items: center; gap: 8px; flex-shrink: 0; }
 .page-title {
   font-family: var(--font-display);
   font-size: 26px;
@@ -828,27 +699,6 @@ onActivated(() => {
   background: rgba(120, 90, 200, 0.1);
   color: #5b45b8;
   border: 1px solid rgba(120, 90, 200, 0.22);
-}
-.create-kind-filter-tabs {
-  display: flex;
-  gap: 6px;
-  margin-bottom: 4px;
-}
-.create-kind-filter-tab {
-  height: 28px;
-  padding: 0 12px;
-  border-radius: 999px;
-  border: 1px solid var(--border);
-  background: var(--bg-1);
-  font-size: 12px;
-  font-weight: 600;
-  color: var(--text-2);
-  cursor: pointer;
-}
-.create-kind-filter-tab.active {
-  background: var(--accent-bg);
-  border-color: rgba(76,125,255,0.25);
-  color: var(--accent-text);
 }
 .textarea {
   min-height: 88px;

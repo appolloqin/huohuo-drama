@@ -624,8 +624,27 @@ export const dramaAPI = {
 
 // ── 火火扩展：小说 / 批量 / AI 检测 ─────────────────────────
 
+export type NovelHotSource = {
+  platform: string
+  externalId: string
+  title: string
+}
+
 export const novelAPI = {
-  generatePremise: (body: { keywords: string; title?: string; genre?: string; total_chapters?: number }) =>
+  generatePremise: (body: {
+    keywords: string
+    title?: string
+    genre?: string
+    total_chapters?: number
+    novel_genre_skill_key?: string
+    novel_genre_secondary_keys?: string[]
+    worldview_id?: string
+    worldview_custom?: string
+    cultivation_id?: string
+    cultivation_custom?: string
+    golden_finger_id?: string
+    golden_finger_custom?: string
+  }) =>
     api.post<{ premise: string }>('/novel/generate-premise', body),
   generateTitle: (body: { keywords: string; genre?: string; total_chapters?: number }) =>
     api.post<{ title: string }>('/novel/generate-title', body),
@@ -634,6 +653,14 @@ export const novelAPI = {
     premise: string
     novel_genre: string
     novel_genre_skill_key?: string
+    novel_genre_secondary_keys?: string[]
+    worldview_id?: string
+    worldview_custom?: string
+    cultivation_id?: string
+    cultivation_custom?: string
+    golden_finger_id?: string
+    golden_finger_custom?: string
+    hot_source?: NovelHotSource | null
     context_chars: number
     target_chapter_chars: number
     continue_segment_chars: number
@@ -643,6 +670,14 @@ export const novelAPI = {
     premise?: string
     novel_genre?: string
     novel_genre_skill_key?: string
+    novel_genre_secondary_keys?: string[]
+    worldview_id?: string
+    worldview_custom?: string
+    cultivation_id?: string
+    cultivation_custom?: string
+    golden_finger_id?: string
+    golden_finger_custom?: string
+    hot_source?: NovelHotSource | null
     context_chars?: number
     target_chapter_chars?: number
     continue_segment_chars?: number

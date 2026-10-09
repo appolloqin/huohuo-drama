@@ -6,6 +6,15 @@ import {
   EMOTION_CORE_ORDER,
 } from '../services/novel/novel-emotion-core-contract.js'
 import { buildStakesCommonSensePromptBlock } from '../services/novel/novel-stakes-common-sense.js'
+import {
+  isCultivationPowerGenre,
+  isMundaneNonCultivationGenre,
+} from '../common/novel/novel-power-genre.js'
+
+export {
+  isCultivationPowerGenre,
+  isMundaneNonCultivationGenre,
+}
 
 export const NOVEL_AGENT_TYPES = [
   'novel_premise',
@@ -21,16 +30,6 @@ export const NOVEL_OUTLINE_WORLD_SECTION = '【世界观设定】'
 
 /** 全书大纲须含的分卷块 */
 export const NOVEL_OUTLINE_VOLUME_SECTION = '【分卷设计】'
-
-import {
-  isCultivationPowerGenre,
-  isMundaneNonCultivationGenre,
-} from '../common/novel/novel-power-genre.js'
-
-export {
-  isCultivationPowerGenre,
-  isMundaneNonCultivationGenre,
-}
 
 const CULTIVATION_REALM_BLEED = /淬体|凝气|筑基|炼气|金丹|元婴|化神|炼虚|合体|渡劫|飞升/
 

@@ -186,10 +186,13 @@ export async function generateNovelPremise(args: {
   keywords: string
   genre?: string
   totalChapters?: number
+  settingInject?: string
+  novelGenreSkillKey?: string
 }, billing?: TextBillingContext): Promise<string> {
-  const { title, keywords, genre, totalChapters } = args
+  const { title, keywords, genre, totalChapters, settingInject, novelGenreSkillKey } = args
   const system = await buildNovelAgentSystem('novel_premise', {
-    novelGenreSkillKey: genre ? resolveSkillKeyFromGenreValue(genre) : undefined,
+    novelGenreSkillKey: novelGenreSkillKey
+      || (genre ? resolveSkillKeyFromGenreValue(genre) : undefined),
   })
   const options = await novelAgentCompletionOptions('novel_premise', { maxTokens: 2048, temperature: 0.78 })
 
@@ -197,6 +200,7 @@ export async function generateNovelPremise(args: {
     title ? `【书名】${title}` : '',
     genre ? `【题材】${genre}` : '',
     totalChapters ? `【计划章数】约 ${totalChapters} 章` : '',
+    settingInject?.trim() ? settingInject.trim() : '',
     `【关键词】\n${keywords}`,
     NO_THINKING_OUTPUT_RULE,
   ].filter(Boolean).join('\n\n')
@@ -419,10 +423,17 @@ function mergeOutlineSkeletonAndChapters(skeleton: string, volumeBlocks: Outline
 }
 
 async function generateOutlineSkeleton(
-  args: { title: string; premise: string; genre?: string; novelGenreSkillKey?: string; totalChapters: number },
+  args: {
+    title: string
+    premise: string
+    genre?: string
+    novelGenreSkillKey?: string
+    totalChapters: number
+    settingInject?: string
+  },
   billing?: TextBillingContext,
 ): Promise<string> {
-  const { title, premise, genre, totalChapters } = args
+  const { title, premise, genre, totalChapters, settingInject } = args
   const skillKey = resolveOutlineAgentSkillKey(args)
   const system = [
     await buildNovelAgentSystem('novel_outline', {
@@ -445,6 +456,7 @@ async function generateOutlineSkeleton(
     genre ? `【题材】${genre}` : '',
     `【计划章数】${totalChapters}`,
     `【创意/梗概】\n${premise}`,
+    settingInject?.trim() ? settingInject.trim() : '',
     `【硬性要求】大纲开头必须是「${NOVEL_OUTLINE_WORLD_SECTION}」。${buildOutlineWorldHardRequirement(genre)}须含「${NOVEL_OUTLINE_VOLUME_SECTION}」，每卷写明卷名、章节范围与本卷大纲。${buildTitleSellHardRequirement(title, premise)}总纲【卖点偏转】【能力非常规用法】须点名书名硬钩。`,
     NO_THINKING_OUTPUT_RULE,
   ].filter(Boolean).join('\n\n')
@@ -642,6 +654,7 @@ export async function generateNovelOutline(args: {
   genre?: string
   novelGenreSkillKey?: string
   totalChapters: number
+  settingInject?: string
 }, billing?: TextBillingContext): Promise<string> {
   const { title, premise, genre, novelGenreSkillKey, totalChapters } = args
 
@@ -719,10 +732,17 @@ export async function generateNovelOutline(args: {
 }
 
 async function generateNovelOutlineSingleShot(
-  args: { title: string; premise: string; genre?: string; novelGenreSkillKey?: string; totalChapters: number },
+  args: {
+    title: string
+    premise: string
+    genre?: string
+    novelGenreSkillKey?: string
+    totalChapters: number
+    settingInject?: string
+  },
   billing?: TextBillingContext,
 ): Promise<string> {
-  const { title, premise, genre, totalChapters } = args
+  const { title, premise, genre, totalChapters, settingInject } = args
   const skillKey = resolveOutlineAgentSkillKey(args)
   const system = [
     await buildNovelAgentSystem('novel_outline', {
@@ -743,6 +763,7 @@ async function generateNovelOutlineSingleShot(
     genre ? `【题材】${genre}` : '',
     `【计划章数】${totalChapters}`,
     `【创意/梗概】\n${premise}`,
+    settingInject?.trim() ? settingInject.trim() : '',
     `【硬性要求】大纲开头必须是「${NOVEL_OUTLINE_WORLD_SECTION}」。${buildOutlineWorldHardRequirement(genre)}须含「${NOVEL_OUTLINE_VOLUME_SECTION}」，每卷写明卷名、章节范围与本卷大纲。分章概要必须写满第 ${totalChapters} 章，不得中途截断。「第N章：」后只写 2～12 字场面短标题，标题行禁止括号夹注；时间/地点/爽型分写标签行。新地点/道具须有出场来由；【冲突层】仅外部/人际/自我。${buildTitleSellHardRequirement(title, premise)}`,
     NO_THINKING_OUTPUT_RULE,
   ].filter(Boolean).join('\n\n')

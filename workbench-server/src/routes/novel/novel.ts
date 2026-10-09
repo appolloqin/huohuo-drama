@@ -55,8 +55,23 @@ function novelTextBilling(
     resourceId,
   }
 }
-import { isNovelProject, mergeNovelMetadata, parseNovelMetadata, resolveNovelGenreSkillKey, type NovelMetadata } from '../../common/novel/novel-meta.js'
+import {
+  isNovelProject,
+  mergeNovelMetadata,
+  parseNovelMetadata,
+  resolveNovelGenreSkillKey,
+  type NovelMetadata,
+} from '../../common/novel/novel-meta.js'
 import { getNovelGenreEntryByValue, isActiveNovelGenreSkillKey } from '../../common/novel/novel-genre-registry.js'
+import { buildNovelSettingInjectBlock } from '../../common/novel/novel-setting-inject.js'
+import {
+  ideationPatchFromBody,
+  stripCultivationIfNonPower,
+} from '../../common/novel/novel-setting-from-body.js'
+import {
+  bodyHasIdeationSettingKeys,
+  validateNovelIdeationSettings,
+} from '../../common/novel/novel-setting-validate.js'
 import { extractChapterOutline, resolveChapterDisplayTitle } from '../../common/novel/novel-outline.js'
 import { syncChapterTitlesFromOutline } from '../../common/novel/novel-chapter-titles.js'
 import {
@@ -179,11 +194,24 @@ app.post('/generate-premise', async (c) => {
   const title = typeof body.title === 'string' ? body.title.trim() : undefined
   const genre = typeof body.genre === 'string' ? body.genre.trim() : undefined
   const totalChapters = Number(body.total_chapters) || undefined
+  const ideationRaw = ideationPatchFromBody(body)
+  const ideationMeta = stripCultivationIfNonPower({
+    ...ideationRaw,
+    novel_genre: genre || ideationRaw.novel_genre,
+  })
+  const settingInject = buildNovelSettingInjectBlock(ideationMeta)
 
   logTaskStart('Novel', 'generate-premise', { keywordLen: keywords.length })
   try {
     const premise = await generateNovelPremise(
-      { title, keywords, genre, totalChapters },
+      {
+        title,
+        keywords,
+        genre: ideationMeta.novel_genre || genre,
+        totalChapters,
+        settingInject: settingInject || undefined,
+        novelGenreSkillKey: ideationMeta.novel_genre_skill_key,
+      },
       novelTextBilling(user, '小说梗概生成'),
     )
     logTaskSuccess('Novel', 'generate-premise', { len: premise.length })
@@ -244,6 +272,14 @@ app.get('/dramas/:id/meta', async (c) => {
     premise: meta.premise || drama.description || '',
     novel_genre: meta.novel_genre || drama.genre || '',
     novel_genre_skill_key: resolveNovelGenreSkillKey(meta) || '',
+    novel_genre_secondary_keys: meta.novel_genre_secondary_keys || [],
+    worldview_id: meta.worldview_id || '',
+    worldview_custom: meta.worldview_custom || '',
+    cultivation_id: meta.cultivation_id || '',
+    cultivation_custom: meta.cultivation_custom || '',
+    golden_finger_id: meta.golden_finger_id || '',
+    golden_finger_custom: meta.golden_finger_custom || '',
+    hot_source: meta.hot_source || null,
     context_chars: meta.context_chars || 4000,
     target_chapter_chars: meta.target_chapter_chars || 3000,
     continue_segment_chars: meta.continue_segment_chars || 800,
@@ -288,6 +324,22 @@ app.put('/dramas/:id/meta', async (c) => {
   }
   if (body.chapter_review_auto === false) patch.chapter_review_auto = false
   if (body.chapter_review_auto === true) patch.chapter_review_auto = true
+
+  if (bodyHasIdeationSettingKeys(body)) {
+    const ideation = ideationPatchFromBody(body)
+    Object.assign(patch, ideation)
+    const mergedPreview = stripCultivationIfNonPower(
+      parseNovelMetadata(mergeNovelMetadata(drama.metadata, patch)),
+    )
+    const ideationErr = validateNovelIdeationSettings(mergedPreview)
+    if (ideationErr) return badRequest(c, ideationErr)
+    // 非力量题材确保修炼字段被清掉
+    if (!mergedPreview.cultivation_id && !mergedPreview.cultivation_custom) {
+      patch.cultivation_id = ''
+      patch.cultivation_custom = ''
+    }
+  }
+
   const metadata = mergeNovelMetadata(drama.metadata, patch)
   const updates: Record<string, unknown> = { metadata, updatedAt: now() }
   if (typeof body.novel_genre === 'string') updates.genre = body.novel_genre
@@ -343,6 +395,7 @@ app.post('/dramas/:id/outline', async (c) => {
       genre: meta.novel_genre || drama.genre || undefined,
       novelGenreSkillKey: resolveNovelGenreSkillKey(meta),
       totalChapters,
+      settingInject: buildNovelSettingInjectBlock(meta) || undefined,
     }, novelTextBilling(user, '小说大纲生成', id))
     const metadata = mergeNovelMetadata(drama.metadata, { outline, premise })
     await updateNovelDrama(id, { metadata, updatedAt: now() })

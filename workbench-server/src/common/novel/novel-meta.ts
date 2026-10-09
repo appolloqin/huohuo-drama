@@ -18,6 +18,16 @@ export type NovelMetadata = {
   novel_genre?: string
   /** 题材类型 ID，Skill 路由唯一依据（与 preset skillKey 对应） */
   novel_genre_skill_key?: string
+  /** 辅题材 skillKey，最多 3；不改 Skill 路由 */
+  novel_genre_secondary_keys?: string[]
+  worldview_id?: string
+  worldview_custom?: string
+  cultivation_id?: string
+  cultivation_custom?: string
+  golden_finger_id?: string
+  golden_finger_custom?: string
+  /** 热榜套用来源（审计）；P0 可空 */
+  hot_source?: { platform: string; externalId: string; title: string }
   /** 续写时参考的上下文字符数，默认 4000 */
   context_chars?: number
   /** 一次生成本章的目标字数，默认 3000 */
@@ -91,6 +101,16 @@ export function parseNovelMetadata(raw: JsonColumnInput): NovelMetadata {
       novel_genre: typeof parsed.novel_genre === 'string' ? parsed.novel_genre : undefined,
       novel_genre_skill_key:
         typeof parsed.novel_genre_skill_key === 'string' ? parsed.novel_genre_skill_key : undefined,
+      novel_genre_secondary_keys: parseSecondaryGenreKeys(parsed.novel_genre_secondary_keys),
+      worldview_id: typeof parsed.worldview_id === 'string' ? parsed.worldview_id : undefined,
+      worldview_custom: typeof parsed.worldview_custom === 'string' ? parsed.worldview_custom : undefined,
+      cultivation_id: typeof parsed.cultivation_id === 'string' ? parsed.cultivation_id : undefined,
+      cultivation_custom:
+        typeof parsed.cultivation_custom === 'string' ? parsed.cultivation_custom : undefined,
+      golden_finger_id: typeof parsed.golden_finger_id === 'string' ? parsed.golden_finger_id : undefined,
+      golden_finger_custom:
+        typeof parsed.golden_finger_custom === 'string' ? parsed.golden_finger_custom : undefined,
+      hot_source: parseHotSource(parsed.hot_source),
       context_chars: Number.isFinite(Number(parsed.context_chars)) ? Number(parsed.context_chars) : undefined,
       target_chapter_chars: Number.isFinite(Number(parsed.target_chapter_chars))
         ? Number(parsed.target_chapter_chars) : undefined,
@@ -155,16 +175,56 @@ export function parseNovelMetadata(raw: JsonColumnInput): NovelMetadata {
   }
 }
 
+export type NovelMetadataPatch = Partial<NovelMetadata> & {
+  /** null = 删除 hot_source */
+  hot_source?: NovelMetadata['hot_source'] | null
+}
+
+function parseSecondaryGenreKeys(raw: unknown): string[] | undefined {
+  if (!Array.isArray(raw)) return undefined
+  const keys: string[] = []
+  const seen = new Set<string>()
+  for (const item of raw) {
+    if (typeof item !== 'string') continue
+    const k = item.trim()
+    if (!k || seen.has(k)) continue
+    seen.add(k)
+    keys.push(k)
+    if (keys.length >= 3) break
+  }
+  return keys
+}
+
+function parseHotSource(raw: unknown): NovelMetadata['hot_source'] | undefined {
+  if (!raw || typeof raw !== 'object') return undefined
+  const o = raw as Record<string, unknown>
+  const platform = typeof o.platform === 'string' ? o.platform.trim() : ''
+  const externalId = typeof o.externalId === 'string' ? o.externalId.trim() : ''
+  const title = typeof o.title === 'string' ? o.title.trim() : ''
+  if (!platform || !externalId || !title) return undefined
+  return { platform, externalId, title }
+}
+
 export function mergeNovelMetadata(
   raw: JsonColumnInput,
-  patch: Partial<NovelMetadata>,
+  patch: NovelMetadataPatch,
 ): string {
   const base = parseNovelMetadata(raw)
-  const next: NovelMetadata = { ...base, ...patch }
+  const next: NovelMetadata = { ...base, ...patch } as NovelMetadata
   if (patch.outline === '') delete next.outline
   if (patch.premise === '') delete next.premise
   if (patch.novel_genre === '') delete next.novel_genre
   if (patch.novel_genre_skill_key === '') delete next.novel_genre_skill_key
+  if (patch.worldview_id === '') delete next.worldview_id
+  if (patch.worldview_custom === '') delete next.worldview_custom
+  if (patch.cultivation_id === '') delete next.cultivation_id
+  if (patch.cultivation_custom === '') delete next.cultivation_custom
+  if (patch.golden_finger_id === '') delete next.golden_finger_id
+  if (patch.golden_finger_custom === '') delete next.golden_finger_custom
+  if (patch.hot_source === null) delete next.hot_source
+  if (Array.isArray(patch.novel_genre_secondary_keys)) {
+    next.novel_genre_secondary_keys = parseSecondaryGenreKeys(patch.novel_genre_secondary_keys) || []
+  }
   return JSON.stringify(next)
 }
 
