@@ -119,24 +119,28 @@ export async function getTextConfig(opts?: ConfigResolveOpts): Promise<AIConfig>
 /**
  * 审/判用文本配置：启用独立审核模型时，解析到「该型号所属」的文本服务行（正确的 provider/key）；
  * 未启用 / 未配置 / 找不到对应服务 → 回退写作文本配置。
+ *
+ * 须带 userId 才会读用户「文本审核模型」；无 userId 会落到平台火火 preset（易误用已关停的型号）。
  */
 export async function getTextAuditConfig(opts?: ConfigResolveOpts): Promise<AIConfig> {
-  const cfg = await getTextConfig(opts)
-  if (!opts?.userId) return cfg
-  const audit = await getUserTextAuditModelSettings(opts.userId)
-  if (!audit.enabled || !audit.model) return cfg
-
-  const resolved = await resolveTextAuditAiConfig(audit.model, cfg.provider)
-  if (!resolved) {
-    logTaskWarn('AIConfig', 'text-audit-model-unresolved', {
-      userId: opts.userId,
-      model: audit.model,
-      fallback: cfg.model,
-    })
-    // 找不到对应服务时不要硬套到写作通道（会触发「model not found」）
-    return cfg
+  if (opts?.userId) {
+    const audit = await getUserTextAuditModelSettings(opts.userId)
+    if (audit.enabled && audit.model) {
+      let preferProvider: string | undefined
+      try {
+        preferProvider = (await getTextConfig(opts)).provider
+      } catch {
+        preferProvider = undefined
+      }
+      const resolved = await resolveTextAuditAiConfig(audit.model, preferProvider)
+      if (resolved) return resolved
+      logTaskWarn('AIConfig', 'text-audit-model-unresolved', {
+        userId: opts.userId,
+        model: audit.model,
+      })
+    }
   }
-  return resolved
+  return getTextConfig(opts)
 }
 
 export async function getTextConfigWithModels(): Promise<{
@@ -542,6 +546,10 @@ export type TextBillingContext = {
 export type ChatCompletionOptions = {
   maxTokens?: number
   temperature?: number
+  /** 显式 top_p；须在 extraBody 之后写回，避免被配置盖掉 */
+  topP?: number
+  /** 可复现采样（OpenAI/DeepSeek 兼容；best-effort） */
+  seed?: number
   billing?: TextBillingContext
   /** 困惑度检测可指定模型（如 qwen-plus 快照，qwen3.5-plus 不支持 logprobs） */
   model?: string
@@ -1124,7 +1132,22 @@ function resolveThinkingForRequest(cfg: AIConfig, options: ChatCompletionOptions
   return resolveThinkingEnabled(parseConfigSettings(cfg.settings))
 }
 
-function buildChatCompletionRequestBody(
+/**
+ * DeepSeek 空正文重试时是否开思考。
+ * 审校/显式关思考必须保持关闭（thinking 模式下 temperature 无效）。
+ */
+export function shouldOpenDeepseekThinkingOnRetry(args: {
+  sensitive: boolean
+  deepseekV4: boolean
+  attempt: number
+  enableThinking?: boolean
+  salvageMode?: ChatCompletionOptions['salvageMode']
+}): boolean {
+  const keepThinkingOff = args.enableThinking === false || args.salvageMode === 'json'
+  return !args.sensitive && args.deepseekV4 && args.attempt >= 1 && !keepThinkingOff
+}
+
+export function buildChatCompletionRequestBody(
   cfg: AIConfig,
   messages: ChatMessage[],
   options: ChatCompletionOptions,
@@ -1148,7 +1171,14 @@ function buildChatCompletionRequestBody(
     ...extra,
     max_tokens: maxTokens,
   }
-  // extraBody 可能又塞回 temperature；固定采样型号必须再剥一次
+  // extraBody 可能又塞回 temperature/top_p；调用方显式值必须压过配置
+  if (!omitSampling && options.temperature != null) {
+    body.temperature = options.temperature
+  }
+  if (!omitSampling && options.topP != null) {
+    body.top_p = options.topP
+  }
+  // 固定采样型号必须再剥一次
   applyKimiFixedSamplingOmit(body, cfg)
   applyMiniMaxTextRequestParams(body, cfg, thinkingEnabled, {
     reasoningSplit: options.minimaxReasoningSplit != null
@@ -1162,6 +1192,16 @@ function buildChatCompletionRequestBody(
     applyNonMiniMaxThinkingDisable(body, cfg)
   }
   applyKimiK3ThinkingGuard(body, cfg)
+  // MiniMax/Kimi 处理后再次钉死调用方采样（避免中间步骤改写）
+  if (!omitSampling && options.temperature != null) {
+    body.temperature = options.temperature
+  }
+  if (!omitSampling && options.topP != null) {
+    body.top_p = options.topP
+  }
+  if (options.seed != null && Number.isFinite(options.seed)) {
+    body.seed = Math.floor(options.seed)
+  }
   return body
 }
 
@@ -1232,7 +1272,9 @@ async function chatCompletionTextOnce(
     const model = options.model || cfg.model
     const reason = options.billing?.reason || ''
     console.log(
-      `[AI] chat-completion-prompt | model=${model} reason=${reason} maxTokens=${maxTokens} messages=${messages.length}`,
+      `[AI] chat-completion-prompt | model=${model} reason=${reason} maxTokens=${maxTokens} messages=${messages.length}`
+        + ` temperature=${requestBody.temperature ?? '∅'} top_p=${requestBody.top_p ?? '∅'}`
+        + ` seed=${requestBody.seed ?? '∅'} thinking=${JSON.stringify(requestBody.thinking ?? null)}`,
     )
     for (const m of messages) {
       const raw = typeof m.content === 'string' ? m.content : JSON.stringify(m.content ?? '')
@@ -1327,8 +1369,15 @@ async function chatCompletionWithConfig(
           : deepseekV4
             ? Math.min(32768, Math.max(16384, prev * 2, prev + 4096))
             : Math.min(16384, Math.max(prev + 1536, Math.round(prev * 1.35)))
-        // 关思考仍只吐 reasoning 时：后续轮次改为开思考，让最终 JSON/正文进 content
-        const openThinking = !sensitive && deepseekV4 && attempt >= 1
+        // DeepSeek 官方：thinking 模式下 temperature 无效。
+        // 审校/显式关思考时禁止重试开思考，否则同文 temp=0 也会漂。
+        const openThinking = shouldOpenDeepseekThinkingOnRetry({
+          sensitive,
+          deepseekV4,
+          attempt,
+          enableThinking: options.enableThinking,
+          salvageMode: options.salvageMode,
+        })
         // 配置要求 reasoning_split=true 时不可在重试里改成 false（M3.1 等会 400）
         const splitOn = resolveMiniMaxReasoningSplit(cfg.settings, false)
         attemptOptions = {

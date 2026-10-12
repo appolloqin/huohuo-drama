@@ -20,6 +20,7 @@ import {
   detectStableAgeConflicts,
   extractStableCastFactsFromOutline,
 } from './novel-stable-cast-facts.js'
+import { detectPeerKinshipAddressConflicts } from '../../common/novel/novel-peer-kinship-audit.js'
 
 export type AuditConflict = {
   layer: 'hard' | 'rule'
@@ -600,11 +601,13 @@ export function runLocalContinuityAudit(args: {
     [args.bookOutline || '', chapterOutline || '', args.extraGrounding || ''].join('\n'),
   )
   const ageHits = detectStableAgeConflicts(trimmed, ageFacts)
+  const kinshipHits = detectPeerKinshipAddressConflicts(trimmed)
   const hard: AuditConflict[] = [
     ...intra.hard,
     ...checkUnpromptedPregnancyState(trimmed, grounding),
     ...(presenceHit ? [presenceHit] : []),
     ...ageHits,
+    ...kinshipHits,
   ]
   const rule: AuditConflict[] = [
     ...intra.rule,

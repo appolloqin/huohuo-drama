@@ -229,6 +229,7 @@ export async function updateOwnedEpisode(
   id: number,
   ownedEpisode: { episode: EpisodeRow; drama: DramaRow },
   body: Record<string, unknown>,
+  billing?: { userId: number; role?: string },
 ) {
   const allowed = ['content', 'script_content', 'formatted_script', 'title', 'description', 'status', 'drama_image_config_id', 'drama_video_config_id', 'drama_audio_config_id']
   const updates: Record<string, unknown> = {}
@@ -323,6 +324,16 @@ export async function updateOwnedEpisode(
       chapterNumber: ownedEpisode.episode.episodeNumber,
       content: updates.content,
       dramaTitle: ownedEpisode.drama.title,
+      // 必须带 userId：否则会忽略用户已关停的文本型号，回退到平台 preset（如仍写着 M3.1）
+      billing: billing
+        ? {
+            userId: billing.userId,
+            role: billing.role,
+            reason: '小说章节保存·连续性账本',
+            resourceType: 'novel',
+            resourceId: id,
+          }
+        : undefined,
     }).catch((err: Error) => {
       logTaskError('Novel', 'continuity-put-refresh', { chapterId: id, error: err.message })
     })

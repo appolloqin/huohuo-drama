@@ -39,7 +39,10 @@ episodeUnitRouter.put('/:id', async (c) => {
   if (!ownedEpisode) return notFound(c, 'Episode not found')
   const body = await c.req.json()
   try {
-    await episodeService.updateOwnedEpisode(id, ownedEpisode, body)
+    await episodeService.updateOwnedEpisode(id, ownedEpisode, body, {
+      userId: authUser.id,
+      role: authUser.role,
+    })
     return success(c)
   } catch (err: any) {
     return badRequest(c, err.message || '更新失败')

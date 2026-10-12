@@ -25,7 +25,9 @@ export async function runChapterReviewPipelineHook(args: {
   chapterNumber: number
   dramaTitle: string
   meta: NovelMetadata
+  /** @deprecated 不再注入审稿 */
   writingBrief?: string
+  /** @deprecated 不再注入审稿 */
   chapterOutline?: string
   platform?: string | null
   billing?: TextBillingContext
@@ -46,8 +48,6 @@ export async function runChapterReviewPipelineHook(args: {
       chapterNumber: args.chapterNumber,
       dramaTitle: args.dramaTitle,
       meta: args.meta,
-      writingBrief: args.writingBrief,
-      chapterOutline: args.chapterOutline,
       platform,
       billing: args.billing
         ? { ...args.billing, reason: args.billing.reason || '小说章节平台审稿' }
