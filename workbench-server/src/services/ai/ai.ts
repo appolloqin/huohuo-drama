@@ -573,6 +573,11 @@ export type ChatCompletionOptions = {
    * - json：只接受可解析审校/结构化 JSON（审校调用）
    */
   salvageMode?: 'auto' | 'json'
+  /**
+   * 强制 JSON 对象输出（OpenAI/DeepSeek 兼容 response_format）。
+   * 审校调用建议开启，减少散文总因挤掉 dimensions。
+   */
+  responseFormatJsonObject?: boolean
 }
 
 async function maybeChargeText(cfg: AIConfig, messages: ChatMessage[], output: string, usage: any, billing?: TextBillingContext) {
@@ -978,8 +983,10 @@ export function salvageProseFromReasoningMessage(
     }
   }
   for (const raw of candidates) {
-    // 优先：reasoning 末尾夹带的 JSON（关思考后 deepseek-v4 仍常把审校结果塞进 reasoning）
-    const jsonBlob = mode === 'json' ? extractAuditJsonFromText(raw) : extractJsonBlobFromText(raw)
+    // 优先：reasoning 末尾夹带的 JSON（审校 score/passed；账本 environment/realm 等也算）
+    const jsonBlob = mode === 'json'
+      ? (extractAuditJsonFromText(raw) || extractJsonBlobFromText(raw))
+      : extractJsonBlobFromText(raw)
     if (jsonBlob) return jsonBlob
     if (mode === 'json') continue
 
@@ -1073,6 +1080,15 @@ function describeEmptyCompletion(data: any, model: string, requestedMaxTokens?: 
 
   if (finish === 'content_filter') {
     return `${prefix}：内容被安全策略过滤`
+  }
+  // 关思考且无 reasoning，却有 completion tokens：多为「有输出但不是约定 JSON」（如账本字段被当成审校 JSON 丢掉）
+  if (
+    finish === 'stop'
+    && completionTokens != null
+    && Number(completionTokens) > 32
+    && !messageHasReasoningOnly(choice?.message)
+  ) {
+    return `${prefix}：已关思考且非 reasoning 占位，但输出无法解析为约定 JSON（finish=${finish}）。请重试或更换模型`
   }
   return `${prefix}，请稍后重试或更换模型`
 }
@@ -1170,6 +1186,9 @@ export function buildChatCompletionRequestBody(
     ...(omitSampling ? {} : { temperature: options.temperature ?? 0.75 }),
     ...extra,
     max_tokens: maxTokens,
+  }
+  if (options.responseFormatJsonObject) {
+    body.response_format = { type: 'json_object' }
   }
   // extraBody 可能又塞回 temperature/top_p；调用方显式值必须压过配置
   if (!omitSampling && options.temperature != null) {
@@ -1302,11 +1321,30 @@ async function chatCompletionTextOnce(
     const msg = data?.error?.message || data?.message || raw.slice(0, 300) || `AI 请求失败 (${res.status})`
     throw new Error(formatTextApiError(typeof msg === 'string' ? msg : JSON.stringify(msg)))
   }
-  let text = sanitizeModelCreativeOutput(extractChatCompletionText(data))
+  const rawExtracted = extractChatCompletionText(data)
+  let text = sanitizeModelCreativeOutput(rawExtracted)
   const salvageMode = options.salvageMode === 'json' ? 'json' : 'auto'
-  if (!text || (salvageMode === 'json' && !extractAuditJsonFromText(text))) {
-    // 审校：content 若只是思考散文，仍须从 reasoning / content 抽 JSON
-    const fromContent = salvageMode === 'json' ? extractAuditJsonFromText(extractChatCompletionText(data) || text) : ''
+  const finishReason = data?.choices?.[0]?.finish_reason || data?.choices?.[0]?.finishReason
+  // 审校 JSON 被 length 截断时，往往只剩 score/passed/reason、dimensions 未写完
+  if (salvageMode === 'json' && finishReason === 'length') {
+    logTaskWarn('AI', 'chat-completion-audit-truncated', {
+      model: cfg.model,
+      maxTokens,
+      completionTokens: data?.usage?.completion_tokens,
+      head: (rawExtracted || text || '').replace(/\s+/g, ' ').slice(0, 120),
+    })
+    throw new Error(
+      `审校输出被截断（finish_reason=length，maxTokens=${maxTokens}），dimensions 可能未交齐，请提高输出上限后重试`,
+    )
+  }
+  const hasStructuredJson = (s: string) =>
+    !!(extractAuditJsonFromText(s) || extractJsonBlobFromText(s))
+  if (!text || (salvageMode === 'json' && !hasStructuredJson(text))) {
+    // 审校 JSON（score/passed）或结构化 JSON（连续性账本 environment/realm…）
+    const rawForJson = rawExtracted || text
+    const fromContent = salvageMode === 'json'
+      ? (extractAuditJsonFromText(rawForJson) || extractJsonBlobFromText(rawForJson))
+      : ''
     const salvaged = fromContent
       || salvageProseFromReasoningMessage(data?.choices?.[0]?.message, salvageMode)
     if (salvaged) {
@@ -1359,6 +1397,8 @@ async function chatCompletionWithConfig(
       const retriable = lastErr.message.includes('未返回正文')
         || lastErr.message.includes('思考链')
         || lastErr.message.includes('英文分析')
+        || lastErr.message.includes('finish_reason=length')
+        || lastErr.message.includes('输出被截断')
         || isTransientNetworkError(lastErr)
         || sensitive
       if (retriable && attempt < maxAttempts) {
@@ -1392,15 +1432,24 @@ async function chatCompletionWithConfig(
             { role: 'user', content: TEXT_SENSITIVE_RETRY_STEER },
           ]
         } else if ((isMiniMaxTextConfig(cfg) || deepseekV4) && attempt === 1) {
+          const reasoningOnly = /reasoning_content|只返回了 reasoning|思考输出挤占|只输出了思考/i.test(
+            lastErr.message,
+          )
+          const jsonSteer =
+            '【系统纠偏】上一次未返回可解析的约定 JSON。请只输出一个 JSON 对象（不要 markdown 围栏、不要解释），键名按系统任务要求（审校含 score/passed/dimensions，账本含 environment/realm 等）。'
           attemptMessages = [
             ...messages,
             {
               role: 'user',
               content: deepseekV4
                 ? (openThinking
-                  ? '【系统纠偏】上一次 content 为空、仅有 reasoning。请保留简短思考，但必须在 content 中输出最终可用的简体中文正文或完整 JSON（含 score/passed/dimensions），禁止只写思考。'
-                  : '【系统纠偏】上一次只输出了思考（reasoning），content 为空。请关闭思考，直接输出最终可用的简体中文正文或 JSON，不要思考过程、不要英文分析、不要 XML 标签。')
-                : '【系统纠偏】上一次只输出了思考未输出正文。请直接输出最终可用的简体中文正文，不要思考过程、不要英文、不要 XML 标签。',
+                  ? '【系统纠偏】上一次 content 为空、仅有 reasoning。请保留简短思考，但必须在 content 中输出最终可用的简体中文正文或完整 JSON，禁止只写思考。'
+                  : reasoningOnly
+                    ? '【系统纠偏】上一次只输出了思考（reasoning），content 为空。请关闭思考，直接输出最终可用的简体中文正文或 JSON，不要思考过程、不要英文分析、不要 XML 标签。'
+                    : jsonSteer)
+                : (reasoningOnly
+                  ? '【系统纠偏】上一次只输出了思考未输出正文。请直接输出最终可用的简体中文正文，不要思考过程、不要英文、不要 XML 标签。'
+                  : jsonSteer),
             },
           ]
         }
@@ -1445,9 +1494,11 @@ export async function chatCompletionTextAudit(
   } : undefined)
   // 审校只要约定 JSON：禁止把 reasoning 叙事散文当「成功正文」交给下游
   // MiniMax-M3.1：审校/变更记录用 low，避免 max 思考拖过网关超时
+  // response_format=json_object：降低「只写总因、不交 dimensions」概率
   return chatCompletionWithConfig(messages, {
     ...options,
     salvageMode: 'json',
+    responseFormatJsonObject: options.responseFormatJsonObject !== false,
     minimaxReasoningEffort: options.minimaxReasoningEffort ?? 'low',
   }, cfg)
 }

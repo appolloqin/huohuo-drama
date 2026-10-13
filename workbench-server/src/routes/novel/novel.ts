@@ -17,6 +17,7 @@ import {
   generateNovelChapterFull,
   continueNovelChapter,
   generateNovelOutline,
+  regenerateNovelOutlineFromChapter,
   generateNovelPremise,
   generateNovelTitle,
   generateNovelWritingBrief,
@@ -65,7 +66,10 @@ import {
   validateNovelIdeationSettings,
 } from '../../common/novel/novel-setting-validate.js'
 import { extractChapterOutline, resolveChapterDisplayTitle } from '../../common/novel/novel-outline.js'
-import { syncChapterTitlesFromOutline } from '../../common/novel/novel-chapter-titles.js'
+import {
+  syncChapterTitlesFromOutline,
+  syncEpisodeChapterOutlinesFromBookOutline,
+} from '../../common/novel/novel-chapter-titles.js'
 import {
   buildNovelImportContent,
   listNovelImportChapters,
@@ -377,6 +381,7 @@ app.put('/dramas/:id/meta', async (c) => {
   await updateNovelDrama(id, updates)
   if (typeof body.outline === 'string' && body.outline.trim()) {
     await syncChapterTitlesFromOutline(id, body.outline, { force: true })
+    await syncEpisodeChapterOutlinesFromBookOutline(id, body.outline)
   }
   return success(c)
 })
@@ -391,9 +396,14 @@ app.post('/dramas/:id/sync-chapter-titles', async (c) => {
   const outline = (meta.outline || '').trim()
   if (!outline) return badRequest(c, '请先填写全书大纲')
   const body = await c.req.json().catch(() => ({}))
-  const force = body?.force !== false
+  // 默认不覆盖已有具体标题；仅 body.force===true 时强制对齐大纲
+  const force = body?.force === true
   const updated = await syncChapterTitlesFromOutline(id, outline, { force })
-  return success(c, { updated })
+  let outlinesUpdated = 0
+  if (force) {
+    outlinesUpdated = await syncEpisodeChapterOutlinesFromBookOutline(id, outline)
+  }
+  return success(c, { updated, outlines_updated: outlinesUpdated })
 })
 
 // POST /novel/dramas/:id/outline — AI 生成大纲
@@ -417,22 +427,61 @@ app.post('/dramas/:id/outline', async (c) => {
 
   const chapters = await listNovelChapters(id)
   const totalChapters = chapters.length || drama.totalEpisodes || 10
+  const fromChapterRaw = Number(body.from_chapter ?? body.fromChapter)
+  const fromChapter = Number.isFinite(fromChapterRaw) && fromChapterRaw >= 1
+    ? Math.floor(fromChapterRaw)
+    : 0
 
-  logTaskStart('Novel', 'generate-outline', { dramaId: id })
+  logTaskStart('Novel', 'generate-outline', { dramaId: id, fromChapter: fromChapter || null })
   try {
-    const outline = await generateNovelOutline({
-      title: drama.title,
-      premise,
-      genre: meta.novel_genre || drama.genre || undefined,
-      novelGenreSkillKey: resolveNovelGenreSkillKey(meta),
-      totalChapters,
-      settingInject: buildNovelSettingInjectBlock(meta) || undefined,
-    }, novelTextBilling(user, '小说大纲生成', id))
+    const billing = novelTextBilling(
+      user,
+      fromChapter >= 2 ? `小说大纲局部重生成（从第${fromChapter}章）` : '小说大纲生成',
+      id,
+    )
+    const outline = fromChapter >= 2
+      ? await regenerateNovelOutlineFromChapter({
+          existingOutline: (meta.outline || '').trim()
+            || (typeof body.outline === 'string' ? body.outline.trim() : ''),
+          fromChapter,
+          title: drama.title,
+          premise,
+          genre: meta.novel_genre || drama.genre || undefined,
+          novelGenreSkillKey: resolveNovelGenreSkillKey(meta),
+          totalChapters,
+          settingInject: buildNovelSettingInjectBlock(meta) || undefined,
+        }, billing)
+      : await generateNovelOutline({
+          title: drama.title,
+          premise,
+          genre: meta.novel_genre || drama.genre || undefined,
+          novelGenreSkillKey: resolveNovelGenreSkillKey(meta),
+          totalChapters,
+          settingInject: buildNovelSettingInjectBlock(meta) || undefined,
+        }, billing)
     const metadata = mergeNovelMetadata(drama.metadata, { outline, premise })
     await updateNovelDrama(id, { metadata, updatedAt: now() })
-    const titlesUpdated = await syncChapterTitlesFromOutline(id, outline, { force: true })
-    logTaskSuccess('Novel', 'generate-outline', { dramaId: id, len: outline.length, titlesUpdated })
-    return success(c, { outline, titles_updated: titlesUpdated })
+    const fromOpt = fromChapter >= 2 ? fromChapter : undefined
+    const titlesUpdated = await syncChapterTitlesFromOutline(id, outline, {
+      force: true,
+      fromChapter: fromOpt,
+    })
+    const outlinesUpdated = await syncEpisodeChapterOutlinesFromBookOutline(id, outline, {
+      fromChapter: fromOpt,
+    })
+    logTaskSuccess('Novel', 'generate-outline', {
+      dramaId: id,
+      len: outline.length,
+      titlesUpdated,
+      outlinesUpdated,
+      fromChapter: fromChapter || null,
+    })
+    return success(c, {
+      outline,
+      titles_updated: titlesUpdated,
+      outlines_updated: outlinesUpdated,
+      from_chapter: fromChapter || 1,
+    })
   } catch (err: any) {
     logTaskError('Novel', 'generate-outline', { dramaId: id, error: err.message })
     return badRequest(c, err.message || '生成大纲失败')

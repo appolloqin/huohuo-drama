@@ -35,26 +35,30 @@ export type DimensionAuditReport = {
 const STATUS_SET = new Set<DimensionVerdictStatus>(['ok', 'fail', 'na'])
 
 /** 写入模型 system 提示的 JSON 契约（两套审校共用） */
-export const DIMENSION_AUDIT_OUTPUT_CONTRACT = `你必须按 **21 维**逐轴判定逻辑自洽，并给出通过/不通过总因。禁止只回 ok/passed 而无 dimensions。
+export const DIMENSION_AUDIT_OUTPUT_CONTRACT = `你必须按 **21 维**逐轴判定逻辑自洽。禁止 passed/ok=true 却不交 dimensions。
 
-21 维名（须全部出现，顺序可乱，名须一致）：
+**输出键顺序（防截断丢维）**：先 dimensions，再 score/passed/ok，再 reason，最后 conflicts/violations。
+ok 维 reason 控制在 12 字内；禁止先写长散文总因再省略 dimensions。
+
+21 维名（须全部出现，名须一致）：
 ${DIMENSION_AUDIT_LABELS.map((d, i) => `${i + 1}.${d}`).join(' ')}
 
-每维 status：
-- ok：该轴逻辑自洽（reason 须一句说明为何说得通）
-- fail：该轴逻辑不自洽（reason 点明断裂点；excerpt 须为待审正文连续 8 字以上原文）
-- na：该维在状态卡/账本为未记录，且正文与邻章事实无法推出该维冲突（reason 写「未记录且无推断冲突」）
+dimensions 推荐数组：
+{"dimensions":[{"dimension":"时间线","status":"ok","reason":"跨日桥承接"},…共21项],"score":88,"passed":true,"reason":"总因一句","conflicts":[]}
 
-总则：任一维 fail → 整体不通过；全部齐全且无 fail 才可通过。
+亦接受对象表（维名→status 或维名→{status,reason,excerpt}）：
+{"dimensions":{"时间线":"ok","地点":{"status":"ok","reason":"同场合"}},"score":88,"passed":true,"reason":"总因一句"}
+
+每维 status：
+- ok：该轴逻辑自洽（短 reason）
+- fail：逻辑不自洽（reason 点明断裂；excerpt=待审正文连续≥8字原文）
+- na：状态卡/账本未记录且无推断冲突（reason 写「未记录且无推断冲突」）
+
+总则：任一维 fail → 不通过；21 维齐全且无 fail 才可通过。
 「允许倒叙/补叙」不免除自洽；无框再演已越过节点 → 相关维须 fail。
 **章内在场相位（须拦）**：独处/离场已立后，他者无同行/赶来/切场/闪回框即以同场动作/对白出场 → **人物**与/或**动作逻辑**须 fail。
-
-**章内进度回卷（须拦）**：同一章内，某段推进过程已写到完成态，后文又无闪回/补叙框、以当前进行时把**同一完成态过程**完整换皮再写一遍 → **动作逻辑**须 fail（可兼刚发生/本章变化）。只问进度是否说得通，不限题材场面。一句承接或有框回忆不算。
-
-**审校纪律（防误杀/级联）**：
-- 若提示中给出【正文规模】且约 ≥800 字：禁止以「仅截取开篇数句 / 未构成完整章节 / 无法验证全文」为总因或不通过理由；须按所给全文审。
-- 若提示含【章缝结构判定｜权威】：时间线/地点/场景/刚发生的「跳切/无过渡」**必须与场合连续字段一致**；same/bridged 禁止判无过渡跳变；仅 jump 可判场合不衔接；visitor_from_outline=yes 时禁止判对应人物无铺垫空降。禁止声称「卡未识别到桥故正文无桥」。
-- 同一章缝根因（如无桥场合跳切）：总因写一条根因即可；相关维最多选 地点、刚发生、场景 中 2～3 维 fail，禁止用同一摘录对 10+ 维复制粘贴式 fail。`
+**章内进度回卷（须拦）**：同章内完成态过程无框再完整换皮重演 → **动作逻辑**须 fail。
+**审校纪律**：≥800 字禁止以「仅截取开篇」为由不通过；章缝跳切须与结构卡 same/bridged/jump 一致；同一根因相关维最多 2～3 个 fail。`
 
 function truncReason(s: string, n = 160): string {
   const t = s.replace(/\s+/g, ' ').trim()
@@ -82,6 +86,35 @@ function excerptInContent(excerpt: string, content: string): boolean {
 }
 
 /**
+ * 把模型交的 dimensions 归一成数组行。
+ * 常见漏交根因：模型交对象表（维名→status）或中文键「维度」，旧逻辑只认数组 → 当成没交。
+ */
+export function normalizeDimensionsField(raw: unknown): unknown[] | null {
+  if (Array.isArray(raw)) return raw
+  if (!raw || typeof raw !== 'object') return null
+  const obj = raw as Record<string, unknown>
+  const out: unknown[] = []
+  for (const label of DIMENSION_AUDIT_LABELS) {
+    if (!(label in obj)) continue
+    const v = obj[label]
+    if (typeof v === 'string' || typeof v === 'number' || typeof v === 'boolean') {
+      out.push({ dimension: label, status: v, reason: '' })
+      continue
+    }
+    if (v && typeof v === 'object') {
+      const row = v as Record<string, unknown>
+      out.push({
+        dimension: label,
+        status: row.status ?? row.state ?? row.result,
+        reason: row.reason ?? row.msg ?? '',
+        excerpt: row.excerpt,
+      })
+    }
+  }
+  return out.length ? out : null
+}
+
+/**
  * 解析模型 JSON 中的 dimensions / reason。
  * 缺维、fail 无有效摘录 → complete=false 或降级该维。
  */
@@ -98,7 +131,8 @@ export function parseDimensionAuditReport(
     240,
   )
 
-  const rawDims = Array.isArray(src.dimensions) ? src.dimensions : null
+  const rawDims = normalizeDimensionsField(src.dimensions)
+    ?? normalizeDimensionsField(src['维度'])
   if (!rawDims) {
     return {
       complete: false,
@@ -243,7 +277,7 @@ export function dimensionPassClaimInvalid(
 ): string | null {
   if (!claimedPass) return null
   if (!report || report.dimensions.length === 0) {
-    return '模型声称通过但未按 21 维出具逻辑自洽判定'
+    return '模型声称通过但未交 dimensions（缺键/空数组/非对象表）；总因不能代替 21 维结构'
   }
   if (!report.complete) {
     return '模型声称通过但 21 维判定不完整或 fail 缺摘录'

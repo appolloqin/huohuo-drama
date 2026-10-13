@@ -63,9 +63,40 @@ assert(report && report.failCount === 1 && report.complete, 'fail report')
 assert(conflictsFromDimensionFails(report!).some(c => /屋檐/.test(c)), 'conflict has excerpt')
 assert(dimensionPassClaimInvalid(true, report), 'pass claim invalid when fail')
 
+// 对象表形式（模型常交维名→status，旧逻辑只认数组会误判「未交21维」）
+const asObject: Record<string, string> = {}
+for (const d of DIMENSION_AUDIT_LABELS) asObject[d] = 'ok'
+const objReport = parseDimensionAuditReport({
+  passed: true,
+  score: 90,
+  reason: '全文自洽，21维均无fail',
+  dimensions: asObject,
+}, content)
+assert(objReport?.complete === true && objReport.failCount === 0, 'object-map dimensions parse')
+assert(!dimensionPassClaimInvalid(true, objReport), 'object-map pass claim ok')
+
+const nestedObj: Record<string, { status: string; reason: string }> = {}
+for (const d of DIMENSION_AUDIT_LABELS) {
+  nestedObj[d] = { status: 'ok', reason: '承接' }
+}
+const nestedReport = parseDimensionAuditReport({
+  passed: true,
+  reason: '对象嵌套也算',
+  dimensions: nestedObj,
+}, content)
+assert(nestedReport?.complete === true, 'nested object-map dimensions parse')
+
+const missing = parseDimensionAuditReport({
+  passed: true,
+  reason: '只有总因',
+}, content)
+assert(dimensionPassClaimInvalid(true, missing), 'missing dimensions still invalid')
+
 const sys = getOutlineBoundaryAuditSystemPromptForTest()
 assert(/21.?维|dimensions/.test(sys) && /reason/.test(sys), 'outline system requires 21+reason')
+assert(/先 dimensions|键顺序/.test(sys), 'outline contract must prioritize dimensions key order')
 const cont = getContinuityCheckSystemPromptForTest(false)
 assert(/21.?维|dimensions/.test(cont) && /reason/.test(cont), 'continuity system requires 21+reason')
+assert(/先 dimensions|键顺序/.test(cont), 'continuity contract must prioritize dimensions key order')
 
 console.log('PASS')

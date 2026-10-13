@@ -23,6 +23,7 @@ export const CONTINUITY_RULE_LABELS: Record<string, string> = {
   unprompted_life_state: '无铺垫重大状态',
   stable_age_conflict: '稳定人设年龄',
   peer_kinship_address: '同辈互称叔伯',
+  referent_name_binding_conflict: '指称串名',
   intra_cast_teleport: '章内在场突现',
   chapter_seam_replay: '章缝回放',
   chapter_seam_place_jump: '章缝场合跳切',

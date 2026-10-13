@@ -39,6 +39,9 @@ const AFTER_NAME_RE =
 const NAME_NOISE_RE =
   /[翻搜罗砸划爬压弹捻戳拿接说坐走看出赶把]|出来|起来|上来|下来|过来|过去|回来|铁丝|麻绳|生疼|用啊|一戳|松手|上身|门进/
 
+/** 数词/系数：紧贴名前则更像数量短语，不像施动人名（「一百件」≠人名百件） */
+const NUMERAL_BEFORE_RE = /[一二三四五六七八九十百千万两半零〇\d]$/
+
 /** 从正文抽出像人名的 token（2～3 字为主；须落在名后边界） */
 export function extractPersonNamesFromProse(text: string): string[] {
   const t = compactKeepPunct(text)
@@ -52,6 +55,8 @@ export function extractPersonNamesFromProse(text: string): string[] {
       if (/(.)\1/.test(s)) continue
       // 跳过叠字词干切片：蒙蒙亮 → 勿抽「蒙亮」
       if (i > 0 && chars[i - 1] === chars[i]) continue
+      // 结构：前接数词则不当人名（不拦真名本身）
+      if (i > 0 && NUMERAL_BEFORE_RE.test(chars[i - 1]!)) continue
       const after = chars.slice(i + len).join('')
       if (!AFTER_NAME_RE.test(after)) continue
       raw.add(s)
@@ -74,6 +79,7 @@ type SoloHit = { index: number; actor: string }
 
 /**
  * 找最早的「离场/外出」相位；actor 为句内最近人名，否则「他」视作未定主语。
+ * 人名抽取已用「前接数词」等结构边界过滤伪名；不做量词/人名黑名单。
  */
 export function findSoloAwayHit(text: string): SoloHit | null {
   const hay = compactKeepPunct(text)

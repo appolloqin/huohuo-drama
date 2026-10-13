@@ -163,6 +163,34 @@ export function parseOutlineBookFields(outline: string): Partial<OutlineBookFiel
   }
 }
 
+/**
+ * 局部重生成用：第 1～(beforeChapter-1) 章压缩索引（每章一行，非全文）。
+ * 格式：第k章｜短标题｜局面变化
+ */
+export function extractOutlinePriorChapterIndex(
+  outline: string,
+  beforeChapter: number,
+  maxChars = 4500,
+): string {
+  const before = Math.floor(Number(beforeChapter))
+  if (!(before >= 2) || !(outline || '').trim()) return ''
+  const lines: string[] = []
+  for (let n = 1; n < before; n++) {
+    const section = sliceOutlineChapterSection(outline, n)
+    if (!section.trim()) continue
+    const titleM = section.match(/^第\s*\d+\s*章\s*[：:]\s*([^\n]+)/m)
+    const title = (titleM?.[1] || '').trim() || '无题'
+    const stakes = (extractTagBlock(section, '局面变化') || '')
+      .replace(/\s+/g, ' ')
+      .trim()
+      .slice(0, 120)
+    lines.push(`第${n}章｜${title}｜${stakes || '（无局面变化）'}`)
+  }
+  if (!lines.length) return ''
+  const body = lines.join('\n')
+  return body.length <= maxChars ? body : `${body.slice(0, maxChars)}…`
+}
+
 /** 截取第 chapterNumber 章段落（含标题行至下一章前） */
 export function sliceOutlineChapterSection(outline: string, chapterNumber: number): string {
   const lines = (outline || '').split(/\n/)

@@ -494,6 +494,31 @@ export function getMaxParsedChapterNumber(fullOutline: string): number {
   return Math.max(...map.keys())
 }
 
+/**
+ * 保留骨架 + 第 1～(fromChapter-1) 章分章；删除 fromChapter 及之后的分章块。
+ * fromChapter≤1 时返回空串（表示应整本重生成）。
+ */
+export function keepOutlineBeforeChapter(outline: string, fromChapter: number): string {
+  const from = Math.floor(Number(fromChapter))
+  if (!(from >= 2)) return ''
+  const lines = (outline || '').split('\n')
+  const out: string[] = []
+  let skipping = false
+  for (const line of lines) {
+    const m = line.trim().match(CHAPTER_HEADER_RE)
+    if (m) {
+      const n = parseChapterNumber(m)
+      if (n != null && n >= from) {
+        skipping = true
+        continue
+      }
+      skipping = false
+    }
+    if (!skipping) out.push(line)
+  }
+  return out.join('\n').replace(/\n{3,}/g, '\n\n').trimEnd()
+}
+
 export function splitEvenChapterRanges(totalChapters: number, chunkSize: number): OutlineVolumeRange[] {
   const size = Math.max(10, chunkSize)
   const out: OutlineVolumeRange[] = []

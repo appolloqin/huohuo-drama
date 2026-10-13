@@ -143,9 +143,30 @@
             </button>
           </div>
         </div>
+        <div class="outline-regen-row">
+          <label class="outline-regen-label" :for="`outline-from-${dramaId}`">{{ tm.novel.outlineFromChapter }}</label>
+          <input
+            :id="`outline-from-${dramaId}`"
+            v-model.number="outlineFromChapter"
+            class="input outline-from-input"
+            type="number"
+            min="2"
+            :max="Math.max(2, episodeStats.total || 2)"
+            step="1"
+          />
+          <button
+            type="button"
+            class="btn btn-sm"
+            :disabled="outlineGenBusy || !canGenerate || !novelOutlineText.trim()"
+            @click="regenerateOutlineFromChapter"
+          >
+            {{ outlineGenBusy ? tm.novel.regeneratingOutlineFrom : tm.novel.regenerateOutlineFrom }}
+          </button>
+        </div>
         <textarea v-model="novelOutlineText" class="input outline-textarea" rows="6" :placeholder="tm.novel.outlinePlaceholder" />
         <p v-if="outlineGenError" class="outline-gen-error" role="alert">{{ outlineGenError }}</p>
         <p class="outline-hint">{{ tm.novel.outlineHint }}</p>
+        <p class="outline-hint">{{ tm.novel.outlineFromChapterHint }}</p>
       </div>
     </div>
 
@@ -780,6 +801,7 @@ const novelOutlineText = ref('')
 const outlineSaveBusy = ref(false)
 const outlineGenBusy = ref(false)
 const outlineGenError = ref('')
+const outlineFromChapter = ref(11)
 const fullscreenTarget = ref(null) // 'premise' | 'outline' | null
 const fullscreenText = computed(() => {
   if (fullscreenTarget.value === 'premise') return novelPremiseText.value
@@ -1237,6 +1259,48 @@ async function generateOutlineDraft() {
     toast.success(tm.value.novel.toastOutlineGenerated)
   } catch (e) {
     const msg = (String(e?.message || '')).trim() || '生成大纲失败，请重试'
+    outlineGenError.value = msg
+    toast.error(msg, { duration: 12000 })
+  } finally {
+    outlineGenBusy.value = false
+  }
+}
+
+async function regenerateOutlineFromChapter() {
+  if (!guardGenerate()) return
+  if (!novelPremiseText.value.trim()) {
+    toast.error(tm.value.novel.premiseRequiredForOutline)
+    return
+  }
+  const total = Math.max(1, Number(episodeStats.value.total) || 1)
+  const from = Math.floor(Number(outlineFromChapter.value))
+  if (!(from >= 2) || from > total) {
+    toast.error(tm.value.novel.outlineFromChapterInvalid)
+    return
+  }
+  if (!novelOutlineText.value.trim()) {
+    toast.error(tm.value.novel.outlineFromChapterInvalid)
+    return
+  }
+  outlineGenError.value = ''
+  try {
+    await novelAPI.saveMeta(dramaId, {
+      premise: novelPremiseText.value,
+      outline: novelOutlineText.value,
+    })
+    outlineGenBusy.value = true
+    const res = await novelAPI.generateOutline(dramaId, {
+      premise: novelPremiseText.value,
+      from_chapter: from,
+      outline: novelOutlineText.value,
+    })
+    novelOutlineText.value = res.outline || ''
+    await alignChapterTitlesToOutline()
+    toast.success(
+      String(tm.value.novel.toastOutlineRegeneratedFrom || '').replace('{n}', String(from)),
+    )
+  } catch (e) {
+    const msg = (String(e?.message || '')).trim() || '局部重生成失败，请重试'
     outlineGenError.value = msg
     toast.error(msg, { duration: 12000 })
   } finally {
@@ -1918,6 +1982,15 @@ onUnmounted(() => {
 }
 .outline-head .inline { margin-bottom: 0; }
 .outline-actions { display: flex; gap: 8px; }
+.outline-regen-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  margin: 0 0 8px;
+}
+.outline-regen-label { font-size: 12px; color: var(--text-2); }
+.outline-from-input { width: 88px; }
 .outline-textarea {
   min-height: 120px;
   resize: vertical;

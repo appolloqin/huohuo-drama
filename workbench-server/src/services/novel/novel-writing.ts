@@ -43,7 +43,17 @@ import { countNovelChars, enforceAssembledLengthFloor, assertNovelChapterLengthB
 import { buildNovelWriteContext } from './novel-continuity.js'
 import { NOVEL_MEMORY_CHAPTER_END_FORMAT, buildAnchorEchoPromptBlock, ensureAnchor, ensureNovelMemory, resolveVolumeForChapter } from './novel-memory/index.js'
 import { CAUSAL_PROSE_ONLY_RULE, isCausalChainEnabled } from './novel-causal-chain/index.js'
-import { parseVolumeRanges, type OutlineVolumeRange, getMaxParsedChapterNumber, extractChapterOutline, listMissingOutlineChapters, listMissingOutlineChaptersInRange, shouldUsePhasedOutlineGeneration } from '../../common/novel/novel-outline.js'
+import {
+  parseVolumeRanges,
+  type OutlineVolumeRange,
+  getMaxParsedChapterNumber,
+  extractChapterOutline,
+  listMissingOutlineChapters,
+  listMissingOutlineChaptersInRange,
+  shouldUsePhasedOutlineGeneration,
+  keepOutlineBeforeChapter,
+} from '../../common/novel/novel-outline.js'
+import { extractOutlinePriorChapterIndex } from './novel-outline-drama-fields.js'
 import { truncText } from '../../common/drama/project-continuity.js'
 import { logTaskWarn } from '../../common/task/task-logger.js'
 import * as episodesRepo from '../../db/repos/episodes/index.js'
@@ -413,6 +423,34 @@ function hasOutlineChapterLines(text: string): boolean {
   return /第\s*(?:\d+|[一二三四五六七八九十百千零两]+)\s*章/.test(text || '')
 }
 
+/** 抽取「第N章：短标题」 */
+export function listOutlineChapterShortTitles(text: string): Array<{ n: number; title: string }> {
+  const out: Array<{ n: number; title: string }> = []
+  const re = /第\s*(\d+)\s*章\s*[：:]\s*([^\n【]+)/g
+  let m: RegExpExecArray | null
+  while ((m = re.exec(text || ''))) {
+    const title = (m[2] || '').trim()
+    if (!title) continue
+    out.push({ n: Number(m[1]), title })
+  }
+  return out
+}
+
+/** 与已用短标题撞车的章号（忽略自身章号） */
+export function findDuplicateOutlineShortTitles(
+  block: string,
+  usedTitles: Iterable<string>,
+): Array<{ n: number; title: string }> {
+  const used = new Set(
+    [...usedTitles].map((t) => t.trim()).filter(Boolean),
+  )
+  const hits: Array<{ n: number; title: string }> = []
+  for (const { n, title } of listOutlineChapterShortTitles(block)) {
+    if (used.has(title)) hits.push({ n, title })
+  }
+  return hits
+}
+
 function resolveOutlineAgentSkillKey(args: { genre?: string; novelGenreSkillKey?: string }): string | undefined {
   const direct = (args.novelGenreSkillKey || '').trim()
   if (direct) return direct
@@ -425,6 +463,7 @@ const OUTLINE_CHAPTER_CONTINUITY_RULES = [
   '地点/道具/新关键人物若前文未出现：须在【本章起因】或【信息增量】写清首次出场来由，禁止无铺垫空降新场合。',
   '【冲突层】只能：外部、人际、自我（可多选）。',
   '每章必须是完整戏剧标签块（标题下行齐 13 个【】标签），禁止「每章一行」缩写。',
+  '若提示中有【已定稿分章索引】：索引内事件已发生，禁止再写成首次发生。',
 ].join('\n')
 
 function outlineMaxTokensForChapters(totalChapters: number): number {
@@ -542,8 +581,14 @@ async function generateVolumeChapterSummaries(args: {
   novelGenreSkillKey?: string
   totalChapters: number
   prevTail?: string
+  /** 前卷已用短标题，本卷禁止复用 */
+  usedShortTitles?: string[]
+  /** 局部重生成：已定稿分章压缩索引（非全文） */
+  progressHint?: string
 }, billing?: TextBillingContext): Promise<string> {
   const { skeleton, volume, title, premise, genre, totalChapters, prevTail } = args
+  const usedShortTitles = (args.usedShortTitles || []).map((t) => t.trim()).filter(Boolean)
+  const progressHint = (args.progressHint || '').trim()
   const count = volume.end - volume.start + 1
   const skillKey = resolveOutlineAgentSkillKey(args)
   const system = [
@@ -554,6 +599,7 @@ async function generateVolumeChapterSummaries(args: {
     `本轮**仅输出**第 ${volume.start}～${volume.end} 章（共 ${count} 章）的分章概要。`,
     `格式：每章必须以「第${volume.start}章：短标题」这类**阿拉伯数字**章号起行，其下带齐【本章时间】【本章地点】【本章人物】【本章起因】【欲望】【阻碍】【局面变化】【人物选择】【冲突层】【情绪手法】【章末问题】【信息增量】【主题回响】。`,
     '**章标题字段分离**：「第N章：」后只写场面短标题 2～12 字，标题行禁止括号/破折号夹注；时间→【本章时间】，地点→【本章地点】，爽型→【爽型】行。',
+    '**短标题全书唯一**：禁止与已用标题重复（含前卷）；勿复用同名场面标签。',
     OUTLINE_CHAPTER_CONTINUITY_RULES,
     '章节号须与分卷设计完全一致，禁止跳号、重复或改写其他卷的章号。',
     '不要输出世界观、总纲、人物、分卷设计；不要「第一段/第二段」散文规划；不要前言套话。',
@@ -573,6 +619,11 @@ async function generateVolumeChapterSummaries(args: {
   const titleSell = volume.start <= 1
     ? buildTitleSellHardRequirement(title, premise)
     : ''
+  const usedTitleBlock = usedShortTitles.length
+    ? `【已用短标题 — 本卷禁止复用】\n${usedShortTitles.slice(-80).join('、')}`
+    : ''
+  // 局部重生成已有分章索引时，不再塞上一章全文（索引已含结论）
+  const seamTail = progressHint ? '' : (prevTail || '')
   const userBase = [
     `【书名】${title}`,
     genre ? `【题材】${genre}` : '',
@@ -580,31 +631,36 @@ async function generateVolumeChapterSummaries(args: {
     `【创意/梗概】\n${premise.slice(0, 1200)}`,
     `【全书骨架 — 分卷须严格遵守】\n${stripChapterSummarySection(skeleton).slice(0, 6000)}`,
     volSeed,
-    prevTail ? `【上一卷末章概要 — 须自然衔接】\n${prevTail}` : '',
+    seamTail ? `【上一卷末章概要 — 须自然衔接】\n${seamTail}` : '',
+    usedTitleBlock,
+    progressHint ? `【已定稿分章索引】\n${progressHint}` : '',
     titleSell,
   ].filter(Boolean).join('\n\n')
 
-  const attemptOnce = async (strict: boolean) => {
-    const user = [
-      userBase,
-      strict
+  const attemptOnce = async (mode: 'normal' | 'no-lines' | 'dedupe-titles') => {
+    const task =
+      mode === 'no-lines'
         ? `【任务·重试】上一轮未写出「第N章」行。现在必须从「第${volume.start}章：」起，连续写到「第${volume.end}章：」，每章完整戏剧标签块；禁止只复述分卷规划。`
-        : `【任务】完整输出第 ${volume.start} 章～第 ${volume.end} 章戏剧标签块（每章一整块，勿缩成一行）；卷末须有高潮或强钩子。`,
-      NO_THINKING_OUTPUT_RULE,
-    ].join('\n\n')
+        : mode === 'dedupe-titles'
+          ? `【任务·重试】上一轮短标题与已用标题撞车。请重写第 ${volume.start}～${volume.end} 章；短标题必须全新，禁止出现：${usedShortTitles.slice(-40).join('、') || '（见已用列表）'}。`
+          : `【任务】完整输出第 ${volume.start} 章～第 ${volume.end} 章戏剧标签块（每章一整块，勿缩成一行）；卷末须有高潮或强钩子。`
+    const user = [userBase, task, NO_THINKING_OUTPUT_RULE].join('\n\n')
 
     return (await chatCompletionText(
       [{ role: 'system', content: system }, { role: 'user', content: user }],
       {
         ...options,
         billing: billing
-          ? { ...billing, reason: `小说大纲分卷（${volume.start}-${volume.end}章${strict ? '·重试' : ''}）` }
+          ? {
+              ...billing,
+              reason: `小说大纲分卷（${volume.start}-${volume.end}章${mode === 'normal' ? '' : `·${mode}`}）`,
+            }
           : undefined,
       },
     )).trim()
   }
 
-  let trimmed = await attemptOnce(false)
+  let trimmed = await attemptOnce('normal')
   if (!hasOutlineChapterLines(trimmed)) {
     logTaskWarn('Novel', 'outline-volume-no-chapter-lines', {
       volume: volume.label,
@@ -613,7 +669,7 @@ async function generateVolumeChapterSummaries(args: {
       chars: trimmed.length,
       preview: trimmed.slice(0, 240),
     })
-    trimmed = await attemptOnce(true)
+    trimmed = await attemptOnce('no-lines')
   }
   if (!hasOutlineChapterLines(trimmed)) {
     logTaskWarn('Novel', 'outline-volume-no-chapter-lines-retry-failed', {
@@ -622,6 +678,22 @@ async function generateVolumeChapterSummaries(args: {
       preview: trimmed.slice(0, 240),
     })
     throw new Error(`分卷「${volume.label}」分章概要生成失败（无章节行），请重试`)
+  }
+  const dupHits = findDuplicateOutlineShortTitles(trimmed, usedShortTitles)
+  if (dupHits.length) {
+    logTaskWarn('Novel', 'outline-volume-duplicate-titles', {
+      volume: volume.label,
+      duplicates: dupHits,
+    })
+    const retry = await attemptOnce('dedupe-titles')
+    if (hasOutlineChapterLines(retry)) {
+      const still = findDuplicateOutlineShortTitles(retry, usedShortTitles)
+      if (!still.length) return retry
+      logTaskWarn('Novel', 'outline-volume-duplicate-titles-retry-failed', {
+        volume: volume.label,
+        duplicates: still,
+      })
+    }
   }
   return trimmed
 }
@@ -635,12 +707,16 @@ async function generateOutlineChapterTail(args: {
   premise: string
   genre?: string
   novelGenreSkillKey?: string
+  /** 局部重生成：已定稿分章压缩索引（非全文） */
+  progressHint?: string
 }, billing?: TextBillingContext): Promise<string> {
   const { skeleton, existingOutline, fromChapter, toChapter, title, premise, genre } = args
   const count = toChapter - fromChapter + 1
   const tailMap = getMaxParsedChapterNumber(existingOutline)
   const lastLine = existingOutline.split('\n').filter(l => hasOutlineChapterLines(l)).slice(-3).join('\n')
+  const usedTitles = listOutlineChapterShortTitles(existingOutline).map((x) => x.title)
   const skillKey = resolveOutlineAgentSkillKey(args)
+  const progressHint = (args.progressHint || '').trim()
 
   const system = [
     await buildNovelAgentSystem('novel_outline', {
@@ -649,7 +725,7 @@ async function generateOutlineChapterTail(args: {
     '',
     `补全缺失的第 ${fromChapter}～${toChapter} 章分章概要；紧接前文剧情。`,
     `格式：每章先「第${fromChapter}章：短标题」这类阿拉伯数字章号，其下带齐全部戏剧标签。`,
-    '「第N章：」后只写 2～12 字场面短标题；标题行禁止括号/破折号夹注；时间地点爽型分写标签行。',
+    '「第N章：」后只写 2～12 字场面短标题；标题行禁止括号/破折号夹注；时间地点爽型分写标签行；短标题不得与已有章重复。',
     OUTLINE_CHAPTER_CONTINUITY_RULES,
   ].join('\n')
   const options = await novelAgentCompletionOptions('novel_outline', {
@@ -661,8 +737,13 @@ async function generateOutlineChapterTail(args: {
     `【书名】${title}`,
     genre ? `【题材】${genre}` : '',
     `【全书骨架】\n${stripChapterSummarySection(skeleton).slice(0, 4000)}`,
-    `【已生成分章 — 最大第 ${tailMap} 章】\n${lastLine}`,
-    `【任务】续写第 ${fromChapter}～${toChapter} 章完整戏剧标签块；写完第 ${toChapter} 章终局/收束。`,
+    progressHint
+      ? `【已定稿分章索引】\n${progressHint}`
+      : `【已生成分章 — 最大第 ${tailMap} 章】\n${lastLine}`,
+    usedTitles.length
+      ? `【已用短标题 — 禁止复用】\n${usedTitles.slice(-80).join('、')}`
+      : '',
+    `【任务】续写第 ${fromChapter}～${toChapter} 章完整戏剧标签块；写完第 ${toChapter} 章终局/收束；短标题须全新。`,
     NO_THINKING_OUTPUT_RULE,
   ].filter(Boolean).join('\n\n')
 
@@ -680,6 +761,7 @@ async function appendMissingOutlineChapters(args: {
   genre?: string
   novelGenreSkillKey?: string
   totalChapters: number
+  progressHint?: string
 }, billing?: TextBillingContext): Promise<string> {
   let outline = args.outline
   let missing = listMissingOutlineChapters(outline, args.totalChapters)
@@ -706,6 +788,7 @@ async function appendMissingOutlineChapters(args: {
       premise: args.premise,
       genre: args.genre,
       novelGenreSkillKey: args.novelGenreSkillKey,
+      progressHint: args.progressHint,
     }, billing)
     outline = `${outline.trim()}\n${stripIncompleteTrailingChapter(tail)}`
     missing = listMissingOutlineChapters(outline, args.totalChapters)
@@ -738,6 +821,7 @@ export async function generateNovelOutline(args: {
     .flatMap(v => chunkOutlineVolume(v))
   const parts: string[] = []
   let prevTail = ''
+  const usedShortTitles: string[] = []
 
   for (const vol of volumes) {
     let block = await generateVolumeChapterSummaries({
@@ -749,6 +833,7 @@ export async function generateNovelOutline(args: {
       novelGenreSkillKey,
       totalChapters,
       prevTail,
+      usedShortTitles,
     }, billing)
     block = stripIncompleteTrailingChapter(block)
     // 本段缺章则补一轮
@@ -773,6 +858,9 @@ export async function generateNovelOutline(args: {
       block = `${block.trim()}\n\n${stripIncompleteTrailingChapter(patch)}`
     }
     parts.push(block)
+    for (const { title: t } of listOutlineChapterShortTitles(block)) {
+      if (!usedShortTitles.includes(t)) usedShortTitles.push(t)
+    }
     prevTail = block.split('\n').filter(l => hasOutlineChapterLines(l)).slice(-2).join('\n')
   }
 
@@ -786,6 +874,153 @@ export async function generateNovelOutline(args: {
     genre,
     novelGenreSkillKey,
     totalChapters,
+  }, billing)
+
+  return ensureOutlineBookDramaFields({
+    outline: assertValidNovelCreativeOutput(outline, 'outline', undefined, { totalChapters, genre }),
+    title,
+    premise,
+    billing,
+  })
+}
+
+/**
+ * 从指定章起重生成该章及后续分章概要；世界观/分卷/前序分章保留不变。
+ * fromChapter=1 时等同整本生成。
+ */
+export async function regenerateNovelOutlineFromChapter(args: {
+  existingOutline: string
+  fromChapter: number
+  title: string
+  premise: string
+  genre?: string
+  novelGenreSkillKey?: string
+  totalChapters: number
+  settingInject?: string
+}, billing?: TextBillingContext): Promise<string> {
+  const {
+    title, premise, genre, novelGenreSkillKey, totalChapters, settingInject,
+  } = args
+  const from = Math.floor(Number(args.fromChapter))
+  if (!(from >= 1) || from > totalChapters) {
+    throw new Error(`起始章号须在 1～${totalChapters} 之间`)
+  }
+  if (from <= 1) {
+    return generateNovelOutline({
+      title,
+      premise,
+      genre,
+      novelGenreSkillKey,
+      totalChapters,
+      settingInject,
+    }, billing)
+  }
+
+  const existing = (args.existingOutline || '').trim()
+  if (!existing) {
+    throw new Error('请先保存全书大纲，再从指定章局部重生成')
+  }
+
+  const kept = keepOutlineBeforeChapter(existing, from)
+  if (!kept.trim()) {
+    throw new Error('未能保留前序大纲，请检查大纲格式后重试')
+  }
+  const skeleton = stripChapterSummarySection(kept)
+  if (!skeleton.includes('【分卷设计】') && !skeleton.includes('【世界观')) {
+    throw new Error('前序大纲缺少骨架（世界观/分卷），请先整本生成或补全后再局部重生成')
+  }
+
+  let base = kept
+  if (!/【分章概要】/.test(base)) {
+    base = `${skeleton}\n\n【分章概要】\n${base.slice(skeleton.length).trim()}`
+  }
+
+  const usedShortTitles = listOutlineChapterShortTitles(base).map((x) => x.title)
+
+  const volumes = parseVolumeRanges(skeleton, totalChapters)
+  const regenRanges: OutlineVolumeRange[] = []
+  for (const vol of volumes) {
+    if (vol.end < from) continue
+    const start = Math.max(vol.start, from)
+    const end = Math.min(vol.end, totalChapters)
+    if (start > end) continue
+    for (const chunk of chunkOutlineVolume({
+      label: vol.label,
+      start,
+      end,
+      blurb: vol.blurb,
+    })) {
+      regenRanges.push(chunk)
+    }
+  }
+  if (!regenRanges.length) {
+    for (let start = from; start <= totalChapters; start += OUTLINE_VOLUME_CHUNK_SIZE) {
+      const end = Math.min(totalChapters, start + OUTLINE_VOLUME_CHUNK_SIZE - 1)
+      regenRanges.push({ label: `第${start}～${end}章`, start, end })
+    }
+  }
+
+  const parts: string[] = []
+  let priorIndex = extractOutlinePriorChapterIndex(existing, from)
+  const titlesAcc = [...usedShortTitles]
+  for (const vol of regenRanges) {
+    const progressHint = [
+      priorIndex,
+      `索引内事件已发生，禁止再写成首次发生；从第 ${from} 章起按分卷续写。`,
+    ].filter(Boolean).join('\n')
+    let block = await generateVolumeChapterSummaries({
+      skeleton,
+      volume: vol,
+      title,
+      premise,
+      genre,
+      novelGenreSkillKey,
+      totalChapters,
+      usedShortTitles: titlesAcc,
+      progressHint,
+    }, billing)
+    block = stripIncompleteTrailingChapter(block)
+    const missInChunk = listMissingOutlineChaptersInRange(block, vol.start, vol.end)
+    if (missInChunk.length) {
+      const patch = await generateOutlineChapterTail({
+        skeleton,
+        existingOutline: `${base}\n\n${[...parts, block].join('\n\n')}`,
+        fromChapter: missInChunk[0]!,
+        toChapter: missInChunk[missInChunk.length - 1]!,
+        title,
+        premise,
+        genre,
+        novelGenreSkillKey,
+        progressHint,
+      }, billing)
+      block = `${block.trim()}\n\n${stripIncompleteTrailingChapter(patch)}`
+    }
+    parts.push(block)
+    for (const { title: t } of listOutlineChapterShortTitles(block)) {
+      if (!titlesAcc.includes(t)) titlesAcc.push(t)
+    }
+    const grown = extractOutlinePriorChapterIndex(
+      `${base}\n\n${parts.join('\n\n')}`,
+      vol.end + 1,
+    )
+    if (grown) priorIndex = grown
+  }
+
+  const progressHint = [
+    priorIndex,
+    '索引内事件已发生，禁止再写成首次发生。',
+  ].filter(Boolean).join('\n')
+  let outline = `${base.trim()}\n\n${parts.map((p) => p.trim()).filter(Boolean).join('\n\n')}`.replace(/\n{3,}/g, '\n\n')
+  outline = stripIncompleteTrailingChapter(outline)
+  outline = await appendMissingOutlineChapters({
+    skeleton,
+    outline,
+    title,
+    premise,
+    genre,
+    novelGenreSkillKey,
+    totalChapters,
+    progressHint,
   }, billing)
 
   return ensureOutlineBookDramaFields({

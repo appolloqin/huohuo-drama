@@ -34,6 +34,7 @@ const CANONICAL_AGENT_SKILL_MAP: Record<string, string[]> = {
   novel_chapter_writer: ['novel_chapter_writer'],
   ai_dehumanizer: ['ai_dehumanizer'],
   novel_review: ['novel_review'],
+  novel_continuity: ['novel_continuity'],
 }
 
 export type LoadAgentSkillsOptions = {

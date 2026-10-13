@@ -4,6 +4,7 @@
  */
 import {
   extractAuditJsonFromText,
+  extractJsonBlobFromText,
   salvageProseFromReasoningMessage,
 } from '../src/services/ai/ai.js'
 
@@ -51,5 +52,38 @@ const nestedTrap = `分析 { "a": { "b": 1 } } 结束。最终：{"passed":true,
 const trap = extractAuditJsonFromText(nestedTrap)
 const t = JSON.parse(trap)
 if (t.score !== 88) throw new Error(`nested trap failed: ${trap.slice(0, 80)}`)
+
+// 连续性账本 JSON：无 score/passed，但须被 structured 抽取接受（审校 salvage 不能误杀）
+const ledger = `{
+  "environment": "领主府偏院",
+  "realm": "无",
+  "resources": "存粮半月",
+  "appearance": "青布袍",
+  "personality": "沉稳",
+  "injuries": "赵铁柱胸口伤",
+  "timeline": "天未亮透",
+  "relations": "赵铁柱归心",
+  "foreshadowing": "青水河筑坝",
+  "actions": "秦默立军功积分制",
+  "knowledge": "仓粮撑不过半月",
+  "abilities": "无",
+  "emotion": "旧部由疑转服",
+  "reminder": "周文远献青水河策",
+  "delta": "旧部编营+军功制"
+}`
+if (extractAuditJsonFromText(ledger)) {
+  throw new Error('ledger must not match audit-only extractor')
+}
+const ledgerBlob = extractJsonBlobFromText(ledger)
+if (!ledgerBlob.includes('"environment"') || !ledgerBlob.includes('"delta"')) {
+  throw new Error(`ledger blob missing keys: ${ledgerBlob.slice(0, 80)}`)
+}
+const ledgerFromReasoning = salvageProseFromReasoningMessage(
+  { reasoning_content: `先想一下再输出\n${ledger}` },
+  'json',
+)
+if (!ledgerFromReasoning.includes('"environment"')) {
+  throw new Error('json salvage must accept continuity ledger shape')
+}
 
 console.log('verify-audit-json-extract OK')

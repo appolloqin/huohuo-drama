@@ -3,9 +3,11 @@
  */
 import {
   detectIntraCastPresenceFail,
+  extractPersonNamesFromProse,
   summarizePresencePhaseForPrompt,
   buildFrozenPresencePhaseBlockForTest,
 } from '../src/services/novel/novel-presence-phase.js'
+import { looksLikePersonName } from '../src/services/novel/novel-state-card-validate.js'
 import { runLocalContinuityAudit } from '../src/services/novel/novel-continuity-precheck.js'
 
 const bad = `第二天天刚蒙蒙亮，秦卫国爬起来，把家里能搜罗的铁丝、麻绳、破布条全翻出来，捆成一卷背上身，推门进了山。
@@ -57,6 +59,22 @@ const block = buildFrozenPresencePhaseBlockForTest(
 )
 if (!block || !/在场相位|桥接|到场/.test(block)) {
   throw new Error(`beat presence block missing: ${block}`)
+}
+
+// 结构：前接数词不当人名；复姓只取首字入姓首（不做人名/量词黑名单）
+if (!looksLikePersonName('赵铁柱') || !looksLikePersonName('秦默')) {
+  throw new Error('real names must still lookLikePersonName')
+}
+if (looksLikePersonName('里强')) {
+  throw new Error('compound-surname second char 里 must not be surname head')
+}
+const qtySlice = extractPersonNamesFromProse('整理了一百件，出了门。')
+if (qtySlice.includes('百件')) {
+  throw new Error('numeral-prefixed 百件 must not extract as person name')
+}
+const qtyFalseSolo = `秦默把库里旧甲整理了一百件，背上身出了门。赵铁柱接住布包，掂了掂：“领主，那王德福——”`
+if (detectIntraCastPresenceFail(qtyFalseSolo)) {
+  throw new Error('quantity slice must not fake solo-away then flag 赵铁柱')
 }
 
 console.log('verify-presence-phase OK')

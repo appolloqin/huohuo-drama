@@ -724,8 +724,16 @@ export const novelAPI = {
     target_chapter_chars?: number
     continue_segment_chars?: number
   }) => api.put(`/novel/dramas/${dramaId}/meta`, data),
-  generateOutline: (dramaId: number, body?: { premise?: string }) =>
-    api.post<{ outline: string; titles_updated?: number }>(`/novel/dramas/${dramaId}/outline`, body ?? {}),
+  generateOutline: (dramaId: number, body?: {
+    premise?: string
+    /** 从该章起重生成该章及后续分章；不传或 1=整本 */
+    from_chapter?: number
+    outline?: string
+  }) =>
+    api.post<{ outline: string; titles_updated?: number; from_chapter?: number }>(
+      `/novel/dramas/${dramaId}/outline`,
+      body ?? {},
+    ),
   syncChapterTitles: (dramaId: number, body?: { force?: boolean }) =>
     api.post<{ updated: number }>(`/novel/dramas/${dramaId}/sync-chapter-titles`, body ?? {}),
   createChapter: (dramaId: number, data?: { title?: string }) =>
