@@ -5,7 +5,10 @@ import { stripLengthAdjustInstructionEcho } from '../../common/novel/novel-chang
 import { normalizeNovelDialogueQuotes } from '../../common/novel/novel-dialogue-quotes.js'
 import { repairNovelReplacementCharsLexicon } from '../../common/novel/novel-replacement-char.js'
 import { stripIntraChapterNearDuplicate } from './novel-intra-chapter-dedupe.js'
-import { mergeEpisodeMetadata } from '../../common/drama/episode-meta.js'
+import {
+  contentDerivedMetadataClearPatch,
+  mergeEpisodeMetadata,
+} from '../../common/drama/episode-meta.js'
 import {
   resolveChapterProse,
   writeChapter,
@@ -50,6 +53,7 @@ export function hydrateNovelEpisode<T extends EpisodeRow>(row: T): T {
 /**
  * 保存小说正文到 novel-memory/chapters（只写读者正文）；
  * 【变更记录】若粘在正文末尾则拆入 metadata.causal_change_record。
+ * 正文为空：删磁盘文件，并清除变更记录 / 一致性 21 维等与正文绑定的 metadata。
  */
 export function saveChapterContent(args: SaveChapterContentArgs): SaveChapterContentResult {
   const { dramaId, episodeId, chapterNumber, content, vol, existingMetadata } = args
@@ -69,7 +73,11 @@ export function saveChapterContent(args: SaveChapterContentArgs): SaveChapterCon
   })
   const proseCharCount = countNovelChars(prose)
   const metaPatch: Record<string, unknown> = { prose_char_count: proseCharCount }
-  if (changeBlock) metaPatch.causal_change_record = changeBlock
+  if (!prose.trim()) {
+    Object.assign(metaPatch, contentDerivedMetadataClearPatch())
+  } else if (changeBlock) {
+    metaPatch.causal_change_record = changeBlock
+  }
   const metadata = mergeEpisodeMetadata(existingMetadata, metaPatch)
   return {
     content: null,

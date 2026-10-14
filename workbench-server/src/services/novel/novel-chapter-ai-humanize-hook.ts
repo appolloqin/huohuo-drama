@@ -2,7 +2,7 @@
  * 章节自动去 AI 味闭环 — 与站内 AI 检测同口径（优先困惑度 PPL，失败回退统计）
  */
 import type { TextBillingContext } from '../ai/ai.js'
-import { getTextConfigWithModels } from '../ai/ai.js'
+import { getPerplexityConfigWithModels, getTextConfigWithModels } from '../ai/ai.js'
 import {
   humanizeAiTextDetectionPass,
   MAX_HUMANIZE_CHARS,
@@ -59,8 +59,15 @@ async function detectForHumanize(
   billing?: TextBillingContext,
   opts?: { writingModelHint?: string },
 ): Promise<AiDetectionResult> {
+  let writingModelHint = opts?.writingModelHint
+  if (!writingModelHint) {
+    try {
+      const { cfg } = await getTextConfigWithModels()
+      writingModelHint = cfg.model
+    } catch { /* ignore */ }
+  }
   try {
-    return await detectAiTextWithPerplexity(
+    const result = await detectAiTextWithPerplexity(
       text,
       billing
         ? { ...billing, reason: billing.reason || '小说章节 AI 率检测' }
@@ -68,9 +75,21 @@ async function detectForHumanize(
       {
         enableAdversarial: false,
         skipCacheStore: false,
-        writingModelHint: opts?.writingModelHint,
+        writingModelHint,
+        sourceTypeHint: 'novel_chapter',
       },
     )
+    logTaskWarn('Novel', 'ai-humanize-detect', {
+      charCount: countNovelChars(text),
+      probability: result.probability,
+      method: result.method,
+      perplexityModel: result.perplexity_model,
+      writingModel: result.writing_model || writingModelHint,
+      calibration: result.calibration,
+      fallback: result.fallback_reason,
+      cacheHit: result.cache_hit,
+    })
+    return result
   } catch (err: unknown) {
     const reason = err instanceof Error ? err.message : '困惑度检测不可用'
     logTaskWarn('Novel', 'ai-humanize-detect-fallback-statistical', { reason })
@@ -162,27 +181,41 @@ function toEpisodeDetection(
   }
 }
 
-/** C2：标注写作 vs 困惑度模型是否同系（章节统计检测路径也提示） */
+/** C2：标注写作 vs 困惑度模型是否同系（须走困惑度专用配置，勿把写作主模型误标成 PPL） */
 async function withCrossModelDetectMeta(
   detect: AiDetectionResult,
   preferCrossModel: boolean,
+  userId?: number,
 ): Promise<AiDetectionResult> {
-  if (detect.same_family_detect != null && detect.writing_model && detect.perplexity_model) {
+  // 引擎已写入真实参考型号时，只补 warning，勿用写作配置覆盖
+  if (detect.perplexity_model && detect.writing_model && detect.same_family_detect != null) {
     return {
       ...detect,
       ai_detect_warning: crossModelDetectWarning({
         sameFamily: !!detect.same_family_detect,
         preferCrossModel,
-      }),
+      }) || detect.ai_detect_warning,
     }
   }
   try {
-    const { cfg, settings } = await getTextConfigWithModels()
-    const writing = cfg.model
-    const configured = typeof settings.perplexityModel === 'string' ? settings.perplexityModel.trim() : ''
-    const pplModel = configured || writing
+    const writingBundle = await getTextConfigWithModels()
+    const writing = detect.writing_model || writingBundle.cfg.model
+    const pplBundle = await getPerplexityConfigWithModels({ userId })
+    const pplModel = detect.perplexity_model
+      || pplBundle.perplexityModel
+      || (typeof pplBundle.settings.perplexityModel === 'string' ? pplBundle.settings.perplexityModel.trim() : '')
+      || ''
+    // 仍无困惑度型号时不要回落到写作主模型（会假报「同系 deepseek」）
+    if (!pplModel) {
+      return {
+        ...detect,
+        writing_model: writing,
+        ai_detect_warning: [detect.ai_detect_warning, '未配置困惑度检测模型'].filter(Boolean).join('；'),
+      }
+    }
     const same = sameFamilyDetect(writing, pplModel)
-    const settingsPrefer = settings.preferCrossModelDetect === true
+    const settingsPrefer = writingBundle.settings.preferCrossModelDetect === true
+      || pplBundle.settings.preferCrossModelDetect === true
     return {
       ...detect,
       writing_model: writing,
@@ -191,7 +224,7 @@ async function withCrossModelDetectMeta(
       ai_detect_warning: crossModelDetectWarning({
         sameFamily: same,
         preferCrossModel: preferCrossModel || settingsPrefer,
-      }),
+      }) || detect.ai_detect_warning,
     }
   } catch {
     return detect
@@ -289,23 +322,27 @@ export async function runNovelChapterAiHumanizeHook(args: {
   const detached = detachChangeRecordForStorage(content)
   let prose = detached.prose || content
   let changeBlock = detached.changeBlock
+  // 误把大段正文拆进变更记录时，回退整章，避免假「正文过短跳过」
+  if (countNovelChars(prose) < 80 && countNovelChars(content) >= 80) {
+    logTaskWarn('Novel', 'ai-humanize-detach-prose-too-short', {
+      chapterNumber,
+      proseChars: countNovelChars(prose),
+      contentChars: countNovelChars(content),
+    })
+    prose = content
+    changeBlock = null
+  }
   const charCount = countNovelChars(prose)
 
   if (charCount < 80) {
-    const detect = detectAiText(prose)
-    const ai_detection = toEpisodeDetection(detect, {
-      humanize_attempts: 0,
-      humanize_passed: detect.probability <= target,
-      humanize_target: target,
-      humanize_warning: '正文过短，跳过自动去 AI 味精修',
-    })
-    await persistAiDetection(episodeId, ai_detection)
+    // 碎片稿：不落「正文过短」徽章（管线应已用 assembled 恢复；此处仅兜底）
+    logTaskWarn('Novel', 'ai-humanize-skip-short', { chapterNumber, charCount })
     return {
       content: prose,
       causal_change_record: changeBlock,
-      ai_detection,
+      ai_detection: null,
       humanize_attempts: 0,
-      humanize_passed: !!ai_detection.humanize_passed,
+      humanize_passed: true,
     }
   }
 
@@ -466,7 +503,7 @@ export async function runNovelChapterAiHumanizeHook(args: {
     finalProse,
     billing ? { ...billing, reason: '小说章节去AI味终检' } : undefined,
   )
-  finalDetect = await withCrossModelDetectMeta(finalDetect, preferCrossModel)
+  finalDetect = await withCrossModelDetectMeta(finalDetect, preferCrossModel, billing?.userId)
   const ai_detection = toEpisodeDetection(finalDetect, {
     humanize_attempts: attempts,
     humanize_passed: finalDetect.probability <= target,

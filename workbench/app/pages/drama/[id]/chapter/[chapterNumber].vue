@@ -1276,6 +1276,13 @@ async function persistChapterBody() {
   try {
     saving.value = true
     await episodeAPI.update(activeChapter.value.id, { content: chapterBody.value })
+    // 正文清空后服务端会抹掉变更记录/21维等；同步清本地徽章，避免仍显示旧审校
+    if (!chapterBody.value.trim()) {
+      continuityCheck.value = null
+      savedAiDetection.value = null
+      aiDetectionResult.value = null
+      chapterReview.value = null
+    }
     toast.success(tm.value.novel.toastSaved)
   } catch (e) {
     toast.error(e.message)
@@ -1456,8 +1463,15 @@ function notifyChapterCraft(craft) {
   }
 }
 
-function notifyAiHumanize(det) {
-  if (!det) return
+function notifyAiHumanize(det, opts = {}) {
+  // 生成结束若未带回检测结果（审校降级/去AI味失败），清掉陈旧徽章，勿一直显示上一轮「过短跳过」
+  if (!det) {
+    if (opts.clearIfMissing) {
+      savedAiDetection.value = null
+      aiDetectionResult.value = null
+    }
+    return
+  }
   savedAiDetection.value = det
   aiDetectionResult.value = { ...det, is_stale: false }
   if (det.humanize_passed === false) {
@@ -1569,7 +1583,7 @@ async function enqueueAiRewrite() {
           notifyChapterReview(meta?.chapter_review)
           notifyOutlineCompliance(meta?.outline_compliance)
           notifyChapterCraft(meta?.chapter_craft)
-          notifyAiHumanize(meta?.ai_detection)
+          notifyAiHumanize(meta?.ai_detection, { clearIfMissing: true })
           if (shouldRevertForFailedAudit(meta, meta?.continuity_check)) {
             content = ''
             chapterBody.value = bodyBackup
@@ -1600,7 +1614,7 @@ async function enqueueAiRewrite() {
       notifyChapterReview(res.chapter_review)
       notifyOutlineCompliance(res.outline_compliance)
       notifyChapterCraft(res.chapter_craft)
-      notifyAiHumanize(res.ai_detection)
+      notifyAiHumanize(res.ai_detection, { clearIfMissing: true })
       if (shouldRevertForFailedAudit(res, res.continuity_check)) {
         content = ''
         chapterBody.value = bodyBackup
@@ -1677,7 +1691,7 @@ async function enqueueFullGeneration() {
           notifyChapterReview(meta?.chapter_review)
           notifyOutlineCompliance(meta?.outline_compliance)
           notifyChapterCraft(meta?.chapter_craft)
-          notifyAiHumanize(meta?.ai_detection)
+          notifyAiHumanize(meta?.ai_detection, { clearIfMissing: true })
           if (shouldRevertForFailedAudit(meta, meta?.continuity_check)) {
             content = ''
             chapterBody.value = bodyBackup
@@ -1706,7 +1720,7 @@ async function enqueueFullGeneration() {
       notifyChapterReview(res.chapter_review)
       notifyOutlineCompliance(res.outline_compliance)
       notifyChapterCraft(res.chapter_craft)
-      notifyAiHumanize(res.ai_detection)
+      notifyAiHumanize(res.ai_detection, { clearIfMissing: true })
       if (shouldRevertForFailedAudit(res, res.continuity_check)) {
         content = ''
         chapterBody.value = bodyBackup

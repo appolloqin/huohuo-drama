@@ -1,6 +1,6 @@
 /** AI 率检测引擎公共常量：护栏阈值/临界带/settings key 的单一事实源（spec G6/G8/G10/G14）。 */
 
-export const AI_DETECT_ENGINE_VERSION = 'fusion_v2.0'
+export const AI_DETECT_ENGINE_VERSION = 'fusion_v2.1'
 export const AI_DETECT_FEATURE_VERSION = 'f1'
 
 export const VERDICT_AI_THRESHOLD = 65

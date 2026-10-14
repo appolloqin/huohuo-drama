@@ -99,6 +99,32 @@ if (!badLayer.invalid.includes('随便') || !badLayer.layers.includes('外部'))
 const dup = extractTagBlock('【欲望】甲\n【欲望】乙\n【阻碍】丙', '欲望')
 if (dup !== '乙') throw new Error(`last tag got ${dup}`)
 
+// 回归：标签值含「第N章后…」不得被当成章标题截空（生成本章 400）
+const timeWithPrevCh = extractTagBlock(
+  '第13章：野狐集暗桩\n【本章时间】第12章后第三日午后\n【本章地点】野狐集边市\n',
+  '本章时间',
+)
+if (timeWithPrevCh !== '第12章后第三日午后') {
+  throw new Error(`time with 第N章后 got ${JSON.stringify(timeWithPrevCh)}`)
+}
+const ch13time = `第13章：野狐集暗桩
+【本章时间】第12章后第三日午后
+【本章地点】黑风岭外围野狐集边市
+【本章人物】秦默、柳如烟
+【本章起因】柳如烟发现烈记铁行暗桩足够长
+【欲望】摸清北狄暗桩不惊动镇妖司足够长
+【阻碍】拓跋烈护卫皆是凝气好手足够长
+【局面变化】对赌粮价算穿虚价引起注意足够长
+【人物选择】不揭穿身份只记旗号足够长
+【冲突层】外部、人际
+【情绪手法】市集喧闹中暗藏杀机足够长
+【章末问题】舆图上圈了哪三处足够长
+【信息增量】北狄三王子潜入北境设暗桩足够长
+【主题回响】兵马未动粮草舆图先行足够长
+`
+const ch13ok = assertOutlineChapterFields(ch13time, 13)
+if (!ch13ok.ok) throw new Error(`ch13 time-with-prev-ch should pass: ${ch13ok.missing.join(',')}`)
+
 const block = buildChapterOutlineDramaPromptBlock(ch2ok.fields!)
 if (!block.includes('本章大纲·戏剧要素')) throw new Error('prompt block')
 

@@ -63,6 +63,26 @@ const e4 = await runAiDetect(AI_TEXT, {
 if (e4.calibration !== 'none' || e4.method !== 'statistical_v2') throw new Error('e4 ' + JSON.stringify({ c: e4.calibration, m: e4.method }))
 if (!(e4.evidence?.find((e) => e.key === 'S2_reference')?.missing ?? false)) throw new Error('e4 S2 flag')
 
+// 4b) 无档案冷启动：种子启发式仍计入 S2（fusion_v2，calibration=none，有 perplexity_model）
+await upsertAppSetting(APP_SETTING_KEYS.calibration, '', now())
+resetCalibMemoForTest()
+const e4b = await runAiDetect(AI_TEXT, {
+  genre: 'web_fiction', skipCacheStore: true, enableAdversarial: false,
+  writingModelHint: 'deepseek-v4.1-flash',
+  referenceScorer: async () => ({ mode: 'proxy', ppl: 4, meanLogprob: -Math.log(4), tokenCount: 300, model: 'qwen-plus' }),
+})
+if (e4b.method !== 'fusion_v2') throw new Error('e4b method ' + e4b.method)
+if (e4b.calibration !== 'none') throw new Error('e4b calibration')
+if (e4b.perplexity_model !== 'qwen-plus') throw new Error('e4b ppl model ' + e4b.perplexity_model)
+if (e4b.evidence?.find((e) => e.key === 'S2_reference')?.missing) throw new Error('e4b S2 should score')
+if (!(e4b.probability > 40)) throw new Error('e4b low ppl should raise AI rate, got ' + e4b.probability)
+// 恢复有档案夹具，供后续用例继续
+await upsertAppSetting(APP_SETTING_KEYS.calibration, JSON.stringify({
+  version: 900,
+  ppl_tracks: { 'echo-m': { echo: { mu: 20, sd: 2 } }, 'proxy-m': { proxy: { mu: 20, sd: 2 } } },
+}), now())
+resetCalibMemoForTest()
+
 // 5) 扰动：临界带可达性。对同一混合样本扫一组 ppl，存在能落 40±10 / 65±10 的值（seed 权重下理论可达，实测任一命中即过）
 const MID_TEXT = HUMAN_TEXT + '\n\n\n' + AI_TEXT.slice(0, AI_TEXT.length * 0.4)
 const perturbRewriter = async (t: string) => '同义替换后：' + t.slice(0, 200) + '，其余段落保持原样的表达与节奏安排。'

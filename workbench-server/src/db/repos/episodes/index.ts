@@ -3,7 +3,10 @@ import type { CharacterRow, DbRunResult, EpisodeRow, SceneRow, StoryboardRow, Vi
 import { isNovelProject } from '../../../common/novel/novel-meta.js'
 import { countNovelChars } from '../../../common/novel/novel-char-limit.js'
 import { splitProseAndChangeRecord } from '../../../common/novel/novel-change-record.js'
-import { mergeEpisodeMetadata } from '../../../common/drama/episode-meta.js'
+import {
+  contentDerivedMetadataClearPatch,
+  mergeEpisodeMetadata,
+} from '../../../common/drama/episode-meta.js'
 import { persistNovelChapterContentToDisk } from '../../../common/novel/novel-chapter-content-storage.js'
 import { applyEpisodeTextPatch, hydrateEpisodeRow } from '../../../common/storage/text-blob-repo.js'
 import * as dramasRepo from '../dramas/index.js'
@@ -48,7 +51,11 @@ function saveNovelContentPatch(args: {
   })
   const proseCharCount = countNovelChars(prose)
   const metaPatch: Record<string, unknown> = { prose_char_count: proseCharCount }
-  if (changeBlock) metaPatch.causal_change_record = changeBlock
+  if (!prose.trim()) {
+    Object.assign(metaPatch, contentDerivedMetadataClearPatch())
+  } else if (changeBlock) {
+    metaPatch.causal_change_record = changeBlock
+  }
   return {
     content: null,
     contentBlobPath: p.blobPath,

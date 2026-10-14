@@ -94,6 +94,110 @@ import { loadPrevChapterContentTail } from './novel-continuity.js'
 import { detectChapterSeamColdOpen } from './novel-chapter-seam.js'
 import type { EpisodeAiDetection } from '../../common/drama/episode-meta.js'
 
+/**
+ * 去AI味（含章缝防护回退）。管线末环之一：须在大纲合规 + 一致性通过之后、平台审稿之前调用。
+ */
+async function runGuardedAiHumanize(args: {
+  content: string
+  episodeId: number
+  chapterNumber: number
+  meta: NovelMetadata
+  billing?: TextBillingContext
+  onProgress?: (status: string) => void
+  prevTail: string
+  chapterOutline?: string
+}): Promise<{
+  content: string
+  ai_detection: EpisodeAiDetection | null
+  causal_change_record?: string | null
+  humanize_attempts: number
+}> {
+  const {
+    episodeId, chapterNumber, meta, billing, onProgress, prevTail, chapterOutline,
+  } = args
+  const beforeHumanize = args.content
+  try {
+    const beforeCold = chapterNumber >= 2 && !!detectChapterSeamColdOpen({
+      content: beforeHumanize,
+      chapterNumber,
+      prevChapterTail: prevTail,
+      chapterOutline,
+    })
+    const humanizeOut = await runNovelChapterAiHumanizeHook({
+      content: beforeHumanize,
+      episodeId,
+      chapterNumber,
+      meta,
+      billing,
+      onProgress,
+    })
+    let content = humanizeOut.content
+    let aiDetection = humanizeOut.ai_detection
+    const afterCold = chapterNumber >= 2 && !!detectChapterSeamColdOpen({
+      content,
+      chapterNumber,
+      prevChapterTail: prevTail,
+      chapterOutline,
+    })
+    if (afterCold && !beforeCold) {
+      logTaskWarn('Novel', 'humanize-reverted-cold-open', { chapterNumber })
+      content = beforeHumanize
+    }
+    if (chapterNumber >= 2 && prevTail.trim()) {
+      const { stripSeamReplayOpening, detectChapterSeamReplay } = await import('./novel-chapter-seam.js')
+      const isLexicalSeam = (msg?: string) => !!msg && /高度重合|字面/.test(msg || '')
+      const beforeSeam = detectChapterSeamReplay({
+        content: beforeHumanize,
+        chapterNumber,
+        prevChapterTail: prevTail,
+        chapterOutline,
+      })
+      const afterSeam = detectChapterSeamReplay({
+        content,
+        chapterNumber,
+        prevChapterTail: prevTail,
+        chapterOutline,
+      })
+      if (afterSeam && isLexicalSeam(afterSeam.message) && !isLexicalSeam(beforeSeam?.message)) {
+        logTaskWarn('Novel', 'humanize-reverted-seam-replay', { chapterNumber })
+        content = beforeHumanize
+      } else if (afterSeam && isLexicalSeam(afterSeam.message)) {
+        const purged = stripSeamReplayOpening({
+          content,
+          chapterNumber,
+          prevChapterTail: prevTail,
+          chapterOutline,
+        })
+        if (purged.stripped) {
+          logTaskWarn('Novel', 'humanize-seam-replay-purged', { chapterNumber })
+          content = purged.text
+        }
+      }
+    }
+    return {
+      content,
+      ai_detection: aiDetection,
+      causal_change_record: content === beforeHumanize
+        ? undefined
+        : humanizeOut.causal_change_record,
+      humanize_attempts: humanizeOut.humanize_attempts,
+    }
+  } catch (err: unknown) {
+    const msg = err instanceof Error ? err.message : String(err)
+    logTaskWarn('Novel', 'ai-humanize-hook-failed', { chapterNumber, error: msg })
+    try {
+      const ep = await episodesRepo.findEpisodeById(episodeId)
+      const metadata = mergeEpisodeMetadata(ep?.metadata, { ai_detection: undefined })
+      await episodesRepo.updateEpisode(episodeId, { metadata, updatedAt: now() })
+    } catch { /* ignore */ }
+    return {
+      content: beforeHumanize,
+      ai_detection: null,
+      humanize_attempts: 0,
+    }
+  }
+}
+
 async function runOutlineComplianceGate(args: {
   content: string
   dramaId: number
@@ -323,19 +427,18 @@ export async function postProcessNovelChapterContent(args: {
 
     content = gate.content
     outlineCompliance = gate.report
-    // ?????????????????????? Craft/????????? UI ???? reasons
+    // 大纲未过关：不去AI味、不审稿
     if (gate.report.hardReject) {
       logTaskWarn('Novel', 'post-process-outline-hard-reject', {
         chapterNumber,
         codes: gate.report.reasons.map(r => r.code),
-        chars: [...(args.content || '')].length,
+        chars: countNovelChars(content),
       })
       if (!skipCheck) {
         check = buildHardRejectContinuityCheck(gate.report.reasons)
         await saveContinuityCheck(episodeId, check)
       }
       return {
-        // ???????????????????????????
         content: '',
         check,
         ledger: null,
@@ -402,72 +505,7 @@ export async function postProcessNovelChapterContent(args: {
     }
   }
 
-  // ? AI ?????????????????????
-  let aiDetection: EpisodeAiDetection | null = null
-  {
-    const beforeHumanize = content
-    const beforeCold = chapterNumber >= 2 && !!detectChapterSeamColdOpen({
-      content: beforeHumanize,
-      chapterNumber,
-      prevChapterTail: prevTail,
-      chapterOutline,
-    })
-    const humanizeOut = await runNovelChapterAiHumanizeHook({
-      content,
-      episodeId,
-      chapterNumber,
-      meta,
-      billing,
-      onProgress,
-    })
-    const afterCold = chapterNumber >= 2 && !!detectChapterSeamColdOpen({
-      content: humanizeOut.content,
-      chapterNumber,
-      prevChapterTail: prevTail,
-      chapterOutline,
-    })
-    if (afterCold && !beforeCold) {
-      logTaskWarn('Novel', 'humanize-reverted-cold-open', { chapterNumber })
-      content = beforeHumanize
-      aiDetection = humanizeOut.ai_detection
-    } else {
-      content = humanizeOut.content
-      aiDetection = humanizeOut.ai_detection
-      if (humanizeOut.causal_change_record) workingChangeRecord = humanizeOut.causal_change_record
-    }
-    if (chapterNumber >= 2 && prevTail.trim()) {
-      const { stripSeamReplayOpening, detectChapterSeamReplay } = await import('./novel-chapter-seam.js')
-      const isLexicalSeam = (msg?: string) => !!msg && msg.includes('????')
-      const beforeSeam = detectChapterSeamReplay({
-        content: beforeHumanize,
-        chapterNumber,
-        prevChapterTail: prevTail,
-        chapterOutline,
-      })
-      const afterSeam = detectChapterSeamReplay({
-        content,
-        chapterNumber,
-        prevChapterTail: prevTail,
-        chapterOutline,
-      })
-      if (afterSeam && isLexicalSeam(afterSeam.message) && !isLexicalSeam(beforeSeam?.message)) {
-        logTaskWarn('Novel', 'humanize-reverted-seam-replay', { chapterNumber })
-        content = beforeHumanize
-      } else if (afterSeam && isLexicalSeam(afterSeam.message)) {
-        const purged = stripSeamReplayOpening({
-          content,
-          chapterNumber,
-          prevChapterTail: prevTail,
-          chapterOutline,
-        })
-        if (purged.stripped) {
-          logTaskWarn('Novel', 'humanize-seam-replay-purged', { chapterNumber })
-          content = purged.text
-        }
-      }
-    }
-  }
-
+  // Craft 后若仍冷开篇：先大纲再修（必须在去AI味之前）
   if (
     chapterNumber >= 2
     && detectChapterSeamColdOpen({
@@ -477,7 +515,7 @@ export async function postProcessNovelChapterContent(args: {
       chapterOutline,
     })
   ) {
-    logTaskWarn('Novel', 'post-process-outline-recheck-after-style', { chapterNumber })
+    logTaskWarn('Novel', 'post-process-outline-recheck-before-humanize', { chapterNumber })
     const gate = await runOutlineComplianceGate({
       content,
       dramaId,
@@ -499,7 +537,7 @@ export async function postProcessNovelChapterContent(args: {
       hardReject: gate.report.hardReject,
     }
     if (gate.report.hardReject) {
-      logTaskWarn('Novel', 'post-process-outline-hard-reject-after-style', {
+      logTaskWarn('Novel', 'post-process-outline-hard-reject-before-humanize', {
         chapterNumber,
         codes: gate.report.reasons.map(r => r.code),
       })
@@ -513,13 +551,32 @@ export async function postProcessNovelChapterContent(args: {
         ledger: null,
         craft,
         outline_compliance: outlineCompliance,
-        ai_detection: aiDetection,
+        ai_detection: null,
         hard_reject: true,
       }
     }
   }
 
-  // Craft/去AI 之后再审；若删毒等已清空正文，勿跑一致性审以免误报 empty_content
+  // 去AI味前：恢复删毒/Craft 碎片 + 一致性终审（未通过则不去AI味/审稿）
+  {
+    const target = Math.min(20000, Math.max(500, Number(generateArgs?.targetLength) || 3000))
+    const minLen = Math.round(target * 0.88)
+    const floored = enforceAssembledLengthFloor({
+      assembled: assembledBaseline,
+      candidate: content,
+      minLen,
+    })
+    if (floored.rejected) {
+      logTaskWarn('Novel', 'pre-humanize-restored-from-assembled', {
+        chapterNumber,
+        assembled: countNovelChars(assembledBaseline),
+        candidate: countNovelChars(content),
+        floor: floored.floor,
+      })
+      content = floored.text
+    }
+  }
+
   if (!skipCheck) {
     if (!content.trim()) {
       const emptyReasons = outlineCompliance?.reasons?.length
@@ -536,13 +593,29 @@ export async function postProcessNovelChapterContent(args: {
         ledger: null,
         craft,
         outline_compliance: outlineCompliance,
-        ai_detection: aiDetection,
+        ai_detection: null,
         hard_reject: true,
       }
     }
     const afterHooks = await runStreamContinuityCheck('hooks')
     check = afterHooks
     await saveContinuityCheck(episodeId, check)
+    if (check.passed === false) {
+      logTaskWarn('Novel', 'post-process-continuity-fail-skip-humanize', {
+        chapterNumber,
+        score: check.score,
+        rules: (check.blocking_items || []).map((i: { rule?: string }) => i.rule).slice(0, 8),
+      })
+      return {
+        content: '',
+        check,
+        ledger: null,
+        craft,
+        outline_compliance: outlineCompliance,
+        ai_detection: null,
+        hard_reject: true,
+      }
+    }
   } else if (isCausalChainEnabled(meta)) {
     const ensured = await ensureCausalChangeRecordAppended({
       content,
@@ -555,46 +628,7 @@ export async function postProcessNovelChapterContent(args: {
     if (ensured.changeBlock) workingChangeRecord = ensured.changeBlock
   }
 
-  let ledger: NovelContinuityLedger | null = null
-  try {
-    const prose = await applyNovelMemoryFromChapter({
-      dramaId, chapterNumber, content, meta,
-      billing: billing ? { ...billing, reason: '?????/????' } : undefined,
-    })
-    content = prose
-    const fin = await finalizeChapterContinuity({
-      dramaId,
-      episodeId,
-      chapterNumber,
-      content: prose,
-      dramaTitle,
-      billing: billing ? { ...billing, reason: '?????????' } : undefined,
-    })
-    ledger = fin.ledger
-  } catch (err: any) {
-    logTaskError('Novel', 'continuity-finalize', {
-      chapterId: episodeId,
-      error: err?.message || '??????',
-    })
-  }
-
-  let causalChangeRecord: string | undefined = workingChangeRecord
-  if (isCausalChainEnabled(meta)) {
-    // 兜底：若正文仍粘有记录则拆出；正常路径 content 已是纯正文
-    const detached = detachChangeRecordForStorage(content)
-    if (detached.changeBlock) {
-      content = detached.prose
-      causalChangeRecord = detached.changeBlock
-    }
-    if (causalChangeRecord) {
-      const ep = await episodesRepo.findEpisodeById(episodeId)
-      const metadata = mergeEpisodeMetadata(ep?.metadata, {
-        causal_change_record: causalChangeRecord,
-      })
-      await episodesRepo.updateEpisode(episodeId, { metadata, updatedAt: now() })
-    }
-  }
-
+  // 大纲+一致性已通过：机械收口 → 记忆/账本 →【末两环】去AI味 → 审稿（不再回头改大纲/一致性）
   {
     const repaired = await maybeRepairNovelReplacementChars({
       content,
@@ -607,7 +641,6 @@ export async function postProcessNovelChapterContent(args: {
   {
     const { stripIntraChapterNearDuplicate } = await import('./novel-intra-chapter-dedupe.js')
     content = stripIntraChapterNearDuplicate(content).text
-    // 去重后可能粘段，交付口再验一次
     content = enforceNovelProseDeliveryLayout(content)
   }
   {
@@ -631,7 +664,62 @@ export async function postProcessNovelChapterContent(args: {
     assertNovelChapterLengthBand({ text: content, minLen, maxLen, chapterNumber })
   }
 
-  // 平台审稿（建议级：落库供 UI，不因 REJECT 清空正文）
+  let ledger: NovelContinuityLedger | null = null
+  try {
+    const prose = await applyNovelMemoryFromChapter({
+      dramaId, chapterNumber, content, meta,
+      billing: billing ? { ...billing, reason: '章节记忆提炼' } : undefined,
+    })
+    content = prose
+    const fin = await finalizeChapterContinuity({
+      dramaId,
+      episodeId,
+      chapterNumber,
+      content: prose,
+      dramaTitle,
+      billing: billing ? { ...billing, reason: '章节连续性收口' } : undefined,
+    })
+    ledger = fin.ledger
+  } catch (err: any) {
+    logTaskError('Novel', 'continuity-finalize', {
+      chapterId: episodeId,
+      error: err?.message || '连续性收口失败',
+    })
+  }
+
+  let causalChangeRecord: string | undefined = workingChangeRecord
+  if (isCausalChainEnabled(meta)) {
+    const detached = detachChangeRecordForStorage(content)
+    if (detached.changeBlock) {
+      content = detached.prose
+      causalChangeRecord = detached.changeBlock
+    }
+    if (causalChangeRecord) {
+      const ep = await episodesRepo.findEpisodeById(episodeId)
+      const metadata = mergeEpisodeMetadata(ep?.metadata, {
+        causal_change_record: causalChangeRecord,
+      })
+      await episodesRepo.updateEpisode(episodeId, { metadata, updatedAt: now() })
+    }
+  }
+
+  let aiDetection: EpisodeAiDetection | null = null
+  {
+    const humanizeOut = await runGuardedAiHumanize({
+      content,
+      episodeId,
+      chapterNumber,
+      meta,
+      billing,
+      onProgress,
+      prevTail,
+      chapterOutline,
+    })
+    content = humanizeOut.content
+    aiDetection = humanizeOut.ai_detection
+    if (humanizeOut.causal_change_record) workingChangeRecord = humanizeOut.causal_change_record
+  }
+
   let chapterReview: import('./novel-chapter-review.js').ChapterReviewResult | null = null
   if (content.trim()) {
     onProgress?.('平台审稿中…')
@@ -645,26 +733,6 @@ export async function postProcessNovelChapterContent(args: {
       chapterOutline,
       billing: billing ? { ...billing, reason: '小说章节平台审稿' } : undefined,
     })
-  }
-
-  // 一致性未通过：不交付正文（避免覆盖/落库毒稿；审校结果仍返回给 UI）
-  if (check && check.passed === false) {
-    logTaskWarn('Novel', 'post-process-continuity-fail-block-deliver', {
-      chapterNumber,
-      score: check.score,
-      rules: (check.blocking_items || []).map((i: { rule?: string }) => i.rule).slice(0, 8),
-    })
-    return {
-      content: '',
-      check,
-      ledger,
-      craft,
-      causal_change_record: causalChangeRecord,
-      outline_compliance: outlineCompliance,
-      ai_detection: aiDetection,
-      chapter_review: chapterReview,
-      hard_reject: true,
-    }
   }
 
   return {
@@ -962,6 +1030,7 @@ export async function runNovelChapterPipeline(args: {
       logTaskWarn('Novel', 'pipeline-outline-hard-reject', {
         chapterNumber,
         codes: gate.report.reasons.map(r => r.code),
+        chars: countNovelChars(content),
       })
       const rejectCheck = buildHardRejectContinuityCheck(gate.report.reasons)
       await saveContinuityCheck(episodeId, rejectCheck)
@@ -1045,72 +1114,7 @@ export async function runNovelChapterPipeline(args: {
     throw err
   }
 
-  let aiDetection: EpisodeAiDetection | null = null
-  {
-    const beforeHumanize = content
-    const beforeCold = chapterNumber >= 2 && !!detectChapterSeamColdOpen({
-      content: beforeHumanize,
-      chapterNumber,
-      prevChapterTail: prevTailBatch,
-      chapterOutline,
-    })
-    const humanizeOut = await runNovelChapterAiHumanizeHook({
-      content,
-      episodeId,
-      chapterNumber,
-      meta,
-      billing,
-      onProgress: (status) => onPhase?.('rewrite', { status, humanize: true }),
-    })
-    const afterCold = chapterNumber >= 2 && !!detectChapterSeamColdOpen({
-      content: humanizeOut.content,
-      chapterNumber,
-      prevChapterTail: prevTailBatch,
-      chapterOutline,
-    })
-    if (afterCold && !beforeCold) {
-      logTaskWarn('Novel', 'humanize-reverted-cold-open', { chapterNumber })
-      content = beforeHumanize
-      aiDetection = humanizeOut.ai_detection
-    } else {
-      content = humanizeOut.content
-      aiDetection = humanizeOut.ai_detection
-      if (humanizeOut.causal_change_record) workingChangeRecord = humanizeOut.causal_change_record
-      if (humanizeOut.humanize_attempts > 0) rewritten = true
-    }
-    if (chapterNumber >= 2 && prevTailBatch.trim()) {
-      const { stripSeamReplayOpening, detectChapterSeamReplay } = await import('./novel-chapter-seam.js')
-      const isLexicalSeam = (msg?: string) => !!msg && msg.includes('????')
-      const beforeSeam = detectChapterSeamReplay({
-        content: beforeHumanize,
-        chapterNumber,
-        prevChapterTail: prevTailBatch,
-        chapterOutline,
-      })
-      const afterSeam = detectChapterSeamReplay({
-        content,
-        chapterNumber,
-        prevChapterTail: prevTailBatch,
-        chapterOutline,
-      })
-      if (afterSeam && isLexicalSeam(afterSeam.message) && !isLexicalSeam(beforeSeam?.message)) {
-        logTaskWarn('Novel', 'humanize-reverted-seam-replay', { chapterNumber })
-        content = beforeHumanize
-      } else if (afterSeam && isLexicalSeam(afterSeam.message)) {
-        const purged = stripSeamReplayOpening({
-          content,
-          chapterNumber,
-          prevChapterTail: prevTailBatch,
-          chapterOutline,
-        })
-        if (purged.stripped) {
-          logTaskWarn('Novel', 'humanize-seam-replay-purged', { chapterNumber })
-          content = purged.text
-        }
-      }
-    }
-  }
-
+  // Craft 后冷开篇：大纲再修（去AI味之前）
   if (
     chapterNumber >= 2
     && detectChapterSeamColdOpen({
@@ -1120,7 +1124,7 @@ export async function runNovelChapterPipeline(args: {
       chapterOutline,
     })
   ) {
-    logTaskWarn('Novel', 'pipeline-outline-recheck-after-style', { chapterNumber })
+    logTaskWarn('Novel', 'pipeline-outline-recheck-before-humanize', { chapterNumber })
     const gate = await runOutlineComplianceGate({
       content,
       dramaId,
@@ -1138,71 +1142,79 @@ export async function runNovelChapterPipeline(args: {
       passed: gate.report.passed,
       attempts: (outlineCompliance?.attempts || 0) + gate.report.attempts,
       reasons: gate.report.reasons,
+      hardReject: gate.report.hardReject,
     }
     if (!gate.report.passed || gate.report.attempts > 0) rewritten = true
-  }
-
-  let ledger: NovelContinuityLedger | null = null
-  let globalUpdated = false
-
-  const checkFailed = check != null && !check.passed
-  const shouldFinalize = !skipFinalize && !(skipFinalizeWhenCheckFails && checkFailed)
-
-  content = await applyNovelMemoryFromChapter({
-    dramaId,
-    chapterNumber,
-    content,
-    meta,
-    billing: billing ? { ...billing, reason: '?????/????' } : undefined,
-  })
-
-  if (shouldFinalize) {
-    try {
-      const fin = await finalizeChapterContinuity({
-        dramaId,
-        episodeId,
-        chapterNumber,
-        content,
-        dramaTitle,
-        billing: billing
-          ? { ...billing, reason: '?????????' }
-          : undefined,
-      })
-      ledger = fin.ledger
-      globalUpdated = fin.globalUpdated
-    } catch (err: any) {
-      logTaskError('Novel', 'continuity-finalize', {
-        chapterId: episodeId,
-        error: err?.message || '??????',
-      })
-    }
-    if (isCausalChainEnabled(meta)) {
-      try {
-        await updateCausalChainFromChapter({
-          dramaId,
-          chapterNumber,
-          fullContent: resolveFullChapterForAudit(content, workingChangeRecord),
-          dramaTitle,
-          billing: billing ? { ...billing, reason: '更新因果链' } : undefined,
-        })
-      } catch (err: any) {
-        logTaskError('Novel', 'causal-chain-update', {
-          chapterId: episodeId,
-          error: err?.message || '因果链更新失败',
-        })
+    if (gate.report.hardReject) {
+      const rejectCheck = buildHardRejectContinuityCheck(gate.report.reasons)
+      await saveContinuityCheck(episodeId, rejectCheck)
+      return {
+        content: '',
+        check: rejectCheck,
+        ledger: null,
+        rewritten,
+        rewrite_attempts: rewriteAttempts,
+        globalUpdated: false,
+        craft,
+        outline_compliance: outlineCompliance,
+        ai_detection: null,
+        hard_reject: true,
       }
     }
   }
 
-  let causalChangeRecord: string | undefined = workingChangeRecord
-  if (isCausalChainEnabled(meta)) {
-    const detached = detachChangeRecordForStorage(content)
-    if (detached.changeBlock) {
-      content = detached.prose
-      causalChangeRecord = detached.changeBlock
+  {
+    const target = Math.min(20000, Math.max(500, Number(generateArgs?.targetLength) || 3000))
+    const minLen = Math.round(target * 0.88)
+    const floored = enforceAssembledLengthFloor({
+      assembled: assembledBaseline,
+      candidate: content,
+      minLen,
+    })
+    if (floored.rejected) {
+      logTaskWarn('Novel', 'pre-humanize-restored-from-assembled', {
+        chapterNumber,
+        assembled: countNovelChars(assembledBaseline),
+        candidate: countNovelChars(content),
+        floor: floored.floor,
+      })
+      content = floored.text
     }
   }
 
+  // 大纲/Craft 可能改写正文：去AI味前再跑一致性；未通过则不去AI味/审稿
+  if (!skipCheck) {
+    check = await checkNovelChapterContinuity({
+      content: resolveFullChapterForAudit(content, workingChangeRecord),
+      chapterNumber,
+      dramaId,
+      dramaTitle,
+      meta,
+      chapterOutline,
+      billing: billing ? { ...billing, reason: '小说一致性审校·去AI味前' } : undefined,
+    })
+    await saveContinuityCheck(episodeId, check)
+    if (check.passed === false) {
+      logTaskWarn('Novel', 'pipeline-continuity-fail-skip-humanize', {
+        chapterNumber,
+        score: check.score,
+      })
+      return {
+        content: '',
+        check,
+        ledger: null,
+        rewritten,
+        rewrite_attempts: rewriteAttempts,
+        globalUpdated: false,
+        craft,
+        outline_compliance: outlineCompliance,
+        ai_detection: null,
+        hard_reject: true,
+      }
+    }
+  }
+
+  // 机械收口 + 记忆/账本 →【末两环】去AI味 → 审稿（不再回头改大纲）
   if (content.trim()) {
     {
       const repaired = await maybeRepairNovelReplacementChars({
@@ -1238,6 +1250,83 @@ export async function runNovelChapterPipeline(args: {
     assertNovelChapterLengthBand({ text: content, minLen, maxLen, chapterNumber })
   }
 
+  let ledger: NovelContinuityLedger | null = null
+  let globalUpdated = false
+  const shouldFinalize = !skipFinalize && !(skipFinalizeWhenCheckFails && check != null && !check.passed)
+
+  content = await applyNovelMemoryFromChapter({
+    dramaId,
+    chapterNumber,
+    content,
+    meta,
+    billing: billing ? { ...billing, reason: '章节记忆提炼' } : undefined,
+  })
+
+  if (shouldFinalize) {
+    try {
+      const fin = await finalizeChapterContinuity({
+        dramaId,
+        episodeId,
+        chapterNumber,
+        content,
+        dramaTitle,
+        billing: billing
+          ? { ...billing, reason: '章节连续性收口' }
+          : undefined,
+      })
+      ledger = fin.ledger
+      globalUpdated = fin.globalUpdated
+    } catch (err: any) {
+      logTaskError('Novel', 'continuity-finalize', {
+        chapterId: episodeId,
+        error: err?.message || '连续性收口失败',
+      })
+    }
+    if (isCausalChainEnabled(meta)) {
+      try {
+        await updateCausalChainFromChapter({
+          dramaId,
+          chapterNumber,
+          fullContent: resolveFullChapterForAudit(content, workingChangeRecord),
+          dramaTitle,
+          billing: billing ? { ...billing, reason: '更新因果链' } : undefined,
+        })
+      } catch (err: any) {
+        logTaskError('Novel', 'causal-chain-update', {
+          chapterId: episodeId,
+          error: err?.message || '因果链更新失败',
+        })
+      }
+    }
+  }
+
+  let causalChangeRecord: string | undefined = workingChangeRecord
+  if (isCausalChainEnabled(meta)) {
+    const detached = detachChangeRecordForStorage(content)
+    if (detached.changeBlock) {
+      content = detached.prose
+      causalChangeRecord = detached.changeBlock
+    }
+  }
+
+  let aiDetection: EpisodeAiDetection | null = null
+  {
+    const humanizeOut = await runGuardedAiHumanize({
+      content,
+      episodeId,
+      chapterNumber,
+      meta,
+      billing,
+      onProgress: (status) => onPhase?.('rewrite', { status, humanize: true }),
+      prevTail: prevTailBatch,
+      chapterOutline,
+    })
+    content = humanizeOut.content
+    aiDetection = humanizeOut.ai_detection
+    if (humanizeOut.causal_change_record) workingChangeRecord = humanizeOut.causal_change_record
+    if (humanizeOut.humanize_attempts > 0) rewritten = true
+  }
+
   let chapterReview: import('./novel-chapter-review.js').ChapterReviewResult | null = null
   if (content.trim()) {
     onPhase?.('rewrite', { status: '平台审稿中…', review: true })
@@ -1251,29 +1340,6 @@ export async function runNovelChapterPipeline(args: {
       chapterOutline,
       billing: billing ? { ...billing, reason: '小说章节平台审稿' } : undefined,
     })
-  }
-
-  // 一致性未通过：不交付正文，避免覆盖原文 / 数字作家落库毒稿
-  if (check && check.passed === false) {
-    logTaskWarn('Novel', 'pipeline-continuity-fail-block-deliver', {
-      chapterNumber,
-      score: check.score,
-      rules: (check.blocking_items || []).map((i: { rule?: string }) => i.rule).slice(0, 8),
-    })
-    return {
-      content: '',
-      check,
-      ledger,
-      rewritten,
-      rewrite_attempts: rewriteAttempts,
-      globalUpdated,
-      causal_change_record: causalChangeRecord,
-      outline_compliance: outlineCompliance,
-      craft,
-      ai_detection: aiDetection,
-      chapter_review: chapterReview,
-      hard_reject: true,
-    }
   }
 
   return {

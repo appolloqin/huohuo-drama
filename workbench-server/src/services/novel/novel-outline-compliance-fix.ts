@@ -1055,7 +1055,7 @@ export async function maybeFixOutlineCompliance(args: {
     deliverOverLength,
   })
 
-  // 章缝冷开篇未修好 → 硬拒绝
+  // 章缝冷开篇未修好 → 硬拒（未过关则不去AI味/审稿）
   if (deliverStillSeam) {
     logTaskWarn('Novel', 'outline-compliance-hard-reject', {
       chapterNumber,

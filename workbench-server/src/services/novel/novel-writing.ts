@@ -53,7 +53,10 @@ import {
   shouldUsePhasedOutlineGeneration,
   keepOutlineBeforeChapter,
 } from '../../common/novel/novel-outline.js'
-import { extractOutlinePriorChapterIndex } from './novel-outline-drama-fields.js'
+import {
+  extractOutlinePriorChapterIndex,
+  extractOutlineSeamTimeAnchor,
+} from './novel-outline-drama-fields.js'
 import { truncText } from '../../common/drama/project-continuity.js'
 import { logTaskWarn } from '../../common/task/task-logger.js'
 import * as episodesRepo from '../../db/repos/episodes/index.js'
@@ -464,6 +467,8 @@ const OUTLINE_CHAPTER_CONTINUITY_RULES = [
   '【冲突层】只能：外部、人际、自我（可多选）。',
   '每章必须是完整戏剧标签块（标题下行齐 13 个【】标签），禁止「每章一行」缩写。',
   '若提示中有【已定稿分章索引】：索引内事件已发生，禁止再写成首次发生。',
+  '【本章时间】须用故事日历锚：穿越第N日/当日/同日/次日/第N章后…+时辰（正例：穿越第五日戌时、同日夜、次日卯时、第12章后第三日午后）。',
+  '禁止用「某人到某地当夜/当日」等情节事件句当【本章时间】主锚（情节写【本章起因】）；有接缝时间锚时须同日/次日/数日后正向衔接。',
 ].join('\n')
 
 function outlineMaxTokensForChapters(totalChapters: number): number {
@@ -962,11 +967,14 @@ export async function regenerateNovelOutlineFromChapter(args: {
 
   const parts: string[] = []
   let priorIndex = extractOutlinePriorChapterIndex(existing, from)
+  let seamTime = extractOutlineSeamTimeAnchor(existing, from)
   const titlesAcc = [...usedShortTitles]
   for (const vol of regenRanges) {
     const progressHint = [
       priorIndex,
+      seamTime ? `【接缝时间锚】上一章【本章时间】=${seamTime}` : '',
       `索引内事件已发生，禁止再写成首次发生；从第 ${from} 章起按分卷续写。`,
+      '【本章时间】须承接接缝/索引末章日历正向推进（同日/次日/第N日后+时辰），禁止「某人到某地当夜」等情节句另起时间轴。',
     ].filter(Boolean).join('\n')
     let block = await generateVolumeChapterSummaries({
       skeleton,
@@ -999,16 +1007,18 @@ export async function regenerateNovelOutlineFromChapter(args: {
     for (const { title: t } of listOutlineChapterShortTitles(block)) {
       if (!titlesAcc.includes(t)) titlesAcc.push(t)
     }
-    const grown = extractOutlinePriorChapterIndex(
-      `${base}\n\n${parts.join('\n\n')}`,
-      vol.end + 1,
-    )
+    const grownOutline = `${base}\n\n${parts.join('\n\n')}`
+    const grown = extractOutlinePriorChapterIndex(grownOutline, vol.end + 1)
     if (grown) priorIndex = grown
+    const nextSeam = extractOutlineSeamTimeAnchor(grownOutline, vol.end + 1)
+    if (nextSeam) seamTime = nextSeam
   }
 
   const progressHint = [
     priorIndex,
+    seamTime ? `【接缝时间锚】上一章【本章时间】=${seamTime}` : '',
     '索引内事件已发生，禁止再写成首次发生。',
+    '【本章时间】须承接接缝/索引末章日历正向推进，禁止情节事件句另起时间轴。',
   ].filter(Boolean).join('\n')
   let outline = `${base.trim()}\n\n${parts.map((p) => p.trim()).filter(Boolean).join('\n\n')}`.replace(/\n{3,}/g, '\n\n')
   outline = stripIncompleteTrailingChapter(outline)

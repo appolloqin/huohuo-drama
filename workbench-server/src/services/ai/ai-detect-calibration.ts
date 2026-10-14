@@ -160,6 +160,12 @@ export type CalibProfile = {
   metrics?: { fpr: number | null; recall: number | null; train: 's1_only' | 'full' }
 }
 
+/**
+ * 无 ppl_tracks 档案时的种子轨（与旧 perplexityToAiProbability 中位 ~18 对齐）。
+ * 仅用于 seed/broken 冷启动，有档案且缺型号时仍不计 S2（见 engine e4）。
+ */
+export const SEED_PPL_TRACK: PplTrack = { mu: 18, sd: 4 }
+
 /** ppl→证据线。低 ppl（更可预测=更 AI）→ z 为负 → 分高 */
 export function pplToZ(ppl: number, track?: PplTrack): number | null {
   if (!track || !Number.isFinite(ppl) || ppl <= 0 || !(track.sd > 0.05)) return null

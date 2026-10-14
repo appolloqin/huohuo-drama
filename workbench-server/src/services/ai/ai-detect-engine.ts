@@ -11,7 +11,7 @@ import {
 import { sameFamilyDetect, crossModelDetectWarning } from '../../common/novel/novel-model-family.js'
 import { detectAiText, hashNovelContent, buildAiDetectionSuggestions, type AiDetectionResult, type AiDetectionSignal } from './ai-text-detection.js'
 import { extractRawFeatures } from './ai-detect-features.js'
-import { loadCalibProfile, pplLineScore, pplToZ } from './ai-detect-calibration.js'
+import { loadCalibProfile, pplLineScore, pplToZ, SEED_PPL_TRACK } from './ai-detect-calibration.js'
 import { fuseEvidence, type FusionResult, type RefLineInput } from './ai-detect-fusion.js'
 import { charWindows, windowText, buildFusedSegments, countHighBandSegments, bandFromAigc, type AiDetectSegment, type AiDetectSamplingWindow } from './ai-detect-segments.js'
 import { fingerprintEvidence } from './ai-detect-model-fingerprint.js'
@@ -91,6 +91,7 @@ export async function runAiDetect(text: string, options: RunAiDetectOptions = {}
   let repMode: 'echo' | 'prompt_logprobs' | 'proxy' | null = null
   let scoredChars = 0
   let analyzedTokens = 0
+  let repCalibrated = true
   const windowResults: AiDetectSamplingWindow[] = []
   let firstFailure = ''
   if (budget.maxCandidates > 0) {
@@ -104,18 +105,27 @@ export async function runAiDetect(text: string, options: RunAiDetectOptions = {}
       callsUsed++
       try {
         const r = await scorer(body, { billing: options.billing, maxCandidates: budget.maxCandidates })
-        const z = pplTrackZ(calib, r)
-        if (z == null) {
-          // 未校准 track：按打分失败处理（spec §5.3/§10：不抛、记 reason）
+        const resolved = resolvePplZ(calib, r)
+        if (resolved == null) {
+          // 有档案但缺该型号 track：按打分失败处理（spec §5.3/§10：不抛、记 reason）
           firstFailure ||= `参考模型 ${r.model} 无 ppl_tracks 校准档案`
           windowResults.push({ ...w, status: 'uncalibrated', perplexity: Math.round(r.ppl * 100) / 100 })
           continue
         }
+        const { z, calibrated } = resolved
         const line = pplLineScore(z, r.mode === 'proxy' ? 0.4 : 1.0)
         scoredZ.push(z)
         scoredChars += countNovelChars(body)
         analyzedTokens += r.tokenCount || 0
-        if (!repModel) { repModel = r.model; repMode = r.mode; repPpl = r.ppl; repMeanLogprob = r.meanLogprob }
+        if (!repModel) {
+          repModel = r.model
+          repMode = r.mode
+          repPpl = r.ppl
+          repMeanLogprob = r.meanLogprob
+          repCalibrated = calibrated
+        } else {
+          repCalibrated = repCalibrated && calibrated
+        }
         windowResults.push({ ...w, status: 'scored', perplexity: Math.round((r.ppl ?? 0) * 100) / 100, probability: line == null ? undefined : Math.round(line * 100) })
       } catch (err) {
         firstFailure ||= (err as Error)?.message || '参考模型打分失败'
@@ -126,7 +136,7 @@ export async function runAiDetect(text: string, options: RunAiDetectOptions = {}
 
   const repZ = reduceZ(scoredZ)
   const refLine: RefLineInput | null = repZ != null && repMode
-    ? { mode: repMode, model: repModel, z: repZ, calibrated: true, ppl: repPpl, meanLogprob: repMeanLogprob }
+    ? { mode: repMode, model: repModel, z: repZ, calibrated: repCalibrated, ppl: repPpl, meanLogprob: repMeanLogprob }
     : null
   const sameFamily = !!(options.writingModelHint && refLine && sameFamilyDetect(options.writingModelHint, refLine.model))
 
@@ -177,12 +187,20 @@ export async function runAiDetect(text: string, options: RunAiDetectOptions = {}
       callsUsed++
       try {
         const r = await scorer(body, { billing: options.billing, maxCandidates: 1 })
-        const z = pplTrackZ(calib, r)
-        if (z == null) continue
+        const resolved = resolvePplZ(calib, r)
+        if (resolved == null) continue
         const f = fuseEvidence({
           raws: extractRawFeatures(body), genre,
           table: calib.tableFor(genre), weights: calib.weightsFor(genre), statsSub: calib.statsSub,
-          ref: { ...refLine, z, ppl: r.ppl, meanLogprob: r.meanLogprob, model: r.model || refLine.model, mode: r.mode || refLine.mode },
+          ref: {
+            ...refLine,
+            z: resolved.z,
+            calibrated: resolved.calibrated,
+            ppl: r.ppl,
+            meanLogprob: r.meanLogprob,
+            model: r.model || refLine.model,
+            mode: r.mode || refLine.mode,
+          },
           sameFamily,
           fpSim: fp?.sim ?? null,
           perturbStab: perturb?.stability ?? null,
@@ -218,13 +236,24 @@ export async function runAiDetect(text: string, options: RunAiDetectOptions = {}
   return result
 }
 
-function pplTrackZ(calib: Awaited<ReturnType<typeof loadCalibProfile>>, r: { ppl?: number; model: string; mode?: string }): number | null {
+/**
+ * 档案命中 → calibrated z；无档案冷启动 → 种子轨启发式 z；
+ * 有档案但缺该型号 → null（与 verify e4 一致，不计 S2）。
+ */
+function resolvePplZ(
+  calib: Awaited<ReturnType<typeof loadCalibProfile>>,
+  r: { ppl?: number; model: string; mode?: string },
+): { z: number; calibrated: boolean } | null {
   if (r.ppl == null || r.ppl <= 0) return null
-  if (calib.meta.source !== 'profile') return null
   const mode: 'echo' | 'proxy' = r.mode === 'proxy' ? 'proxy' : 'echo'
-  const track = calib.pplTrack(r.model, mode)
-  if (!track) return null
-  return pplToZ(r.ppl, track)
+  if (calib.meta.source === 'profile') {
+    const track = calib.pplTrack(r.model, mode)
+    if (!track) return null
+    const z = pplToZ(r.ppl, track)
+    return z == null ? null : { z, calibrated: true }
+  }
+  const z = pplToZ(r.ppl, SEED_PPL_TRACK)
+  return z == null ? null : { z, calibrated: false }
 }
 
 /** 多窗 z 聚合：3+ 取中位窗（保守但非极值，spec §4 步 4）；单窗取该窗 */
@@ -302,7 +331,10 @@ function finalizeFusionResult(args: FinalizeArgs): AiDetectionResult {
 
   const warnings: string[] = []
   if (sameFamily) warnings.push(crossModelDetectWarning({ sameFamily: true }) || '同系检测偏差风险')
-  if (!(calib.meta.source === 'profile' && calib.meta.version)) warnings.push('ppl 未校准（无 ppl_tracks 档案），S2 暂不计分')
+  if (refLine && !refLine.calibrated) warnings.push('ppl 使用种子启发式（无 ppl_tracks 档案），S2 弱计入')
+  else if (!(calib.meta.source === 'profile' && calib.meta.version) && !refLine) {
+    warnings.push('ppl 未校准（无 ppl_tracks 档案）且参考打分失败，S2 不计分')
+  }
   if (method === 'statistical_v2') warnings.push('参考模型不可用，纯统计融合（护栏下封顶）')
   warnings.push('本站多证据融合检测，启发式，非腾讯朱雀官方分数')
 
@@ -321,7 +353,10 @@ function finalizeFusionResult(args: FinalizeArgs): AiDetectionResult {
     mean_logprob: refLine?.meanLogprob != null ? Math.round(refLine.meanLogprob * 1000) / 1000 : undefined,
     perplexity_model: refLine?.model || (refLine ? args.repModel : undefined) || undefined,
     writing_model: args.options.writingModelHint,
-    same_family_detect: sameFamily || undefined,
+    // 异系时也必须是 false（勿用 || undefined，否则 humanize 元数据会误走写作主模型回填）
+    same_family_detect: (args.options.writingModelHint && (refLine?.model || args.repModel))
+      ? sameFamily
+      : undefined,
     ai_detect_warning: warnings.filter(Boolean).join('；'),
     sampled_char_count: args.scoredChars || undefined,
     analyzed_tokens: args.analyzedTokens || undefined,
@@ -340,7 +375,7 @@ function finalizeFusionResult(args: FinalizeArgs): AiDetectionResult {
     engine_version: AI_DETECT_ENGINE_VERSION,
     genre: args.genre,
     needs_review: needsReview,
-    calibration: refLine ? 'calibrated' : 'none',
+    calibration: refLine?.calibrated ? 'calibrated' : 'none',
     ref_mode: refLine ? (refLine.mode as 'echo' | 'prompt_logprobs' | 'proxy' | 'none') : 'none',
     coverage: { windows_total: args.windowResults.length, windows_scored: args.windowResults.filter((w) => w.status === 'scored').length, scored_chars: args.scoredChars, text_chars: args.charCount },
     evidence: fusion.evidenceLines,

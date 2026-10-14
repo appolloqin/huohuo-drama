@@ -1425,9 +1425,15 @@ app.post('/chapters/:id/generate/stream', async (c) => {
               billing,
             })
           }
+          try {
+            const epRow = await episodesRepo.findEpisodeById(id)
+            const cleared = mergeEpisodeMetadata(epRow?.metadata, { ai_detection: undefined })
+            await episodesRepo.updateEpisode(id, { metadata: cleared, updatedAt: now() })
+          } catch { /* ignore */ }
           send({
             content: body,
             continuity_check,
+            ai_detection: null,
             status: '完成（审校降级）',
             degraded: true,
           })
@@ -1577,6 +1583,12 @@ app.post('/chapters/:id/generate/stream', async (c) => {
             billing,
           })
         }
+        // 降级路径未跑完去AI味：清掉陈旧 ai_detection，避免 UI 一直显示上一轮「正文过短跳过」
+        try {
+          const epRow = await episodesRepo.findEpisodeById(id)
+          const cleared = mergeEpisodeMetadata(epRow?.metadata, { ai_detection: undefined })
+          await episodesRepo.updateEpisode(id, { metadata: cleared, updatedAt: now() })
+        } catch { /* ignore */ }
         logTaskWarn('Novel', 'generate-stream-post-process-degraded', {
           chapterId: id,
           chars: [...body].length,
@@ -1584,6 +1596,7 @@ app.post('/chapters/:id/generate/stream', async (c) => {
         return {
           content: body,
           continuity_check,
+          ai_detection: null,
           degraded: true,
         }
       }

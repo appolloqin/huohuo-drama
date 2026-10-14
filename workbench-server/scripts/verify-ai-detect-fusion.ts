@@ -39,6 +39,12 @@ if (!capped.evidenceLines.find((e) => e.key === 'S1_statistical' && !e.missing))
 const fam = fuseEvidence({ raws: ROBOT as never, genre: 'web_fiction', table, weights, ref: refEcho, sameFamily: true })
 if (!(fam.s2 != null && r.s2 != null && fam.s2 < r.s2)) throw new Error('same-family damping')
 
+// 种子启发式（calibrated=false）仍计入 S2，但弱于已校准同 z
+const seedRef: RefLineInput = { mode: 'echo', model: 'qwen-plus', z: -2.0, calibrated: false }
+const seed = fuseEvidence({ raws: ROBOT as never, genre: 'web_fiction', table, weights, ref: seedRef, sameFamily: false })
+if (seed.s2 == null || seed.evidenceLines.find((e) => e.key === 'S2_reference')?.missing) throw new Error('seed S2 missing')
+if (!(seed.s2 < (r.s2 ?? 1))) throw new Error('seed S2 should be weaker than calibrated')
+
 // official 需双强线：S2 强但 dimHigh 低（人写特征）也压不住 → 单线封顶
 const officialSingle = fuseEvidence({ raws: HUMAN as never, genre: 'official', table: DEFAULT_PERCENTILE_TABLES.official, weights: { w: [2, 1.3, 0.5, 0, 1, 0, 0, 0, 0, 0], b: 1.5 }, ref: { ...refEcho, z: -1.5 }, sameFamily: false })
 const anyStrongLine = officialSingle.s2 != null && officialSingle.s2 >= 0.6

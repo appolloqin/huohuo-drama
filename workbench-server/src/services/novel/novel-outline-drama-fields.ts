@@ -100,9 +100,10 @@ export function extractEmotionBoundaryActionBeat(outline: string): string {
 
 const CONFLICT_SET = new Set<string>(['外部', '人际', '自我'])
 
-const CHAPTER_HEADER_RE = /第\s*(\d+)\s*章/
+/** 仅匹配行首章标题；避免「第12章后第三日」等正文被当成下一章边界 */
+const CHAPTER_HEADER_RE = /^\s*第\s*(\d+)\s*章/
 
-/** 取【标签】后内容（重复则取最后一次），直到下一【或下一「第N章」或文末 */
+/** 取【标签】后内容（重复则取最后一次），直到下一【或下一行首「第N章」或文末 */
 export function extractTagBlock(text: string, label: string): string | null {
   const src = text || ''
   const startRe = new RegExp(`【${label}】`, 'g')
@@ -117,7 +118,8 @@ export function extractTagBlock(text: string, label: string): string | null {
   const from = lastIndex + lastLen
   const rest = src.slice(from)
   const nextTag = rest.search(/【/)
-  const nextCh = rest.search(/第\s*\d+\s*章/)
+  // 必须换行后才算章头，否则「【本章时间】第12章后…」会被截成空
+  const nextCh = rest.search(/\n\s*第\s*\d+\s*章/)
   let end = rest.length
   if (nextTag >= 0) end = Math.min(end, nextTag)
   if (nextCh >= 0) end = Math.min(end, nextCh)
@@ -165,7 +167,8 @@ export function parseOutlineBookFields(outline: string): Partial<OutlineBookFiel
 
 /**
  * 局部重生成用：第 1～(beforeChapter-1) 章压缩索引（每章一行，非全文）。
- * 格式：第k章｜短标题｜局面变化
+ * 格式：第k章｜短标题｜本章时间｜局面变化
+ * （必须带时间，否则续写易用「某人到某地当夜」等情节句另起日历）
  */
 export function extractOutlinePriorChapterIndex(
   outline: string,
@@ -180,15 +183,37 @@ export function extractOutlinePriorChapterIndex(
     if (!section.trim()) continue
     const titleM = section.match(/^第\s*\d+\s*章\s*[：:]\s*([^\n]+)/m)
     const title = (titleM?.[1] || '').trim() || '无题'
+    const time = (extractTagBlock(section, '本章时间') || '')
+      .replace(/\s+/g, ' ')
+      .trim()
+      .slice(0, 40)
     const stakes = (extractTagBlock(section, '局面变化') || '')
       .replace(/\s+/g, ' ')
       .trim()
-      .slice(0, 120)
-    lines.push(`第${n}章｜${title}｜${stakes || '（无局面变化）'}`)
+      .slice(0, 100)
+    lines.push(
+      `第${n}章｜${title}｜${time || '（无时间）'}｜${stakes || '（无局面变化）'}`,
+    )
   }
   if (!lines.length) return ''
   const body = lines.join('\n')
   return body.length <= maxChars ? body : `${body.slice(0, maxChars)}…`
+}
+
+/** 接缝用：beforeChapter 之前最后一章有值的【本章时间】 */
+export function extractOutlineSeamTimeAnchor(
+  outline: string,
+  beforeChapter: number,
+): string {
+  const before = Math.floor(Number(beforeChapter))
+  if (!(before >= 2) || !(outline || '').trim()) return ''
+  for (let n = before - 1; n >= 1; n--) {
+    const section = sliceOutlineChapterSection(outline, n)
+    if (!section.trim()) continue
+    const time = (extractTagBlock(section, '本章时间') || '').replace(/\s+/g, ' ').trim()
+    if (time) return time
+  }
+  return ''
 }
 
 /** 截取第 chapterNumber 章段落（含标题行至下一章前） */

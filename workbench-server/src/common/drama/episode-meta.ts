@@ -400,6 +400,25 @@ export function parseEpisodeMetadata(raw: JsonColumnInput): EpisodeMetadata {
   }
 }
 
+/**
+ * 正文清空时抹掉与本章正文绑定的审校产物（变更记录、21 维一致性、账本/状态卡等）。
+ * 交给 mergeEpisodeMetadata：falsy 表示 delete 该键。
+ */
+export function contentDerivedMetadataClearPatch(): Partial<EpisodeMetadata> {
+  return {
+    causal_change_record: undefined,
+    continuity_check: undefined,
+    continuity_ledger: undefined,
+    chapter_end_snapshot: undefined,
+    chapter_state_card: undefined,
+    continuity_rewrite_log: undefined,
+    ai_detection: undefined,
+    chapter_craft: undefined,
+    chapter_appeal: undefined,
+    chapter_review: undefined,
+  }
+}
+
 export function mergeEpisodeMetadata(
   raw: JsonColumnInput,
   patch: Partial<EpisodeMetadata>,

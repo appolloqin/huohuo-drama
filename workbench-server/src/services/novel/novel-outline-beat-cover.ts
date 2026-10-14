@@ -178,7 +178,8 @@ function extractTagValue(text: string, label: string): string {
   if (lastIndex < 0) return ''
   const rest = src.slice(lastIndex + lastLen)
   const nextTag = rest.search(/【/)
-  const nextCh = rest.search(/第\s*\d+\s*章/)
+  // 仅行首章标题为边界，避免「第12章后第三日」等被截空
+  const nextCh = rest.search(/\n\s*第\s*\d+\s*章/)
   let end = rest.length
   if (nextTag >= 0) end = Math.min(end, nextTag)
   if (nextCh >= 0) end = Math.min(end, nextCh)

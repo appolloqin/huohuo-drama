@@ -78,14 +78,18 @@ export function fuseEvidence(input: FusionInput): FusionResult {
   const s1 = r3(statLine(input.raws, input.table, input.statsSub))
   let s2: number | null = null
   let s2Note: string | undefined
-  if (input.ref && input.ref.calibrated && input.ref.z != null) {
+  if (input.ref && input.ref.z != null) {
     const line = pplLineScore(input.ref.z, 1.0)
     if (line != null) {
-      const attenuated = (input.ref.mode === 'proxy' ? line * 0.5 : line) * (input.sameFamily ? 0.6 : 1)
+      // proxy / 同系 / 种子启发式均衰减，避免冷启动虚高
+      let attenuated = (input.ref.mode === 'proxy' ? line * 0.5 : line) * (input.sameFamily ? 0.6 : 1)
+      if (!input.ref.calibrated) attenuated *= 0.75
       s2 = r3(attenuated)
-      s2Note = input.ref.mode === 'proxy'
-        ? 'chat 续写代理指标（弱证据，权重减半）'
-        : input.sameFamily ? '写作与参考模型同系，S2 衰减' : '真文内困惑度'
+      s2Note = !input.ref.calibrated
+        ? '种子启发式困惑度（无 ppl_tracks 档案，弱证据）'
+        : input.ref.mode === 'proxy'
+          ? 'chat 续写代理指标（弱证据，权重减半）'
+          : input.sameFamily ? '写作与参考模型同系，S2 衰减' : '真文内困惑度'
     }
   } else if (input.ref) {
     s2Note = '参考模型无校准档案（ppl_tracks 缺失），S2 不计分'
@@ -97,7 +101,7 @@ export function fuseEvidence(input: FusionInput): FusionResult {
   const x: number[] = [
     s1,
     s2 ?? 0,
-    input.ref?.calibrated && input.ref.z != null ? Math.max(0, -input.ref.z) / 3 : 0, // ppl 低于基线越多越 AI
+    input.ref?.z != null ? Math.max(0, -input.ref.z) / 3 * (input.ref.calibrated ? 1 : 0.75) : 0, // ppl 低于基线越多越 AI
     s3 ?? 0,
     s5 ?? 0,
     input.sameFamily ? 1 : 0,
